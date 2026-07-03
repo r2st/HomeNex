@@ -6,13 +6,12 @@ import ClientsTab from './components/ClientsTab.jsx'
 import InsightsTab from './components/InsightsTab.jsx'
 import BottomNav from './components/BottomNav.jsx'
 import AuthScreen from './components/AuthScreen.jsx'
-import { api, usePoll, getToken, setToken } from './api.js'
+import { api, getToken, setToken } from './api.js'
 
 export default function App() {
   const [tab, setTab] = useState('today')
   const [inboxLeadId, setInboxLeadId] = useState(null)
   const [agent, setAgent] = useState(undefined) // undefined = checking, null = logged out
-  const { data: health } = usePoll(api.health, 15000)
 
   useEffect(() => {
     if (!getToken()) return setAgent(null)
@@ -55,18 +54,6 @@ export default function App() {
 
   return (
     <div className="phone">
-      {health && (!health.whatsapp || !health.ai) && (
-        <div className="bg-amber-wash border-b border-amber/30 px-5 py-2.5">
-          <p className="text-[12px] text-gold leading-snug">
-            <strong>Setup needed:</strong>{' '}
-            {!health.whatsapp && 'WhatsApp credentials'}
-            {!health.whatsapp && !health.ai && ' and '}
-            {!health.ai && 'OpenRouter API key'} missing in <code>server/.env</code> —{' '}
-            {!health.whatsapp ? 'sends are disabled' : 'AI replies are disabled'}.
-          </p>
-        </div>
-      )}
-
       <main className="pb-24">
         {tab === 'today' && (
           <TodayTab agent={agent} onGoTo={setTab} onOpenConversation={openConversation} onSignOut={signOut} />
