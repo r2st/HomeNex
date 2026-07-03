@@ -24,14 +24,14 @@ const TABS = [
   },
   { id: 'inbox', label: 'Inbox', icon: null },
   {
-    id: 'network',
-    label: 'Network',
+    id: 'clients',
+    label: 'Clients',
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-[22px] h-[22px]">
-        <circle cx="5.5" cy="12" r="2.5" />
-        <circle cx="18.5" cy="5.5" r="2.5" />
-        <circle cx="18.5" cy="18.5" r="2.5" />
-        <path d="M7.8 10.8 16.2 6.6M7.8 13.2l8.4 4.2" />
+        <path d="M17 20h5v-1a4 4 0 0 0-3-3.87" />
+        <path d="M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z" />
+        <path d="M2 20v-1a5 5 0 0 1 5-5h4a5 5 0 0 1 5 5v1" />
+        <path d="M15 3.13A4 4 0 0 1 15 11" />
       </svg>
     ),
   },

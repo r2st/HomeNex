@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import TodayTab from './components/TodayTab.jsx'
 import LeadsTab from './components/LeadsTab.jsx'
 import InboxTab from './components/InboxTab.jsx'
-import NetworkTab from './components/NetworkTab.jsx'
+import ClientsTab from './components/ClientsTab.jsx'
 import InsightsTab from './components/InsightsTab.jsx'
 import BottomNav from './components/BottomNav.jsx'
 import AuthScreen from './components/AuthScreen.jsx'
@@ -73,7 +73,7 @@ export default function App() {
         )}
         {tab === 'leads' && <LeadsTab onOpenConversation={openConversation} />}
         {tab === 'inbox' && <InboxTab leadId={inboxLeadId} onSelectLead={setInboxLeadId} />}
-        {tab === 'network' && <NetworkTab />}
+        {tab === 'clients' && <ClientsTab />}
         {tab === 'insights' && <InsightsTab />}
       </main>
 

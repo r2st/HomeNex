@@ -34,7 +34,7 @@ function ScoreRing({ score, size = 44 }) {
   )
 }
 
-function LeadDetail({ leadId, onClose, onOpenConversation }) {
+function LeadDetail({ leadId, onClose, onOpenConversation, onChanged }) {
   const { data: lead } = usePoll(() => api.lead(leadId), 4000, [leadId])
 
   if (!lead)
@@ -56,6 +56,14 @@ function LeadDetail({ leadId, onClose, onOpenConversation }) {
     if (lead.ai_enabled) await api.setAi(lead.id, false)
     onOpenConversation(lead.id)
   }
+
+  const claim = async () => {
+    await api.assignLead(lead.id)
+    onChanged?.()
+    onClose()
+  }
+
+  const unassigned = lead.agent_id == null
 
   return (
     <div className="fixed inset-0 z-50">
@@ -157,12 +165,21 @@ function LeadDetail({ leadId, onClose, onOpenConversation }) {
             </div>
           </section>
 
-          <button
-            onClick={takeOver}
-            className="w-full bg-brand hover:bg-brand-deep text-white font-bold text-[14.5px] rounded-2xl py-4 shadow-float active:scale-[0.98] transition"
-          >
-            Take over chat 💬
-          </button>
+          {unassigned ? (
+            <button
+              onClick={claim}
+              className="w-full bg-gold hover:brightness-95 text-white font-bold text-[14.5px] rounded-2xl py-4 shadow-float active:scale-[0.98] transition"
+            >
+              Assign to me ✋
+            </button>
+          ) : (
+            <button
+              onClick={takeOver}
+              className="w-full bg-brand hover:bg-brand-deep text-white font-bold text-[14.5px] rounded-2xl py-4 shadow-float active:scale-[0.98] transition"
+            >
+              Take over chat 💬
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -172,9 +189,19 @@ function LeadDetail({ leadId, onClose, onOpenConversation }) {
 export default function LeadsTab({ onOpenConversation }) {
   const [selectedId, setSelectedId] = useState(null)
   const [filter, setFilter] = useState('All')
-  const { data: allLeads, error } = usePoll(api.leads, 5000)
-  const filters = ['All', 'Hot', 'Warm', 'Cold']
-  const leads = (allLeads || []).filter((l) => filter === 'All' || l.temp === filter)
+  const [refreshKey, setRefreshKey] = useState(0)
+  const { data: allLeads, error } = usePoll(api.leads, 5000, [refreshKey])
+  const refresh = () => setRefreshKey((k) => k + 1)
+  const filters = ['All', 'Unassigned', 'Hot', 'Warm', 'Cold']
+  const leads = (allLeads || []).filter((l) =>
+    filter === 'All' ? true : filter === 'Unassigned' ? l.unassigned : l.temp === filter,
+  )
+
+  const claim = async (e, id) => {
+    e.stopPropagation()
+    await api.assignLead(id)
+    refresh()
+  }
 
   return (
     <div className="px-5 pt-7">
@@ -218,36 +245,58 @@ export default function LeadsTab({ onOpenConversation }) {
       )}
 
       <div className="space-y-2.5 mt-4">
-        {leads.map((l, i) => (
-          <button
-            key={l.id}
-            onClick={() => setSelectedId(l.id)}
-            className={`w-full text-left bg-card rounded-2xl border border-line shadow-card px-4 py-3.5 active:scale-[0.99] transition rise rise-${Math.min(i + 1, 5)}`}
-          >
-            <div className="flex items-center gap-3">
-              <span className="shrink-0 w-11 h-11 rounded-full bg-brand-wash text-brand-deep font-display font-bold text-[15px] flex items-center justify-center">
-                {(l.name || l.wa_id).split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase()}
-              </span>
-              <div className="flex-1 min-w-0">
-                <p className="font-bold text-[14.5px] text-ink truncate">{l.name || l.wa_id}</p>
-                <p className="text-[12px] text-ink-soft truncate mt-0.5">
-                  {[l.config, l.locality, fmtBudget(l.budget_min_l, l.budget_max_l)]
-                    .filter(Boolean)
-                    .join(' · ') || 'Qualification in progress…'}
-                </p>
-                <div className="flex items-center gap-2 mt-1.5">
-                  <span className={`text-[10.5px] font-bold border rounded-full px-2 py-0.5 ${TEMP_STYLE[l.temp] || TEMP_STYLE.Cold}`}>
-                    {l.temp === 'Hot' ? '🔥 Hot' : l.temp === 'Warm' ? '☀️ Warm' : '❄️ Cold'}
-                  </span>
-                  <span className="text-[11px] text-ink-faint">
-                    {l.source} · {fmtAgo(l.last_at || l.created_at)}
-                  </span>
+        {leads.map((l, i) => {
+          const display = l.contact_name || l.name || l.wa_id
+          return (
+            <div
+              key={l.id}
+              role="button"
+              tabIndex={0}
+              onClick={() => setSelectedId(l.id)}
+              onKeyDown={(e) => e.key === 'Enter' && setSelectedId(l.id)}
+              className={`w-full text-left bg-card rounded-2xl border shadow-card px-4 py-3.5 active:scale-[0.99] transition cursor-pointer rise rise-${Math.min(i + 1, 5)} ${
+                l.unassigned ? 'border-amber/40' : 'border-line'
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <span className="shrink-0 w-11 h-11 rounded-full bg-brand-wash text-brand-deep font-display font-bold text-[15px] flex items-center justify-center">
+                  {String(display).split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase()}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <p className="font-bold text-[14.5px] text-ink truncate">{display}</p>
+                  <p className="text-[12px] text-ink-soft truncate mt-0.5">
+                    {[l.config, l.locality, fmtBudget(l.budget_min_l, l.budget_max_l)]
+                      .filter(Boolean)
+                      .join(' · ') || 'Qualification in progress…'}
+                  </p>
+                  <div className="flex items-center gap-2 mt-1.5">
+                    {l.unassigned ? (
+                      <span className="text-[10.5px] font-bold border rounded-full px-2 py-0.5 bg-amber-wash text-gold border-amber/40">
+                        ✋ Unassigned
+                      </span>
+                    ) : (
+                      <span className={`text-[10.5px] font-bold border rounded-full px-2 py-0.5 ${TEMP_STYLE[l.temp] || TEMP_STYLE.Cold}`}>
+                        {l.temp === 'Hot' ? '🔥 Hot' : l.temp === 'Warm' ? '☀️ Warm' : '❄️ Cold'}
+                      </span>
+                    )}
+                    <span className="text-[11px] text-ink-faint">
+                      {l.source} · {fmtAgo(l.last_at || l.created_at)}
+                    </span>
+                  </div>
+                  {l.unassigned && (
+                    <button
+                      onClick={(e) => claim(e, l.id)}
+                      className="mt-2 text-[12px] font-bold rounded-full px-3.5 py-1.5 bg-gold text-white active:scale-95 transition"
+                    >
+                      Assign to me →
+                    </button>
+                  )}
                 </div>
+                <ScoreRing score={l.score} />
               </div>
-              <ScoreRing score={l.score} />
             </div>
-          </button>
-        ))}
+          )
+        })}
       </div>
 
       {selectedId && (
@@ -255,6 +304,7 @@ export default function LeadsTab({ onOpenConversation }) {
           leadId={selectedId}
           onClose={() => setSelectedId(null)}
           onOpenConversation={onOpenConversation}
+          onChanged={refresh}
         />
       )}
     </div>

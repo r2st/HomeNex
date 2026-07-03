@@ -28,6 +28,7 @@ const post = (url, body) =>
     headers: { 'content-type': 'application/json', ...authHeaders() },
     body: JSON.stringify(body),
   }).then(j)
+const del = (url) => fetch(url, { method: 'DELETE', headers: authHeaders() }).then(j)
 
 export const api = {
   signup: (body) => post('/api/auth/signup', body),
@@ -42,6 +43,11 @@ export const api = {
   postNetwork: (body) => post('/api/network', body),
   reply: (id, text) => post(`/api/leads/${id}/reply`, { text }),
   setAi: (id, enabled) => post(`/api/leads/${id}/ai`, { enabled }),
+  assignLead: (id) => post(`/api/leads/${id}/assign`, {}),
+  contacts: () => get('/api/contacts'),
+  addContact: (body) => post('/api/contacts', body),
+  bulkContacts: (contacts) => post('/api/contacts/bulk', { contacts }),
+  deleteContact: (id) => del(`/api/contacts/${id}`),
 }
 
 // Poll an endpoint so the dashboard stays live as real messages arrive.

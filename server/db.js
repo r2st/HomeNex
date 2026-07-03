@@ -9,7 +9,7 @@ db.exec('PRAGMA journal_mode = WAL')
 db.exec(`
 CREATE TABLE IF NOT EXISTS leads (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  agent_id INTEGER NOT NULL REFERENCES agents(id),
+  agent_id INTEGER REFERENCES agents(id),   -- NULL = unassigned pool (unknown sender on the shared number)
   wa_id TEXT NOT NULL,
   name TEXT,
   phone TEXT,
@@ -71,6 +71,18 @@ CREATE TABLE IF NOT EXISTS meta (
   value TEXT NOT NULL
 );
 
+-- Clients an agent owns on the shared WhatsApp Business number. When one of these
+-- numbers messages the shared line, the inbound is routed to this agent.
+CREATE TABLE IF NOT EXISTS contacts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id INTEGER NOT NULL REFERENCES agents(id),
+  phone TEXT NOT NULL UNIQUE,        -- client's WhatsApp number, canonical E.164 e.g. +919812345678
+  name TEXT NOT NULL,
+  notes TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_contacts_agent ON contacts(agent_id, created_at);
+
 CREATE TABLE IF NOT EXISTS network_posts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   type TEXT NOT NULL CHECK (type IN ('INVENTORY','REQUIREMENT')),
@@ -84,6 +96,55 @@ CREATE TABLE IF NOT EXISTS network_posts (
   created_at TEXT DEFAULT (datetime('now'))
 );
 `)
+
+// Migration: older DBs created leads.agent_id as NOT NULL. The shared-number model
+// needs it nullable so unknown senders can land in an unassigned pool. Rebuild the
+// table in place (same columns/order) if the NOT NULL constraint is still present.
+{
+  const agentCol = db.prepare("PRAGMA table_info(leads)").all().find((c) => c.name === 'agent_id')
+  if (agentCol && agentCol.notnull === 1) {
+    db.exec('BEGIN')
+    try {
+      db.exec('ALTER TABLE leads RENAME TO leads_old')
+      db.exec(`
+        CREATE TABLE leads (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          agent_id INTEGER REFERENCES agents(id),
+          wa_id TEXT NOT NULL,
+          name TEXT,
+          phone TEXT,
+          source TEXT DEFAULT 'WhatsApp',
+          temp TEXT DEFAULT 'Cold',
+          score INTEGER DEFAULT 0,
+          config TEXT,
+          config_note TEXT,
+          locality TEXT,
+          location_note TEXT,
+          budget_min_l REAL,
+          budget_max_l REAL,
+          budget_note TEXT,
+          timeline TEXT,
+          timeline_note TEXT,
+          ai_summary TEXT,
+          next_step TEXT,
+          score_breakdown TEXT,
+          ai_enabled INTEGER DEFAULT 1,
+          first_response_s REAL,
+          created_at TEXT DEFAULT (datetime('now')),
+          updated_at TEXT DEFAULT (datetime('now')),
+          UNIQUE(agent_id, wa_id)
+        )`)
+      db.exec('INSERT INTO leads SELECT * FROM leads_old')
+      db.exec('DROP TABLE leads_old')
+      db.exec('COMMIT')
+      db.exec('CREATE INDEX IF NOT EXISTS idx_leads_agent ON leads(agent_id, updated_at)')
+      console.log('migrated leads.agent_id → nullable (unassigned pool enabled)')
+    } catch (err) {
+      db.exec('ROLLBACK')
+      throw err
+    }
+  }
+}
 
 // Canonical storage form for a WhatsApp number: leading "+" and digits only.
 // A bare 10-digit Indian number is assumed to be +91.
@@ -127,28 +188,74 @@ export function countAgents() {
   return db.prepare('SELECT COUNT(*) AS n FROM agents').get().n
 }
 
-// Route an inbound webhook to the right agent by the business number that received it.
-// Matches on full digits, then on a 10-digit suffix as a fallback. If there is exactly
-// one registered agent, fall back to them (single-number demo convenience).
-export function matchAgentByBusinessNumber(displayPhoneNumber) {
-  const digits = phoneDigits(displayPhoneNumber)
-  if (digits) {
-    const agents = db.prepare('SELECT * FROM agents').all()
-    const exact = agents.find((a) => phoneDigits(a.phone) === digits)
-    if (exact) return exact
-    const suffix = digits.slice(-10)
-    const bySuffix = agents.find((a) => phoneDigits(a.phone).slice(-10) === suffix)
-    if (bySuffix) return bySuffix
-  }
-  const all = db.prepare('SELECT * FROM agents').all()
-  return all.length === 1 ? all[0] : null
+// --- Contacts: the agent's known clients on the shared WhatsApp number ---
+
+// Shared number routing: find which agent owns an inbound sender's number.
+// Matches on full digits, then on a 10-digit suffix as a fallback.
+export function findContactByWaId(waId) {
+  const digits = phoneDigits(waId)
+  if (!digits) return null
+  const contacts = db.prepare('SELECT * FROM contacts').all()
+  const exact = contacts.find((c) => phoneDigits(c.phone) === digits)
+  if (exact) return exact
+  const suffix = digits.slice(-10)
+  return contacts.find((c) => phoneDigits(c.phone).slice(-10) === suffix) || null
 }
 
-export function setAgentPhoneNumberId(agentId, phoneNumberId) {
-  if (!phoneNumberId) return
-  db.prepare(
-    'UPDATE agents SET wa_phone_number_id = ? WHERE id = ? AND (wa_phone_number_id IS NULL OR wa_phone_number_id != ?)',
-  ).run(String(phoneNumberId), agentId, String(phoneNumberId))
+// List an agent's clients, annotated with whether that number has ever messaged.
+export function listContacts(agentId) {
+  return db
+    .prepare(
+      `SELECT c.*,
+         (SELECT COUNT(*) FROM messages m
+            JOIN leads l ON l.id = m.lead_id
+            WHERE l.wa_id = replace(c.phone, '+', '') AND m.role = 'buyer') AS msg_count,
+         (SELECT MAX(l.updated_at) FROM leads l
+            WHERE l.wa_id = replace(c.phone, '+', '')) AS last_at
+       FROM contacts c
+       WHERE c.agent_id = ?
+       ORDER BY c.created_at DESC`,
+    )
+    .all(agentId)
+}
+
+// Add one client. Throws on a phone already claimed (by any agent — UNIQUE(phone)).
+export function addContact(agentId, phone, name, notes = null) {
+  const p = normalizePhone(phone)
+  if (p.replace(/\D/g, '').length < 10) throw new Error('Enter a valid phone number')
+  if (!name || !String(name).trim()) throw new Error('Client name is required')
+  const existing = db.prepare('SELECT agent_id FROM contacts WHERE phone = ?').get(p)
+  if (existing) {
+    const err = new Error(
+      existing.agent_id === agentId
+        ? 'This client is already in your list'
+        : 'This number is already claimed by another agent',
+    )
+    err.code = 'CONTACT_EXISTS'
+    throw err
+  }
+  const info = db
+    .prepare('INSERT INTO contacts (agent_id, phone, name, notes) VALUES (?, ?, ?, ?)')
+    .run(agentId, p, String(name).trim(), notes ? String(notes).trim() : null)
+  return db.prepare('SELECT * FROM contacts WHERE id = ?').get(info.lastInsertRowid)
+}
+
+// Bulk add. Returns { added, skipped: [{phone, reason}] }; never throws on a bad row.
+export function bulkAddContacts(agentId, rows) {
+  const added = []
+  const skipped = []
+  for (const row of rows || []) {
+    try {
+      added.push(addContact(agentId, row.phone, row.name, row.notes))
+    } catch (err) {
+      skipped.push({ phone: row.phone, name: row.name, reason: err.message })
+    }
+  }
+  return { added, skipped }
+}
+
+export function deleteContact(id, agentId) {
+  return db.prepare('DELETE FROM contacts WHERE id = ? AND agent_id = ?').run(id, agentId).changes > 0
 }
 
 export function getMeta(key) {
@@ -169,6 +276,29 @@ export function upsertLead(agentId, waId, name) {
   return db.prepare('SELECT * FROM leads WHERE agent_id = ? AND wa_id = ?').get(agentId, waId)
 }
 
+// Unassigned pool: a message from an unknown sender on the shared number. Deduped by
+// wa_id among the NULL-agent rows (UNIQUE(agent_id,wa_id) does not cover NULLs in SQLite).
+export function upsertUnassignedLead(waId, name) {
+  const existing = db.prepare('SELECT * FROM leads WHERE agent_id IS NULL AND wa_id = ?').get(waId)
+  if (existing) {
+    db.prepare(
+      "UPDATE leads SET name = COALESCE(?, name), updated_at = datetime('now') WHERE id = ?",
+    ).run(name || null, existing.id)
+    return db.prepare('SELECT * FROM leads WHERE id = ?').get(existing.id)
+  }
+  const info = db
+    .prepare("INSERT INTO leads (agent_id, wa_id, name, phone, source) VALUES (NULL, ?, ?, ?, 'WhatsApp')")
+    .run(waId, name || null, waId)
+  return db.prepare('SELECT * FROM leads WHERE id = ?').get(info.lastInsertRowid)
+}
+
+// Claim an unassigned lead. Only succeeds while the lead is still in the pool.
+export function assignLead(leadId, agentId) {
+  const changed = db
+    .prepare('UPDATE leads SET agent_id = ? WHERE id = ? AND agent_id IS NULL').run(agentId, leadId).changes
+  return changed > 0 ? getLead(leadId) : null
+}
+
 export function getLead(id) {
   return db.prepare('SELECT * FROM leads WHERE id = ?').get(id)
 }
@@ -176,6 +306,13 @@ export function getLead(id) {
 // Ownership-checked lookup for dashboard routes: only returns the lead if it belongs to the agent.
 export function getLeadForAgent(id, agentId) {
   return db.prepare('SELECT * FROM leads WHERE id = ? AND agent_id = ?').get(id, agentId)
+}
+
+// Like getLeadForAgent, but also returns unassigned-pool leads so any agent can inspect/claim them.
+export function getAssignableLead(id, agentId) {
+  return db
+    .prepare('SELECT * FROM leads WHERE id = ? AND (agent_id = ? OR agent_id IS NULL)')
+    .get(id, agentId)
 }
 
 export function addMessage(leadId, role, text, waMessageId = null) {
@@ -257,18 +394,23 @@ export function logActivity(agentId, leadId, kind, text) {
   )
 }
 
+// The agent's own leads plus the shared unassigned pool. `unassigned` flags pool rows;
+// `contact_name` is the client name from the agent's contacts, when the sender is known.
 export function listLeads(agentId) {
   return db
     .prepare(
       `SELECT l.*,
+         (l.agent_id IS NULL) AS unassigned,
+         (SELECT c.name FROM contacts c
+            WHERE c.agent_id = ? AND replace(c.phone, '+', '') = l.wa_id LIMIT 1) AS contact_name,
          (SELECT text FROM messages m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) AS last_msg,
          (SELECT role FROM messages m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) AS last_role,
          (SELECT created_at FROM messages m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) AS last_at
        FROM leads l
-       WHERE l.agent_id = ?
+       WHERE l.agent_id = ? OR l.agent_id IS NULL
        ORDER BY l.updated_at DESC`,
     )
-    .all(agentId)
+    .all(agentId, agentId)
 }
 
 export function listActivity(agentId, limit = 30) {

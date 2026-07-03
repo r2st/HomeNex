@@ -5,8 +5,11 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   upsertLead,
+  upsertUnassignedLead,
+  assignLead,
   getLead,
   getLeadForAgent,
+  getAssignableLead,
   getAgent,
   addMessage,
   getMessages,
@@ -20,8 +23,11 @@ import {
   addNetworkPost,
   computeMatches,
   stats,
-  matchAgentByBusinessNumber,
-  setAgentPhoneNumberId,
+  findContactByWaId,
+  listContacts,
+  addContact,
+  bulkAddContacts,
+  deleteContact,
 } from './db.js'
 import { generateReply, extractLead, aiConfigured } from './ai.js'
 import { sendText, markRead, whatsappConfigured } from './whatsapp.js'
@@ -53,23 +59,27 @@ function verifySignature(req) {
   }
 }
 
-// Core pipeline for ONE agent's inbound buyer message:
-// persist -> AI reply (as that agent) -> WhatsApp send (from that agent's number) -> extract BLTC.
-async function handleInbound({ agent, waId, name, text, source = 'WhatsApp', phoneNumberId = null, send = true }) {
-  const agentId = agent.id
-  const lead = upsertLead(agentId, waId, name)
+// Core pipeline for one inbound buyer message on the shared WhatsApp number:
+// persist -> AI reply -> WhatsApp send (from the shared number) -> extract BLTC.
+// agentId is null for the unassigned pool (an unknown sender); brokerName personalises the AI.
+async function handleInbound({ agentId = null, brokerName, waId, name, text, source = 'WhatsApp', phoneNumberId = null, send = true }) {
+  const lead = agentId ? upsertLead(agentId, waId, name) : upsertUnassignedLead(waId, name)
   const isNewLead = !lead.ai_summary && getMessages(lead.id, 1).length === 0
   addMessage(lead.id, 'buyer', text)
-  if (isNewLead) logActivity(agentId, lead.id, 'lead', `New lead: ${name || waId} via ${source}`)
+  if (isNewLead) {
+    logActivity(agentId, lead.id, 'lead', agentId
+      ? `New lead: ${name || waId} via ${source}`
+      : `Unclaimed lead: ${name || waId} messaged the shared number`)
+  }
 
   let reply = null
   if (lead.ai_enabled) {
-    reply = await generateReply(getMessages(lead.id), agent.name)
+    reply = await generateReply(getMessages(lead.id), brokerName)
     if (reply) {
       let waMsgId = null
       if (send) {
         try {
-          waMsgId = await sendText(waId, reply, phoneNumberId || agent.wa_phone_number_id)
+          waMsgId = await sendText(waId, reply, phoneNumberId)
         } catch (err) {
           console.error(err.message)
           logActivity(agentId, lead.id, 'error', `WhatsApp send failed for ${name || waId}`)
@@ -119,28 +129,34 @@ app.post('/webhook', (req, res) => {
     for (const entry of req.body?.entry ?? []) {
       for (const change of entry.changes ?? []) {
         const value = change.value
-        const contactName = value?.contacts?.[0]?.profile?.name
-        // Which registered agent owns the business number this message was sent to?
-        const displayNumber = value?.metadata?.display_phone_number
+        const waProfileName = value?.contacts?.[0]?.profile?.name
+        // Everything arrives on ONE shared business number; route by who the sender is.
         const phoneNumberId = value?.metadata?.phone_number_id
-        const agent = matchAgentByBusinessNumber(displayNumber)
-        if (!agent) {
-          if (value?.messages?.length)
-            console.warn(`No agent registered for business number ${displayNumber} — dropping message`)
-          continue
-        }
-        // Remember this agent's phone_number_id so dashboard replies go out from their number.
-        setAgentPhoneNumberId(agent.id, phoneNumberId)
         for (const msg of value?.messages ?? []) {
           if (msg.type !== 'text') continue
           markRead(msg.id, phoneNumberId)
-          await handleInbound({
-            agent,
-            waId: msg.from,
-            name: contactName,
-            text: msg.text.body,
-            phoneNumberId,
-          })
+          // Match the sender against every agent's saved clients.
+          const contact = findContactByWaId(msg.from)
+          if (contact) {
+            await handleInbound({
+              agentId: contact.agent_id,
+              brokerName: getAgent(contact.agent_id)?.name,
+              waId: msg.from,
+              name: contact.name || waProfileName,
+              text: msg.text.body,
+              phoneNumberId,
+            })
+          } else {
+            // Unknown sender → unassigned pool, visible to all agents to claim.
+            await handleInbound({
+              agentId: null,
+              brokerName: 'the HomeNex team',
+              waId: msg.from,
+              name: waProfileName,
+              text: msg.text.body,
+              phoneNumberId,
+            })
+          }
         }
       }
     }
@@ -176,9 +192,22 @@ app.use('/api', (req, res, next) => {
 app.get('/api/leads', (req, res) => res.json(listLeads(req.agent.id)))
 
 app.get('/api/leads/:id', (req, res) => {
-  const lead = getLeadForAgent(req.params.id, req.agent.id)
+  const lead = getAssignableLead(req.params.id, req.agent.id)
   if (!lead) return res.status(404).json({ error: 'not found' })
   res.json({ ...lead, messages: getMessages(lead.id) })
+})
+
+// Claim an unassigned lead from the shared pool, and remember the sender as a client.
+app.post('/api/leads/:id/assign', (req, res) => {
+  const lead = assignLead(req.params.id, req.agent.id)
+  if (!lead) return res.status(409).json({ error: 'lead is not available to claim' })
+  try {
+    addContact(req.agent.id, lead.wa_id, lead.name || lead.wa_id)
+  } catch {
+    // Already a contact (or claimed elsewhere) — assignment still stands.
+  }
+  logActivity(req.agent.id, lead.id, 'agent', `${req.agent.name} claimed ${lead.name || lead.wa_id}`)
+  res.json(lead)
 })
 
 // Agent takes over / hands back to AI.
@@ -213,6 +242,30 @@ app.post('/api/leads/:id/reply', async (req, res) => {
   }
 })
 
+// --- Contacts (My Clients): the agent's known numbers on the shared line ---
+app.get('/api/contacts', (req, res) => res.json(listContacts(req.agent.id)))
+
+app.post('/api/contacts', (req, res) => {
+  const { phone, name, notes } = req.body ?? {}
+  if (!phone || !name) return res.status(400).json({ error: 'phone and name are required' })
+  try {
+    res.json(addContact(req.agent.id, phone, name, notes))
+  } catch (err) {
+    res.status(err.code === 'CONTACT_EXISTS' ? 409 : 400).json({ error: err.message })
+  }
+})
+
+app.post('/api/contacts/bulk', (req, res) => {
+  const rows = req.body?.contacts
+  if (!Array.isArray(rows)) return res.status(400).json({ error: 'contacts array required' })
+  res.json(bulkAddContacts(req.agent.id, rows))
+})
+
+app.delete('/api/contacts/:id', (req, res) => {
+  if (!deleteContact(req.params.id, req.agent.id)) return res.status(404).json({ error: 'not found' })
+  res.json({ ok: true })
+})
+
 app.get('/api/stats', (req, res) => res.json(stats(req.agent.id)))
 app.get('/api/activity', (req, res) => res.json(listActivity(req.agent.id)))
 
@@ -231,8 +284,15 @@ app.post('/api/network', (req, res) => {
 app.post('/api/simulate', async (req, res) => {
   const { from = 'test-' + Date.now(), name = 'Test Buyer', text, source = 'Test' } = req.body ?? {}
   if (!text) return res.status(400).json({ error: 'text required' })
-  const agent = getAgent(req.agent.id)
-  const result = await handleInbound({ agent, waId: String(from), name, text, source, send: false })
+  const result = await handleInbound({
+    agentId: req.agent.id,
+    brokerName: req.agent.name,
+    waId: String(from),
+    name,
+    text,
+    source,
+    send: false,
+  })
   res.json(result)
 })
 
@@ -250,9 +310,14 @@ const dist = path.join(__dirname, '..', 'dist')
 app.use(express.static(dist))
 app.get(/^\/(?!api|webhook).*/, (_req, res) => res.sendFile(path.join(dist, 'index.html')))
 
-app.listen(PORT, () => {
-  console.log(`HomeNex server on :${PORT}`)
-  if (!whatsappConfigured()) console.log('⚠ WhatsApp credentials missing — dashboard works, sends disabled')
-  if (!aiConfigured()) console.log('⚠ OPENROUTER_API_KEY missing — AI replies/extraction disabled')
-  if (!WHATSAPP_APP_SECRET) console.log('⚠ WHATSAPP_APP_SECRET missing — webhook signature check disabled')
-})
+// Start listening only when run directly (`node index.js`), not when imported by tests.
+if (process.env.NODE_ENV !== 'test') {
+  app.listen(PORT, () => {
+    console.log(`HomeNex server on :${PORT}`)
+    if (!whatsappConfigured()) console.log('⚠ WhatsApp credentials missing — dashboard works, sends disabled')
+    if (!aiConfigured()) console.log('⚠ OPENROUTER_API_KEY missing — AI replies/extraction disabled')
+    if (!WHATSAPP_APP_SECRET) console.log('⚠ WHATSAPP_APP_SECRET missing — webhook signature check disabled')
+  })
+}
+
+export { app }

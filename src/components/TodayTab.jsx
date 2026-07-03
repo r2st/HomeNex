@@ -88,15 +88,18 @@ export default function TodayTab({ agent, onGoTo, onOpenConversation, onSignOut 
       )}
 
       {empty && (
-        <div className="mt-6 bg-card rounded-2xl border border-line shadow-card p-5 rise rise-2">
-          <p className="text-[11px] font-bold tracking-[0.18em] text-brand mb-2">GO LIVE</p>
-          <p className="font-bold text-[15px] text-ink">Connect your WhatsApp Business number</p>
-          <ol className="text-[12.5px] text-ink-soft leading-relaxed mt-2 list-decimal ml-4 space-y-1">
-            <li>Fill <code className="bg-cream px-1 rounded">server/.env</code> with your Meta + OpenRouter keys</li>
-            <li>Point the Meta webhook at <code className="bg-cream px-1 rounded">https://your-host/webhook</code></li>
-            <li>Message your business number — the lead appears here, qualified by AI</li>
-          </ol>
-        </div>
+        <button
+          onClick={() => onGoTo('clients')}
+          className="w-full text-left mt-6 bg-card rounded-2xl border border-line shadow-card p-5 rise rise-2 active:scale-[0.99] transition"
+        >
+          <p className="text-[11px] font-bold tracking-[0.18em] text-brand mb-2">GET STARTED</p>
+          <p className="font-bold text-[15px] text-ink">Add your clients' WhatsApp numbers</p>
+          <p className="text-[12.5px] text-ink-soft leading-relaxed mt-2">
+            HomeNex shares one WhatsApp Business number. Save a client's number and the moment
+            they message it, HomeNex recognises them and their qualified lead appears right here.
+          </p>
+          <span className="inline-block mt-3 text-[12.5px] font-bold text-brand">Add clients →</span>
+        </button>
       )}
 
       {attention.length > 0 && (
@@ -134,15 +137,15 @@ export default function TodayTab({ agent, onGoTo, onOpenConversation, onSignOut 
       )}
 
       <button
-        onClick={() => onGoTo('network')}
+        onClick={() => onGoTo('clients')}
         className="w-full text-left mt-6 rounded-2xl bg-gradient-to-br from-brand-deep to-brand px-4 py-4 shadow-float rise rise-4 active:scale-[0.99] transition"
       >
         <div className="flex items-center gap-3">
-          <span className="text-[22px]">🤝</span>
+          <span className="text-[22px]">👥</span>
           <div className="min-w-0 flex-1">
-            <p className="text-white font-bold text-[14px]">Co-broking network</p>
+            <p className="text-white font-bold text-[14px]">Your clients</p>
             <p className="text-white/80 text-[12.5px] leading-snug mt-0.5">
-              Match your buyers with other brokers' inventory — 50:50 split.
+              Add clients' WhatsApp numbers so their messages route straight to you.
             </p>
           </div>
           <span className="text-white/90 text-lg">→</span>
