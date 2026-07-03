@@ -3,12 +3,18 @@ import { api, setToken } from '../api.js'
 
 export default function AuthScreen({ onAuthed }) {
   const [mode, setMode] = useState('signup')
-  // `phone` holds the local part only; the +91 country code is fixed in the UI.
-  const [form, setForm] = useState({ name: '', phone: '', password: '' })
+  // `cc` is the editable country code (defaults to +91); `phone` holds the local part.
+  const [form, setForm] = useState({ name: '', cc: '+91', phone: '', password: '' })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
 
-  const setPhone = (v) => setForm((s) => ({ ...s, phone: v.replace(/\D/g, '').slice(0, 10) }))
+  // Keep a leading "+" and up to 4 dialing digits (e.g. +1, +44, +971).
+  const setCc = (v) => {
+    const digits = v.replace(/\D/g, '').slice(0, 4)
+    setForm((s) => ({ ...s, cc: '+' + digits }))
+  }
+  // Local part: digits only, up to 12 (covers longer international numbers).
+  const setPhone = (v) => setForm((s) => ({ ...s, phone: v.replace(/\D/g, '').slice(0, 12) }))
 
   const submit = async (e) => {
     e.preventDefault()
@@ -17,7 +23,7 @@ export default function AuthScreen({ onAuthed }) {
     setError(null)
     try {
       const payload = {
-        phone: '+91' + form.phone,
+        phone: (form.cc || '+91') + form.phone,
         password: form.password,
         ...(mode === 'signup' ? { name: form.name } : {}),
       }
@@ -71,9 +77,32 @@ export default function AuthScreen({ onAuthed }) {
         <label className="block">
           <span className="text-[11.5px] font-bold text-ink-soft">WhatsApp Number</span>
           <div className="mt-1 flex items-stretch bg-white border border-line rounded-2xl overflow-hidden focus-within:border-brand/60">
-            <span className="flex items-center px-4 text-[14px] font-semibold text-ink-soft bg-cream border-r border-line select-none">
-              +91
-            </span>
+            <input
+              type="text"
+              inputMode="tel"
+              list="country-codes"
+              value={form.cc}
+              onChange={(e) => setCc(e.target.value)}
+              placeholder="+91"
+              aria-label="Country code"
+              required
+              className="w-[4.5rem] px-3 py-3.5 text-[14px] font-semibold text-ink-soft outline-none bg-cream border-r border-line tracking-wide"
+            />
+            <datalist id="country-codes">
+              <option value="+91">India</option>
+              <option value="+1">USA / Canada</option>
+              <option value="+44">UK</option>
+              <option value="+971">UAE</option>
+              <option value="+61">Australia</option>
+              <option value="+65">Singapore</option>
+              <option value="+92">Pakistan</option>
+              <option value="+880">Bangladesh</option>
+              <option value="+94">Sri Lanka</option>
+              <option value="+49">Germany</option>
+              <option value="+33">France</option>
+              <option value="+81">Japan</option>
+              <option value="+86">China</option>
+            </datalist>
             <input
               type="tel"
               inputMode="numeric"
