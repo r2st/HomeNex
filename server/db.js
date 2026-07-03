@@ -100,48 +100,82 @@ CREATE TABLE IF NOT EXISTS network_posts (
 // Migration: older DBs created leads.agent_id as NOT NULL. The shared-number model
 // needs it nullable so unknown senders can land in an unassigned pool. Rebuild the
 // table in place (same columns/order) if the NOT NULL constraint is still present.
+//
+// legacy_alter_table = ON is essential: without it, renaming/dropping `leads` makes
+// SQLite rewrite the foreign-key reference in `messages` to point at the temp table,
+// which then breaks every INSERT into messages. We also repair any DB already damaged
+// that way by rebuilding messages with a correct FK.
 {
-  const agentCol = db.prepare("PRAGMA table_info(leads)").all().find((c) => c.name === 'agent_id')
-  if (agentCol && agentCol.notnull === 1) {
+  const tableSql = (name) =>
+    db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(name)?.sql || ''
+  const agentCol = db.prepare('PRAGMA table_info(leads)').all().find((c) => c.name === 'agent_id')
+  const leadsNeedsRebuild = agentCol && agentCol.notnull === 1
+  const messagesBroken = /leads_old/.test(tableSql('messages'))
+
+  if (leadsNeedsRebuild || messagesBroken) {
+    // FK enforcement (on by default in node:sqlite) and reference-rewriting must both be
+    // off while we swap tables; must be set outside the transaction to take effect.
+    db.exec('PRAGMA foreign_keys = OFF')
+    db.exec('PRAGMA legacy_alter_table = ON')
     db.exec('BEGIN')
     try {
-      db.exec('ALTER TABLE leads RENAME TO leads_old')
-      db.exec(`
-        CREATE TABLE leads (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          agent_id INTEGER REFERENCES agents(id),
-          wa_id TEXT NOT NULL,
-          name TEXT,
-          phone TEXT,
-          source TEXT DEFAULT 'WhatsApp',
-          temp TEXT DEFAULT 'Cold',
-          score INTEGER DEFAULT 0,
-          config TEXT,
-          config_note TEXT,
-          locality TEXT,
-          location_note TEXT,
-          budget_min_l REAL,
-          budget_max_l REAL,
-          budget_note TEXT,
-          timeline TEXT,
-          timeline_note TEXT,
-          ai_summary TEXT,
-          next_step TEXT,
-          score_breakdown TEXT,
-          ai_enabled INTEGER DEFAULT 1,
-          first_response_s REAL,
-          created_at TEXT DEFAULT (datetime('now')),
-          updated_at TEXT DEFAULT (datetime('now')),
-          UNIQUE(agent_id, wa_id)
-        )`)
-      db.exec('INSERT INTO leads SELECT * FROM leads_old')
-      db.exec('DROP TABLE leads_old')
+      if (leadsNeedsRebuild) {
+        db.exec(`
+          CREATE TABLE leads_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_id INTEGER REFERENCES agents(id),
+            wa_id TEXT NOT NULL,
+            name TEXT,
+            phone TEXT,
+            source TEXT DEFAULT 'WhatsApp',
+            temp TEXT DEFAULT 'Cold',
+            score INTEGER DEFAULT 0,
+            config TEXT,
+            config_note TEXT,
+            locality TEXT,
+            location_note TEXT,
+            budget_min_l REAL,
+            budget_max_l REAL,
+            budget_note TEXT,
+            timeline TEXT,
+            timeline_note TEXT,
+            ai_summary TEXT,
+            next_step TEXT,
+            score_breakdown TEXT,
+            ai_enabled INTEGER DEFAULT 1,
+            first_response_s REAL,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(agent_id, wa_id)
+          )`)
+        db.exec('INSERT INTO leads_new SELECT * FROM leads')
+        db.exec('DROP TABLE leads')
+        db.exec('ALTER TABLE leads_new RENAME TO leads')
+        db.exec('CREATE INDEX IF NOT EXISTS idx_leads_agent ON leads(agent_id, updated_at)')
+      }
+      if (messagesBroken) {
+        db.exec(`
+          CREATE TABLE messages_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lead_id INTEGER NOT NULL REFERENCES leads(id),
+            role TEXT NOT NULL CHECK (role IN ('buyer','ai','agent')),
+            text TEXT NOT NULL,
+            wa_message_id TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+          )`)
+        db.exec('INSERT INTO messages_new SELECT * FROM messages')
+        db.exec('DROP TABLE messages')
+        db.exec('ALTER TABLE messages_new RENAME TO messages')
+        db.exec('CREATE INDEX IF NOT EXISTS idx_messages_lead ON messages(lead_id, id)')
+      }
       db.exec('COMMIT')
-      db.exec('CREATE INDEX IF NOT EXISTS idx_leads_agent ON leads(agent_id, updated_at)')
-      console.log('migrated leads.agent_id → nullable (unassigned pool enabled)')
+      console.log('migrated schema for shared-number model (leads nullable / messages FK repaired)')
     } catch (err) {
       db.exec('ROLLBACK')
       throw err
+    } finally {
+      db.exec('PRAGMA legacy_alter_table = OFF')
+      db.exec('PRAGMA foreign_keys = ON')
     }
   }
 }
