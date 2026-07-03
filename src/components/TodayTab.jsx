@@ -1,82 +1,132 @@
-import { SUGGESTIONS, ACTIVITY } from '../data.js'
-
-const KPIS = [
-  { label: 'New leads today', value: '7', accent: false },
-  { label: 'Hot right now', value: '2', accent: true },
-  { label: 'Site visits weekend', value: '4', accent: false },
-  { label: 'Pipeline value', value: '₹6.8 Cr', accent: false },
-]
+import { api, usePoll, fmtAgo } from '../api.js'
 
 const DOT = {
   hot: 'bg-hot',
   ai: 'bg-brand',
-  calendar: 'bg-amber',
-  network: 'bg-gold',
+  agent: 'bg-amber',
   lead: 'bg-ink-faint',
+  error: 'bg-hot',
+  msg: 'bg-ink-faint',
 }
 
-export default function TodayTab({ onGoTo }) {
+function greeting() {
+  const h = new Date().getHours()
+  if (h < 12) return 'Good morning'
+  if (h < 17) return 'Good afternoon'
+  return 'Good evening'
+}
+
+export default function TodayTab({ onGoTo, onOpenConversation }) {
+  const { data: stats } = usePoll(api.stats, 6000)
+  const { data: leads } = usePoll(api.leads, 6000)
+  const { data: activity } = usePoll(api.activity, 6000)
+
+  const kpis = stats && [
+    { label: 'New leads today', value: String(stats.newToday), accent: false },
+    { label: 'Hot right now', value: String(stats.hotNow), accent: stats.hotNow > 0 },
+    { label: 'Messages today', value: String(stats.msgsToday), accent: false },
+    {
+      label: 'Pipeline value',
+      value: stats.pipelineCr >= 1 ? `₹${stats.pipelineCr.toFixed(1)} Cr` : `₹${Math.round(stats.pipelineCr * 100)} L`,
+      accent: false,
+    },
+  ]
+
+  // Real attention queue: hot leads, and any lead whose last message is an unanswered buyer message.
+  const attention = (leads || [])
+    .filter((l) => l.temp === 'Hot' || l.last_role === 'buyer')
+    .slice(0, 3)
+
+  const empty = leads && leads.length === 0
+
   return (
     <div className="px-5 pt-7">
       <header className="rise">
         <p className="text-[11px] font-bold tracking-[0.18em] text-ink-faint uppercase">
-          Thursday, 3 July · Pune
+          {new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })} · Pune
         </p>
         <h1 className="font-display text-[30px] font-semibold text-ink mt-1 leading-tight">
-          Good evening, Rajesh
+          {greeting()}, Rajesh
         </h1>
-        <p className="text-[13.5px] text-ink-soft mt-1.5 leading-snug">
-          HomeNex handled <strong className="text-brand-deep">7 conversations</strong> while you
-          were at site visits today
-        </p>
+        {stats && (
+          <p className="text-[13.5px] text-ink-soft mt-1.5 leading-snug">
+            {stats.total === 0 ? (
+              <>HomeNex is live and waiting for your first WhatsApp lead</>
+            ) : (
+              <>
+                HomeNex is working{' '}
+                <strong className="text-brand-deep">{stats.active24h} active conversation{stats.active24h === 1 ? '' : 's'}</strong>{' '}
+                for you
+              </>
+            )}
+          </p>
+        )}
       </header>
 
-      <div className="grid grid-cols-2 gap-2.5 mt-5">
-        {KPIS.map((k, i) => (
-          <div
-            key={k.label}
-            className={`rounded-2xl px-4 py-3.5 shadow-card border rise rise-${i + 1} ${
-              k.accent
-                ? 'bg-amber-wash border-amber/30'
-                : 'bg-card border-line'
-            }`}
-          >
-            <p className={`font-display text-[26px] font-bold leading-none ${k.accent ? 'text-hot' : 'text-ink'}`}>
-              {k.value}
-              {k.accent && <span className="text-[15px] ml-1">🔥</span>}
-            </p>
-            <p className="text-[11.5px] font-semibold text-ink-soft mt-1.5">{k.label}</p>
-          </div>
-        ))}
-      </div>
-
-      <section className="mt-7 rise rise-3">
-        <p className="text-[11px] font-bold tracking-[0.18em] text-brand">
-          HOMENEX SUGGESTS <span className="text-ink-faint font-semibold tracking-normal">— Needs your attention</span>
-        </p>
-        <div className="space-y-2.5 mt-3">
-          {SUGGESTIONS.map((s) => (
-            <div key={s.title} className="bg-card rounded-2xl border border-line shadow-card px-4 py-4">
-              <div className="flex items-start gap-3">
-                <span className="text-[20px] leading-none mt-0.5">{s.icon}</span>
-                <div className="min-w-0">
-                  <p className="font-bold text-[14px] text-ink leading-snug">{s.title}</p>
-                  <p className="text-[12.5px] text-ink-soft leading-snug mt-1">{s.body}</p>
-                  <button
-                    className={`mt-2.5 text-[12.5px] font-bold rounded-full px-3.5 py-1.5 transition active:scale-95 ${
-                      s.urgent
-                        ? 'bg-brand text-white'
-                        : 'bg-brand-wash text-brand-deep'
-                    }`}
-                  >
-                    {s.cta} →
-                  </button>
-                </div>
-              </div>
+      {kpis && (
+        <div className="grid grid-cols-2 gap-2.5 mt-5">
+          {kpis.map((k, i) => (
+            <div
+              key={k.label}
+              className={`rounded-2xl px-4 py-3.5 shadow-card border rise rise-${i + 1} ${
+                k.accent ? 'bg-amber-wash border-amber/30' : 'bg-card border-line'
+              }`}
+            >
+              <p className={`font-display text-[26px] font-bold leading-none ${k.accent ? 'text-hot' : 'text-ink'}`}>
+                {k.value}
+                {k.accent && <span className="text-[15px] ml-1">🔥</span>}
+              </p>
+              <p className="text-[11.5px] font-semibold text-ink-soft mt-1.5">{k.label}</p>
             </div>
           ))}
         </div>
-      </section>
+      )}
+
+      {empty && (
+        <div className="mt-6 bg-card rounded-2xl border border-line shadow-card p-5 rise rise-2">
+          <p className="text-[11px] font-bold tracking-[0.18em] text-brand mb-2">GO LIVE</p>
+          <p className="font-bold text-[15px] text-ink">Connect your WhatsApp Business number</p>
+          <ol className="text-[12.5px] text-ink-soft leading-relaxed mt-2 list-decimal ml-4 space-y-1">
+            <li>Fill <code className="bg-cream px-1 rounded">server/.env</code> with your Meta + OpenRouter keys</li>
+            <li>Point the Meta webhook at <code className="bg-cream px-1 rounded">https://your-host/webhook</code></li>
+            <li>Message your business number — the lead appears here, qualified by AI</li>
+          </ol>
+        </div>
+      )}
+
+      {attention.length > 0 && (
+        <section className="mt-7 rise rise-3">
+          <p className="text-[11px] font-bold tracking-[0.18em] text-brand">
+            NEEDS YOUR ATTENTION
+          </p>
+          <div className="space-y-2.5 mt-3">
+            {attention.map((l) => (
+              <div key={l.id} className="bg-card rounded-2xl border border-line shadow-card px-4 py-4">
+                <div className="flex items-start gap-3">
+                  <span className="text-[20px] leading-none mt-0.5">{l.temp === 'Hot' ? '🔥' : '💬'}</span>
+                  <div className="min-w-0 flex-1">
+                    <p className="font-bold text-[14px] text-ink leading-snug">
+                      {l.name || l.wa_id}
+                      {l.temp === 'Hot' && <span className="text-hot"> · Hot ({l.score})</span>}
+                    </p>
+                    <p className="text-[12.5px] text-ink-soft leading-snug mt-1">
+                      {l.last_role === 'buyer' ? 'Waiting on a reply: ' : 'Last: '}
+                      “{(l.last_msg || '').slice(0, 90)}{(l.last_msg || '').length > 90 ? '…' : ''}”
+                      {l.next_step ? ` — ${l.next_step}` : ''}
+                    </p>
+                    <button
+                      onClick={() => onOpenConversation(l.id)}
+                      className="mt-2.5 text-[12.5px] font-bold rounded-full px-3.5 py-1.5 transition active:scale-95 bg-brand text-white"
+                    >
+                      Act now →
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       <button
         onClick={() => onGoTo('network')}
@@ -85,35 +135,39 @@ export default function TodayTab({ onGoTo }) {
         <div className="flex items-center gap-3">
           <span className="text-[22px]">🤝</span>
           <div className="min-w-0 flex-1">
-            <p className="text-white font-bold text-[14px]">Co-broke match found on the network</p>
+            <p className="text-white font-bold text-[14px]">Co-broking network</p>
             <p className="text-white/80 text-[12.5px] leading-snug mt-0.5">
-              Your buyer Vikram ↔ Meera Joshi's exclusive Koregaon Park villa. 94% match.
+              Match your buyers with other brokers' inventory — 50:50 split.
             </p>
           </div>
           <span className="text-white/90 text-lg">→</span>
         </div>
       </button>
 
-      <section className="mt-7 rise rise-5">
-        <div className="flex items-center gap-2">
-          <span className="relative flex h-2 w-2">
-            <span className="absolute inline-flex h-full w-full rounded-full bg-hot opacity-60 pulse-dot" />
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-hot" />
-          </span>
-          <p className="text-[11px] font-bold tracking-[0.18em] text-ink">
-            LIVE <span className="text-ink-faint font-semibold tracking-normal">Activity</span>
-          </p>
-        </div>
-        <div className="mt-3 bg-card rounded-2xl border border-line shadow-card divide-y divide-line">
-          {ACTIVITY.map((a, i) => (
-            <div key={i} className="flex items-start gap-3 px-4 py-3">
-              <span className={`shrink-0 w-1.5 h-1.5 rounded-full mt-[7px] ${DOT[a.type]}`} />
-              <p className="text-[12.5px] text-ink leading-snug flex-1">{a.text}</p>
-              <span className="shrink-0 text-[11px] text-ink-faint font-medium tabular-nums">{a.time}</span>
-            </div>
-          ))}
-        </div>
-      </section>
+      {activity && activity.length > 0 && (
+        <section className="mt-7 rise rise-5">
+          <div className="flex items-center gap-2">
+            <span className="relative flex h-2 w-2">
+              <span className="absolute inline-flex h-full w-full rounded-full bg-hot opacity-60 pulse-dot" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-hot" />
+            </span>
+            <p className="text-[11px] font-bold tracking-[0.18em] text-ink">
+              LIVE <span className="text-ink-faint font-semibold tracking-normal">Activity</span>
+            </p>
+          </div>
+          <div className="mt-3 bg-card rounded-2xl border border-line shadow-card divide-y divide-line">
+            {activity.map((a) => (
+              <div key={a.id} className="flex items-start gap-3 px-4 py-3">
+                <span className={`shrink-0 w-1.5 h-1.5 rounded-full mt-[7px] ${DOT[a.kind] || 'bg-ink-faint'}`} />
+                <p className="text-[12.5px] text-ink leading-snug flex-1">{a.text}</p>
+                <span className="shrink-0 text-[11px] text-ink-faint font-medium tabular-nums">
+                  {fmtAgo(a.created_at)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   )
 }

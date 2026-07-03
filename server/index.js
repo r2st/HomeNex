@@ -1,20 +1,32 @@
 import 'dotenv/config'
 import express from 'express'
 import crypto from 'node:crypto'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import {
+  upsertLead,
+  getLead,
+  addMessage,
+  getMessages,
+  recordFirstResponse,
+  applyExtraction,
+  logActivity,
+  listLeads,
+  listActivity,
+  setAiEnabled,
+  listNetworkPosts,
+  addNetworkPost,
+  computeMatches,
+  stats,
+} from './db.js'
+import { generateReply, extractLead, aiConfigured } from './ai.js'
+import { sendText, markRead, whatsappConfigured } from './whatsapp.js'
 
-const {
-  PORT = 8787,
-  WHATSAPP_VERIFY_TOKEN = 'homenex-verify',
-  WHATSAPP_APP_SECRET,
-  WHATSAPP_ACCESS_TOKEN,
-  WHATSAPP_PHONE_NUMBER_ID,
-  OPENROUTER_API_KEY,
-  OPENROUTER_MODEL = 'meta-llama/llama-3.3-70b-instruct:free',
-} = process.env
+const { PORT = 8787, WHATSAPP_VERIFY_TOKEN = 'homenex-verify', WHATSAPP_APP_SECRET } = process.env
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
 
-// Keep the raw body so we can verify Meta's signature.
 app.use(
   express.json({
     verify: (req, _res, buf) => {
@@ -23,27 +35,8 @@ app.use(
   }),
 )
 
-// In-memory conversation store: wa_id -> { name, messages: [{role, text, at}] }
-const conversations = new Map()
-
-const SYSTEM_PROMPT = `You are HomeNex AI, the WhatsApp assistant for Rajesh Kumar of Kumar Realty, a real estate broker in Pune, India.
-
-Your job is to qualify property buyers conversationally using the BLTC framework:
-- Budget (in ₹ Lakhs/Crores; ask about loan status — pre-approved, sanctioned, or not applied)
-- Location (Pune localities: Wakad, Kharadi, Baner, Balewadi, Hinjewadi, Koregaon Park, Kalyani Nagar, etc.)
-- Timeline (when do they want to move in / register)
-- Configuration (1/2/3/4 BHK, carpet area, ready vs under-construction)
-
-Rules:
-- Be warm, concise and professional. One question at a time. Use occasional emojis like a good Indian broker's assistant would.
-- Quote prices in ₹ Lakhs (L) and Crores (Cr). Mention RERA registration when discussing projects.
-- Once you have all four BLTC data points, offer a site visit slot (weekends work best) and tell them Rajesh will call to confirm.
-- If asked something you don't know (exact legal/loan specifics), say Rajesh will confirm personally.
-- Never invent a specific flat you were not told about; speak in realistic ranges for the locality instead.
-- Keep replies under 120 words. This is WhatsApp.`
-
 function verifySignature(req) {
-  if (!WHATSAPP_APP_SECRET) return true // demo mode: accept unsigned
+  if (!WHATSAPP_APP_SECRET) return true // signature check requires the app secret
   const sig = req.get('x-hub-signature-256')
   if (!sig || !req.rawBody) return false
   const expected =
@@ -55,141 +48,160 @@ function verifySignature(req) {
   }
 }
 
-async function askAI(waId) {
-  const convo = conversations.get(waId)
-  const history = convo.messages.slice(-20).map((m) => ({
-    role: m.role === 'buyer' ? 'user' : 'assistant',
-    content: m.text,
-  }))
+// Core pipeline: a real inbound buyer message -> persist -> AI reply -> WhatsApp send -> extract BLTC.
+async function handleInbound({ waId, name, text, source = 'WhatsApp', send = true }) {
+  const lead = upsertLead(waId, name)
+  const isNewLead = !lead.ai_summary && getMessages(lead.id, 1).length === 0
+  addMessage(lead.id, 'buyer', text)
+  if (isNewLead) logActivity(lead.id, 'lead', `New lead: ${name || waId} via ${source}`)
 
-  if (!OPENROUTER_API_KEY) {
-    return "Thanks for reaching out! Rajesh will get back to you shortly. (HomeNex demo mode — set OPENROUTER_API_KEY for AI replies.)"
+  let reply = null
+  if (lead.ai_enabled) {
+    reply = await generateReply(getMessages(lead.id))
+    if (reply) {
+      let waMsgId = null
+      if (send) {
+        try {
+          waMsgId = await sendText(waId, reply)
+        } catch (err) {
+          console.error(err.message)
+          logActivity(lead.id, 'error', `WhatsApp send failed for ${name || waId}`)
+        }
+      }
+      addMessage(lead.id, 'ai', reply, waMsgId)
+      recordFirstResponse(lead.id)
+    }
   }
 
-  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-      'Content-Type': 'application/json',
-      'X-Title': 'HomeNex',
-    },
-    body: JSON.stringify({
-      model: OPENROUTER_MODEL,
-      messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...history],
-      max_tokens: 300,
-      temperature: 0.7,
-    }),
-  })
-
-  if (!res.ok) {
-    console.error('OpenRouter error', res.status, await res.text())
-    return 'Thanks for your message! Rajesh will reply personally very soon. 🙏'
+  // Best-effort structured extraction after every buyer message.
+  try {
+    const prevTemp = lead.temp
+    const x = await extractLead(getMessages(lead.id))
+    if (x) {
+      applyExtraction(lead.id, x)
+      const updated = getLead(lead.id)
+      if (updated.temp === 'Hot' && prevTemp !== 'Hot')
+        logActivity(lead.id, 'hot', `${updated.name || waId} is now HOT (score ${updated.score})`)
+      else if (x.score != null)
+        logActivity(lead.id, 'ai', `${updated.name || waId} re-scored: ${updated.score}/100`)
+    }
+  } catch (err) {
+    console.error('extraction failed', err)
   }
-  const data = await res.json()
-  return data.choices?.[0]?.message?.content?.trim() || 'Rajesh will reply shortly. 🙏'
-}
 
-async function sendWhatsApp(to, text) {
-  if (!WHATSAPP_ACCESS_TOKEN || !WHATSAPP_PHONE_NUMBER_ID) {
-    console.log(`[demo mode] would send to ${to}:`, text)
-    return
-  }
-  const res = await fetch(
-    `https://graph.facebook.com/v21.0/${WHATSAPP_PHONE_NUMBER_ID}/messages`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        messaging_product: 'whatsapp',
-        to,
-        type: 'text',
-        text: { body: text },
-      }),
-    },
-  )
-  if (!res.ok) console.error('WhatsApp send error', res.status, await res.text())
+  return { lead: getLead(lead.id), reply }
 }
 
 // --- Meta webhook verification (GET) ---
 app.get('/webhook', (req, res) => {
-  const mode = req.query['hub.mode']
-  const token = req.query['hub.verify_token']
-  const challenge = req.query['hub.challenge']
-  if (mode === 'subscribe' && token === WHATSAPP_VERIFY_TOKEN) {
-    return res.status(200).send(challenge)
+  if (
+    req.query['hub.mode'] === 'subscribe' &&
+    req.query['hub.verify_token'] === WHATSAPP_VERIFY_TOKEN
+  ) {
+    return res.status(200).send(req.query['hub.challenge'])
   }
   res.sendStatus(403)
 })
 
-// --- Incoming WhatsApp messages (POST) ---
-app.post('/webhook', async (req, res) => {
+// --- Real incoming WhatsApp messages (POST) ---
+app.post('/webhook', (req, res) => {
   if (!verifySignature(req)) return res.sendStatus(401)
   res.sendStatus(200) // ack fast; Meta retries on timeout
 
-  try {
-    const entries = req.body?.entry ?? []
-    for (const entry of entries) {
+  ;(async () => {
+    for (const entry of req.body?.entry ?? []) {
       for (const change of entry.changes ?? []) {
         const value = change.value
         const contactName = value?.contacts?.[0]?.profile?.name
         for (const msg of value?.messages ?? []) {
           if (msg.type !== 'text') continue
-          const waId = msg.from
-          const text = msg.text.body
-
-          if (!conversations.has(waId)) {
-            conversations.set(waId, { name: contactName || waId, messages: [] })
-          }
-          const convo = conversations.get(waId)
-          convo.messages.push({ role: 'buyer', text, at: Date.now() })
-
-          const reply = await askAI(waId)
-          convo.messages.push({ role: 'ai', text: reply, at: Date.now() })
-          await sendWhatsApp(waId, reply)
+          markRead(msg.id)
+          await handleInbound({ waId: msg.from, name: contactName, text: msg.text.body })
         }
       }
     }
+  })().catch((err) => console.error('webhook processing error', err))
+})
+
+// --- Dashboard API (real data from SQLite) ---
+app.get('/api/leads', (_req, res) => res.json(listLeads()))
+
+app.get('/api/leads/:id', (req, res) => {
+  const lead = getLead(req.params.id)
+  if (!lead) return res.status(404).json({ error: 'not found' })
+  res.json({ ...lead, messages: getMessages(lead.id) })
+})
+
+// Agent takes over / hands back to AI.
+app.post('/api/leads/:id/ai', (req, res) => {
+  const lead = getLead(req.params.id)
+  if (!lead) return res.status(404).json({ error: 'not found' })
+  setAiEnabled(lead.id, Boolean(req.body?.enabled))
+  logActivity(
+    lead.id,
+    'agent',
+    req.body?.enabled
+      ? `AI re-enabled for ${lead.name || lead.wa_id}`
+      : `Rajesh took over the chat with ${lead.name || lead.wa_id}`,
+  )
+  res.json(getLead(lead.id))
+})
+
+// Agent sends a real WhatsApp message from the dashboard.
+app.post('/api/leads/:id/reply', async (req, res) => {
+  const lead = getLead(req.params.id)
+  if (!lead) return res.status(404).json({ error: 'not found' })
+  const text = (req.body?.text || '').trim()
+  if (!text) return res.status(400).json({ error: 'text required' })
+  try {
+    const waMsgId = await sendText(lead.wa_id, text)
+    const msg = addMessage(lead.id, 'agent', text, waMsgId)
+    recordFirstResponse(lead.id)
+    res.json(msg)
   } catch (err) {
-    console.error('webhook processing error', err)
+    res.status(err.code === 'WA_NOT_CONFIGURED' ? 503 : 502).json({ error: err.message })
   }
 })
 
-// --- API for the HomeNex frontend ---
-app.get('/api/conversations', (_req, res) => {
-  res.json(
-    [...conversations.entries()].map(([waId, c]) => ({
-      waId,
-      name: c.name,
-      messages: c.messages,
-    })),
-  )
+app.get('/api/stats', (_req, res) => res.json(stats()))
+app.get('/api/activity', (_req, res) => res.json(listActivity()))
+
+app.get('/api/network', (_req, res) =>
+  res.json({ posts: listNetworkPosts(), matches: computeMatches() }),
+)
+app.post('/api/network', (req, res) => {
+  const p = req.body ?? {}
+  if (!p.type || !p.broker || !p.text) return res.status(400).json({ error: 'type, broker, text required' })
+  if (!['INVENTORY', 'REQUIREMENT'].includes(p.type)) return res.status(400).json({ error: 'bad type' })
+  res.json(addNetworkPost(p))
 })
 
-// Local testing without Meta: simulate an inbound buyer message.
+// Dev/test endpoint: pushes a message through the SAME real pipeline (DB + AI),
+// without an outbound WhatsApp send. Useful before the Meta webhook is wired up.
 app.post('/api/simulate', async (req, res) => {
-  const { from = 'demo-buyer', name = 'Demo Buyer', text } = req.body ?? {}
+  const { from = 'test-' + Date.now(), name = 'Test Buyer', text, source = 'Test' } = req.body ?? {}
   if (!text) return res.status(400).json({ error: 'text required' })
-  if (!conversations.has(from)) conversations.set(from, { name, messages: [] })
-  const convo = conversations.get(from)
-  convo.messages.push({ role: 'buyer', text, at: Date.now() })
-  const reply = await askAI(from)
-  convo.messages.push({ role: 'ai', text: reply, at: Date.now() })
-  res.json({ reply })
+  const result = await handleInbound({ waId: String(from), name, text, source, send: false })
+  res.json(result)
 })
 
-app.get('/health', (_req, res) =>
+app.get('/api/health', (_req, res) =>
   res.json({
     ok: true,
-    whatsapp: Boolean(WHATSAPP_ACCESS_TOKEN && WHATSAPP_PHONE_NUMBER_ID),
-    ai: Boolean(OPENROUTER_API_KEY),
+    whatsapp: whatsappConfigured(),
+    ai: aiConfigured(),
+    signature: Boolean(WHATSAPP_APP_SECRET),
   }),
 )
 
+// Serve the built dashboard so one process hosts everything in production.
+const dist = path.join(__dirname, '..', 'dist')
+app.use(express.static(dist))
+app.get(/^\/(?!api|webhook).*/, (_req, res) => res.sendFile(path.join(dist, 'index.html')))
+
 app.listen(PORT, () => {
   console.log(`HomeNex server on :${PORT}`)
-  if (!WHATSAPP_ACCESS_TOKEN) console.log('⚠ WhatsApp credentials missing — running in demo mode')
-  if (!OPENROUTER_API_KEY) console.log('⚠ OPENROUTER_API_KEY missing — canned replies only')
+  if (!whatsappConfigured()) console.log('⚠ WhatsApp credentials missing — dashboard works, sends disabled')
+  if (!aiConfigured()) console.log('⚠ OPENROUTER_API_KEY missing — AI replies/extraction disabled')
+  if (!WHATSAPP_APP_SECRET) console.log('⚠ WHATSAPP_APP_SECRET missing — webhook signature check disabled')
 })

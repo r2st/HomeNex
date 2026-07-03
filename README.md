@@ -4,28 +4,41 @@ AI-powered WhatsApp-native lead management for Indian real estate brokers.
 
 **Every lead answered in 30 seconds. Even at 2 AM.**
 
-## What's here
+Buyers only ever see WhatsApp. HomeNex is the broker's dashboard: every buyer who messages your
+WhatsApp Business number becomes a lead — answered by AI in seconds, BLTC-qualified
+(Budget · Location · Timeline · Configuration), scored, and handed to you when it matters.
 
-- **Frontend** (repo root) — mobile-first React demo app: dashboard, lead pipeline with BLTC scoring, a WhatsApp AI qualification simulation, a co-broking network exchange, and insights. Built with React + Vite + Tailwind CSS 4.
-- **Backend** (`server/`) — lean Express server: Meta WhatsApp Business webhook (verification + signature check), OpenRouter-powered AI replies with Pune real-estate context, WhatsApp Cloud API send, and a small API the frontend can read real conversations from.
+## Architecture
 
-## Run locally
+- **`server/`** — Node.js + Express, SQLite persistence (built-in `node:sqlite`, zero native deps).
+  - `POST /webhook` — real Meta WhatsApp Business webhook: verifies `X-Hub-Signature-256`,
+    stores the inbound message, generates an AI reply via OpenRouter, sends it back over the
+    WhatsApp Cloud API, then runs a structured BLTC extraction that scores the lead.
+  - Dashboard API: leads, conversations, live stats, activity, co-broking board — all read from SQLite.
+  - `POST /api/leads/:id/reply` — agent sends a real WhatsApp message from the dashboard.
+  - `POST /api/leads/:id/ai` — take over a chat from the AI / hand it back.
+  - Serves the built dashboard (`dist/`) so one process hosts everything.
+- **Root** — the broker dashboard (React + Vite + Tailwind 4): Today, Leads, Inbox, Network, Insights.
+  All tabs poll the real API; there is no mock data.
+
+## Run
 
 ```bash
-# Frontend
-npm install
-npm run dev          # http://localhost:5173
-
-# Backend
+# 1. Backend (needs Node 24+ for built-in SQLite)
 cd server
 npm install
-cp .env.example .env # fill in your tokens
-npm run dev          # http://localhost:8787
+cp .env.example .env   # fill in real tokens (see below)
+npm run dev            # http://localhost:8787
+
+# 2. Dashboard (dev)
+npm install
+npm run dev            # http://localhost:5173, proxies /api to :8787
+
+# Production: build once, then the backend serves everything
+npm run build && npm run server
 ```
 
-The Vite dev server proxies `/api/*` to the backend.
-
-### Backend env vars (`server/.env`)
+### `server/.env`
 
 | Var | Purpose |
 | --- | --- |
@@ -33,28 +46,29 @@ The Vite dev server proxies `/api/*` to the backend.
 | `WHATSAPP_APP_SECRET` | Verifies `X-Hub-Signature-256` on incoming webhooks |
 | `WHATSAPP_ACCESS_TOKEN` | Sends replies via the WhatsApp Cloud API |
 | `WHATSAPP_PHONE_NUMBER_ID` | The business phone number that sends replies |
-| `OPENROUTER_API_KEY` | AI replies (free models) via OpenRouter |
+| `OPENROUTER_API_KEY` | AI replies + BLTC extraction/scoring via OpenRouter |
 | `OPENROUTER_MODEL` | Defaults to `meta-llama/llama-3.3-70b-instruct:free` |
 
-Missing credentials degrade gracefully: without WhatsApp tokens the server logs outbound messages instead of sending; without an OpenRouter key it sends a canned reply.
+Missing credentials fail loudly: the dashboard shows a setup banner, sends return errors,
+and AI replies are skipped. Nothing is faked.
 
-Test the AI loop without Meta:
+### Go live with Meta
+
+1. Host the server on a public HTTPS URL (VPS + reverse proxy, or a tunnel while testing:
+   `cloudflared tunnel --url http://localhost:8787`).
+2. In your Meta app (WhatsApp → Configuration) set the webhook URL to
+   `https://<your-host>/webhook` with your `WHATSAPP_VERIFY_TOKEN`, and subscribe to `messages`.
+3. Message your business number from any phone: the lead appears in the dashboard, the AI
+   replies on WhatsApp, and the lead is scored after every message.
+
+### Test the pipeline before wiring Meta
 
 ```bash
 curl -X POST localhost:8787/api/simulate \
   -H 'content-type: application/json' \
-  -d '{"text":"Hi, looking for a 2BHK in Kharadi under 90 lakhs"}'
+  -d '{"from":"9198xxxxxx","name":"Test Buyer","text":"Looking for a 2BHK in Kharadi under 90 lakhs"}'
 ```
 
-### Wiring up Meta
-
-1. In your Meta app (WhatsApp > Configuration), set the webhook URL to `https://<your-host>/webhook` with your `WHATSAPP_VERIFY_TOKEN`.
-2. Subscribe to the `messages` field.
-3. Incoming buyer texts are qualified by the AI (BLTC: Budget, Location, Timeline, Configuration) and answered on WhatsApp automatically.
-
-## Deploy
-
-```bash
-npm run build
-npx wrangler pages deploy dist --project-name=homenex-demo
-```
+This pushes a message through the identical pipeline (SQLite + OpenRouter), skipping only the
+outbound WhatsApp send. The lead appears in the dashboard immediately. Delete `server/homenex.db*`
+to reset all data.

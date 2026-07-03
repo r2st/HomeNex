@@ -22,7 +22,7 @@ const TABS = [
       </svg>
     ),
   },
-  { id: 'chat', label: 'HomeNex AI', icon: null },
+  { id: 'inbox', label: 'Inbox', icon: null },
   {
     id: 'network',
     label: 'Network',
@@ -52,7 +52,7 @@ export default function BottomNav({ tab, setTab }) {
       <div className="grid grid-cols-5 items-end pb-[max(env(safe-area-inset-bottom),8px)] pt-2">
         {TABS.map((t) => {
           const active = tab === t.id
-          if (t.id === 'chat') {
+          if (t.id === 'inbox') {
             return (
               <button key={t.id} onClick={() => setTab(t.id)} className="flex flex-col items-center -mt-6">
                 <span
