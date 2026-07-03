@@ -1,6 +1,14 @@
 import { useEffect, useState } from 'react'
 
+const TOKEN_KEY = 'homenex-token'
+export const getToken = () => localStorage.getItem(TOKEN_KEY)
+export const setToken = (t) => (t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY))
+
 async function j(res) {
+  if (res.status === 401) {
+    setToken(null)
+    window.dispatchEvent(new Event('homenex-logout'))
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     throw new Error(body.error || `HTTP ${res.status}`)
@@ -8,20 +16,29 @@ async function j(res) {
   return res.json()
 }
 
+const authHeaders = () => {
+  const t = getToken()
+  return t ? { authorization: `Bearer ${t}` } : {}
+}
+
+const get = (url) => fetch(url, { headers: authHeaders() }).then(j)
 const post = (url, body) =>
   fetch(url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...authHeaders() },
     body: JSON.stringify(body),
   }).then(j)
 
 export const api = {
-  health: () => fetch('/api/health').then(j),
-  leads: () => fetch('/api/leads').then(j),
-  lead: (id) => fetch(`/api/leads/${id}`).then(j),
-  stats: () => fetch('/api/stats').then(j),
-  activity: () => fetch('/api/activity').then(j),
-  network: () => fetch('/api/network').then(j),
+  signup: (body) => post('/api/auth/signup', body),
+  login: (body) => post('/api/auth/login', body),
+  me: () => get('/api/auth/me'),
+  health: () => get('/api/health'),
+  leads: () => get('/api/leads'),
+  lead: (id) => get(`/api/leads/${id}`),
+  stats: () => get('/api/stats'),
+  activity: () => get('/api/activity'),
+  network: () => get('/api/network'),
   postNetwork: (body) => post('/api/network', body),
   reply: (id, text) => post(`/api/leads/${id}/reply`, { text }),
   setAi: (id, enabled) => post(`/api/leads/${id}/ai`, { enabled }),

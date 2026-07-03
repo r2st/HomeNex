@@ -18,9 +18,11 @@ import {
   addNetworkPost,
   computeMatches,
   stats,
+  firstAgentName,
 } from './db.js'
 import { generateReply, extractLead, aiConfigured } from './ai.js'
 import { sendText, markRead, whatsappConfigured } from './whatsapp.js'
+import { signup, login, requireAuth } from './auth.js'
 
 const { PORT = 8787, WHATSAPP_VERIFY_TOKEN = 'homenex-verify', WHATSAPP_APP_SECRET } = process.env
 
@@ -57,7 +59,7 @@ async function handleInbound({ waId, name, text, source = 'WhatsApp', send = tru
 
   let reply = null
   if (lead.ai_enabled) {
-    reply = await generateReply(getMessages(lead.id))
+    reply = await generateReply(getMessages(lead.id), firstAgentName())
     if (reply) {
       let waMsgId = null
       if (send) {
@@ -121,6 +123,31 @@ app.post('/webhook', (req, res) => {
       }
     }
   })().catch((err) => console.error('webhook processing error', err))
+})
+
+// --- Auth: one-screen signup (name, phone, email, password) and login ---
+app.post('/api/auth/signup', (req, res) => {
+  try {
+    res.json(signup(req.body ?? {}))
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+app.post('/api/auth/login', (req, res) => {
+  try {
+    res.json(login(req.body ?? {}))
+  } catch (err) {
+    res.status(401).json({ error: err.message })
+  }
+})
+
+app.get('/api/auth/me', requireAuth, (req, res) => res.json(req.agent))
+
+// Everything below requires a logged-in agent.
+app.use('/api', (req, res, next) => {
+  if (req.path === '/health') return next()
+  requireAuth(req, res, next)
 })
 
 // --- Dashboard API (real data from SQLite) ---

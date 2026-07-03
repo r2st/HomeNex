@@ -51,6 +51,20 @@ CREATE TABLE IF NOT EXISTS activity (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS agents (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  phone TEXT NOT NULL,
+  email TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS network_posts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   type TEXT NOT NULL CHECK (type IN ('INVENTORY','REQUIREMENT')),
@@ -64,6 +78,34 @@ CREATE TABLE IF NOT EXISTS network_posts (
   created_at TEXT DEFAULT (datetime('now'))
 );
 `)
+
+export function createAgent(name, phone, email, passwordHash) {
+  const info = db
+    .prepare('INSERT INTO agents (name, phone, email, password_hash) VALUES (?, ?, ?, ?)')
+    .run(name, phone, email.toLowerCase(), passwordHash)
+  return getAgent(info.lastInsertRowid)
+}
+
+export function getAgent(id) {
+  return db.prepare('SELECT id, name, phone, email, created_at FROM agents WHERE id = ?').get(id)
+}
+
+export function findAgentByEmail(email) {
+  return db.prepare('SELECT * FROM agents WHERE email = ?').get(email.toLowerCase())
+}
+
+export function firstAgentName() {
+  const row = db.prepare('SELECT name FROM agents ORDER BY id LIMIT 1').get()
+  return row?.name || null
+}
+
+export function getMeta(key) {
+  return db.prepare('SELECT value FROM meta WHERE key = ?').get(key)?.value
+}
+
+export function setMeta(key, value) {
+  db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value)
+}
 
 export function upsertLead(waId, name) {
   db.prepare(

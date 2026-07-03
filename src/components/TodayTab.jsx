@@ -16,7 +16,7 @@ function greeting() {
   return 'Good evening'
 }
 
-export default function TodayTab({ onGoTo, onOpenConversation }) {
+export default function TodayTab({ agent, onGoTo, onOpenConversation, onSignOut }) {
   const { data: stats } = usePoll(api.stats, 6000)
   const { data: leads } = usePoll(api.leads, 6000)
   const { data: activity } = usePoll(api.activity, 6000)
@@ -42,11 +42,16 @@ export default function TodayTab({ onGoTo, onOpenConversation }) {
   return (
     <div className="px-5 pt-7">
       <header className="rise">
-        <p className="text-[11px] font-bold tracking-[0.18em] text-ink-faint uppercase">
-          {new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })} · Pune
-        </p>
+        <div className="flex items-baseline justify-between gap-3">
+          <p className="text-[11px] font-bold tracking-[0.18em] text-ink-faint uppercase">
+            {new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })} · Pune
+          </p>
+          <button onClick={onSignOut} className="text-[11px] font-semibold text-ink-faint underline underline-offset-2">
+            Sign out
+          </button>
+        </div>
         <h1 className="font-display text-[30px] font-semibold text-ink mt-1 leading-tight">
-          {greeting()}, Rajesh
+          {greeting()}, {(agent?.name || '').split(/\s+/)[0] || 'there'}
         </h1>
         {stats && (
           <p className="text-[13.5px] text-ink-soft mt-1.5 leading-snug">

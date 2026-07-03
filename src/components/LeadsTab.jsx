@@ -95,7 +95,7 @@ function LeadDetail({ leadId, onClose, onOpenConversation }) {
           {lead.ai_summary && (
             <section className="bg-brand-wash rounded-2xl border border-brand/20 p-4">
               <p className="text-[10.5px] font-bold tracking-[0.18em] text-brand-deep mb-2">
-                ✨ HOMENEX SUMMARY FOR RAJESH
+                ✨ HOMENEX SUMMARY FOR YOU
               </p>
               <p className="text-[13px] text-ink leading-relaxed">{lead.ai_summary}</p>
               {lead.next_step && (
