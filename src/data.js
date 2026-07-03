@@ -1,0 +1,341 @@
+export const LEADS = [
+  {
+    id: 1,
+    name: 'Amit Deshmukh',
+    initials: 'AD',
+    source: '99acres',
+    time: '6:44 PM',
+    isNew: true,
+    temp: 'Hot',
+    score: 84,
+    config: '2 BHK',
+    locality: 'Wakad',
+    budget: '₹75 – 82 L',
+    timeline: '2–3 months',
+    phone: '+91 98220 41xxx',
+    bltc: {
+      budget: '₹75 – 82 L (home loan, pre-approved with HDFC)',
+      location: 'Wakad first choice; open to Hinjewadi Phase 1',
+      timeline: '2–3 months — current lease ends September',
+      config: '2 BHK, 750+ sq ft carpet, needs a study nook',
+    },
+    aiSummary:
+      'IT couple relocating from Bengaluru. Loan pre-approved, lease pressure means a real deadline. Asked twice about RERA possession dates — bring the Kolte-Patil and VTP documents to the visit. High intent: confirmed Saturday 11 AM site visit without hesitation.',
+    scoreBreakdown: [
+      { label: 'Loan pre-approved', value: 90 },
+      { label: 'Visit confirmed', value: 86 },
+      { label: 'Timeline (2–3 mo)', value: 82 },
+      { label: 'Budget clarity', value: 78 },
+    ],
+    transcript: [
+      { from: 'buyer', text: 'Hi, I saw your 2BHK listing in Wakad on 99acres. Is it still available?' },
+      { from: 'ai', text: 'Hi! Yes, the 2BHK at Kolte-Patil Life Republic is available — 780 sq ft carpet, ₹78 L. I\'m Rajesh\'s assistant at HomeNex. May I ask what budget range you\'re working with?' },
+      { from: 'buyer', text: 'Around 75 to 82 lakhs. Loan is pre-approved with HDFC.' },
+      { from: 'ai', text: 'Pre-approved — excellent, that speeds everything up. When are you hoping to move in?' },
+      { from: 'buyer', text: 'Our lease ends in September so 2-3 months max.' },
+    ],
+    nextStep: 'Site visit — Saturday 11:00 AM, Kolte-Patil Life Republic',
+  },
+  {
+    id: 2,
+    name: 'Priya Nair',
+    initials: 'PN',
+    source: 'MagicBricks',
+    time: '4:10 PM',
+    isNew: true,
+    temp: 'Hot',
+    score: 81,
+    config: '2 BHK',
+    locality: 'Kharadi',
+    budget: '₹85 – 95 L',
+    timeline: '1 month',
+    phone: '+91 99670 88xxx',
+    bltc: {
+      budget: '₹85 – 95 L (60% self-funded, rest loan sanctioned)',
+      location: 'Kharadi, near EON IT Park — walking distance preferred',
+      timeline: 'Within 1 month, wedding in November',
+      config: '2 BHK, ready possession only',
+    },
+    aiSummary:
+      'Getting married in November — hard deadline, ready-possession only. Works at EON IT Park, wants to walk to work. Sanctioned loan plus 60% self-funding means she can close fast. Show only RERA-complete inventory; she dropped an earlier broker who pitched under-construction.',
+    scoreBreakdown: [
+      { label: 'Loan sanctioned', value: 85 },
+      { label: 'Visit confirmed', value: 78 },
+      { label: 'Timeline (1 mo)', value: 92 },
+      { label: 'Budget clarity', value: 72 },
+    ],
+    transcript: [
+      { from: 'buyer', text: 'Hello, looking for a ready 2BHK near EON IT Park. Saw your MagicBricks listing.' },
+      { from: 'ai', text: 'Hi Priya! Great timing — we have two ready-possession 2BHKs in Kharadi within 1 km of EON. What budget are you considering?' },
+      { from: 'buyer', text: '85-95 lakhs. Need it fast, getting married in November.' },
+      { from: 'ai', text: 'Congratulations! 🎉 Ready possession within a month is very doable in that range. Would Sunday morning work for a visit to both?' },
+    ],
+    nextStep: 'Site visit — Sunday 10:30 AM, Gera World of Joy',
+  },
+  {
+    id: 3,
+    name: 'Vikram Singh Rathore',
+    initials: 'VR',
+    source: 'Website',
+    time: '1:32 PM',
+    isNew: true,
+    temp: 'Warm',
+    score: 66,
+    config: '4 BHK Villa',
+    locality: 'Koregaon Park',
+    budget: '₹3.5 – 4 Cr',
+    timeline: '6 months',
+    phone: '+91 98110 23xxx',
+    bltc: {
+      budget: '₹3.5 – 4 Cr (self-funded, NRI remittance)',
+      location: 'Koregaon Park or Kalyani Nagar — gated community',
+      timeline: '~6 months, moving back from Dubai next year',
+      config: '4 BHK villa or penthouse, 3,000+ sq ft',
+    },
+    aiSummary:
+      'NRI returning from Dubai. No urgency but serious money — self-funded. Wants video walkthroughs before flying down in August. Slow-burn lead: send one curated option a week, don\'t flood him.',
+    scoreBreakdown: [
+      { label: 'Self-funded', value: 85 },
+      { label: 'Visit confirmed', value: 40 },
+      { label: 'Timeline (6 mo)', value: 55 },
+      { label: 'Budget clarity', value: 90 },
+    ],
+    transcript: [
+      { from: 'buyer', text: 'Hi, I am looking for a premium villa in Koregaon Park area. Currently in Dubai.' },
+      { from: 'ai', text: 'Hello Vikram! Koregaon Park has some excellent gated villa communities. Since you\'re in Dubai, I can arrange detailed video walkthroughs. What size are you looking for?' },
+      { from: 'buyer', text: '4BHK minimum, 3000+ sqft. Budget up to 4 crore.' },
+    ],
+    nextStep: 'Send video walkthrough — Panchshil Villa, Thursday',
+  },
+  {
+    id: 4,
+    name: 'Sneha Kulkarni',
+    initials: 'SK',
+    source: 'Referral',
+    time: '11:05 AM',
+    isNew: false,
+    temp: 'Warm',
+    score: 58,
+    config: '2 BHK',
+    locality: 'Baner',
+    budget: '₹75 – 82 L',
+    timeline: '3–4 months',
+    phone: '+91 90040 67xxx',
+    bltc: {
+      budget: '₹75 – 82 L (loan application in progress)',
+      location: 'Baner or Balewadi, near good schools',
+      timeline: '3–4 months, before school admissions',
+      config: '2 BHK with kids\' room, higher floor',
+    },
+    aiSummary:
+      'Referred by the Joshi family (closed in March). School admissions are the real driver — anything zoned for Vibgyor or Orchid schools moves her. Loan still in process; nudge her bank contact this week or timeline slips.',
+    scoreBreakdown: [
+      { label: 'Loan in progress', value: 55 },
+      { label: 'Visit confirmed', value: 70 },
+      { label: 'Timeline (3–4 mo)', value: 65 },
+      { label: 'Budget clarity', value: 75 },
+    ],
+    transcript: [
+      { from: 'buyer', text: 'Hi, Mrs Joshi gave me this number. We\'re looking for a 2BHK in Baner.' },
+      { from: 'ai', text: 'Hello Sneha! The Joshis are lovely — glad they referred you. Baner has great options. Is school proximity a factor for you?' },
+      { from: 'buyer', text: 'Yes! Vibgyor or Orchid ideally. Budget around 75-82 lakhs.' },
+    ],
+    nextStep: 'Shortlist 3 school-zone options by Friday',
+  },
+  {
+    id: 5,
+    name: 'Rahul Bhosale',
+    initials: 'RB',
+    source: 'Housing.com',
+    time: 'Yesterday',
+    isNew: false,
+    temp: 'Cold',
+    score: 34,
+    config: '1 BHK',
+    locality: 'Hinjewadi',
+    budget: '₹45 – 50 L',
+    timeline: 'Exploring',
+    phone: '+91 88050 12xxx',
+    bltc: {
+      budget: '₹45 – 50 L (needs 90% loan, not yet applied)',
+      location: 'Hinjewadi Phase 2 or 3, near office',
+      timeline: 'Just exploring, maybe next year',
+      config: '1 BHK, investment + self-use',
+    },
+    aiSummary:
+      'First-time buyer, early research phase. No loan application, no visit interest yet. Parked in the nurture drip — HomeNex sends him one market update a fortnight. Re-engage when he asks about loans.',
+    scoreBreakdown: [
+      { label: 'Loan not applied', value: 20 },
+      { label: 'Visit interest', value: 25 },
+      { label: 'Timeline (>6 mo)', value: 30 },
+      { label: 'Budget clarity', value: 60 },
+    ],
+    transcript: [
+      { from: 'buyer', text: 'What is the price of 1BHK in Hinjewadi?' },
+      { from: 'ai', text: 'Hi! 1BHKs in Hinjewadi Phase 2–3 currently range ₹42–55 L depending on the project. Are you buying to stay or as an investment?' },
+      { from: 'buyer', text: 'Both maybe. Just checking prices for now.' },
+    ],
+    nextStep: 'Nurture drip — market update on 12 July',
+  },
+  {
+    id: 6,
+    name: 'Farhan & Zoya Shaikh',
+    initials: 'FZ',
+    source: '99acres',
+    time: 'Yesterday',
+    isNew: false,
+    temp: 'Warm',
+    score: 52,
+    config: '3 BHK',
+    locality: 'Baner',
+    budget: '₹1.3 – 1.4 Cr',
+    timeline: '4–5 months',
+    phone: '+91 97650 33xxx',
+    bltc: {
+      budget: '₹1.3 – 1.4 Cr (joint loan, eligibility being checked)',
+      location: 'Baner Pashan Link Road corridor',
+      timeline: '4–5 months, flexible',
+      config: '3 BHK with two balconies, west-facing avoided',
+    },
+    aiSummary:
+      'Double-income couple, specific about vastu (no west-facing). Joint loan eligibility check underway with SBI. They compare everything against a friend\'s purchase in Balewadi — anchor pricing carefully.',
+    scoreBreakdown: [
+      { label: 'Loan eligibility check', value: 50 },
+      { label: 'Visit confirmed', value: 60 },
+      { label: 'Timeline (4–5 mo)', value: 55 },
+      { label: 'Budget clarity', value: 70 },
+    ],
+    transcript: [
+      { from: 'buyer', text: 'Salaam, we saw the 3BHK on Baner Pashan Link Road. Is it east facing?' },
+      { from: 'ai', text: 'Hello! Yes — the tower has east and north-east facing units available. Two balconies as well. Would you like the floor plan?' },
+    ],
+    nextStep: 'Share SBI joint-loan checklist',
+  },
+]
+
+export const SUGGESTIONS = [
+  {
+    icon: '🔥',
+    title: 'Call Amit Deshmukh in the next hour',
+    body: 'Loan pre-approved, visit confirmed for Saturday. A 2-minute personal call now makes the visit stick. HomeNex drafted your talking points.',
+    cta: 'Act now',
+    urgent: true,
+  },
+  {
+    icon: '📋',
+    title: 'Priya Nair needs the RERA certificates',
+    body: 'She asked for completion certificates for both Kharadi options. HomeNex has them ready to send — one tap.',
+    cta: 'Act now',
+    urgent: true,
+  },
+  {
+    icon: '⏰',
+    title: 'Sneha Kulkarni\'s loan is stalling',
+    body: 'No movement in 6 days. Her timeline slips past school admissions if the bank doesn\'t move this week.',
+    cta: 'Act now',
+    urgent: false,
+  },
+]
+
+export const ACTIVITY = [
+  { time: '6:44 PM', text: 'New lead qualified: Amit Deshmukh (score 84) — 99acres, Wakad 2BHK', type: 'hot' },
+  { time: '6:42 PM', text: 'HomeNex replied to Amit in 38 seconds', type: 'ai' },
+  { time: '5:56 PM', text: 'Site visit confirmed: Priya Nair, Sunday 10:30 AM', type: 'calendar' },
+  { time: '4:10 PM', text: 'New lead qualified: Priya Nair (score 81) — MagicBricks, Kharadi 2BHK', type: 'hot' },
+  { time: '2:20 PM', text: 'Co-broke match found: your buyer Vikram ↔ Meera Joshi\'s KP villa listing', type: 'network' },
+  { time: '1:32 PM', text: 'New lead: Vikram Singh Rathore — website enquiry from Dubai', type: 'lead' },
+  { time: '11:05 AM', text: 'Referral lead: Sneha Kulkarni (via Joshi family)', type: 'lead' },
+  { time: '9:15 AM', text: 'Nurture drip sent to 12 cold leads — 3 opened, 1 replied', type: 'ai' },
+]
+
+export const NETWORK_MATCHES = [
+  {
+    id: 1,
+    yourBuyer: 'Vikram Singh Rathore',
+    yourNeed: '4 BHK villa · Koregaon Park · ₹3.5–4 Cr',
+    theirBroker: 'Meera Joshi',
+    theirFirm: 'Skyline Realty, KP',
+    theirInventory: 'Exclusive: Panchshil villa, 3,400 sq ft, ₹3.8 Cr',
+    matchPct: 94,
+    note: 'RERA-registered, ready possession. Meera closed 4 co-brokes on HomeNex.',
+  },
+  {
+    id: 2,
+    yourBuyer: 'Farhan & Zoya Shaikh',
+    yourNeed: '3 BHK · Baner-Pashan corridor · ₹1.3–1.4 Cr',
+    theirBroker: 'Anil Deshpande',
+    theirFirm: 'Pune Property Hub',
+    theirInventory: 'East-facing 3BHK, Sukhwani Empire, ₹1.35 Cr',
+    matchPct: 88,
+    note: 'Two balconies, north-east entrance — matches the vastu brief exactly.',
+  },
+]
+
+export const NETWORK_FEED = [
+  {
+    broker: 'Kavita Menon',
+    firm: 'Menon Estates',
+    time: '12 min ago',
+    type: 'INVENTORY',
+    text: 'Exclusive mandate: 2 units, 3BHK at VTP Bluewaters, Kharadi. ₹1.28 Cr. Possession Dec 2026. Open to 50:50 co-broke.',
+  },
+  {
+    broker: 'Suresh Patil',
+    firm: 'Patil & Sons Realty',
+    time: '43 min ago',
+    type: 'REQUIREMENT',
+    text: 'Buyer ready: NRI client, 2BHK investment in Hinjewadi Ph-1, up to ₹75 L, all-cash, closing in 3 weeks. Who has inventory?',
+  },
+  {
+    broker: 'Meera Joshi',
+    firm: 'Skyline Realty',
+    time: '1 hr ago',
+    type: 'INVENTORY',
+    text: 'Price drop: Koregaon Park Annexe penthouse now ₹2.9 Cr (was ₹3.2). Seller motivated, keys with me.',
+  },
+  {
+    broker: 'Anil Deshpande',
+    firm: 'Pune Property Hub',
+    time: '2 hrs ago',
+    type: 'REQUIREMENT',
+    text: 'Looking for ready 2BHK near EON IT Park under ₹90 L for a relocating techie. Fast closer, loan sanctioned.',
+  },
+]
+
+export const CHAT_SCRIPT = [
+  {
+    buyer: "Hi, I saw your 2BHK listing in Wakad on 99acres. Is it still available?",
+    ai: "Hi! 👋 Yes, the 2BHK at Kolte-Patil Life Republic is very much available — 780 sq ft carpet, ₹78 L, RERA-registered with possession in March 2027.\n\nI'm the AI assistant for Rajesh Kumar (Kumar Realty). He's at a site visit right now, but I can answer everything and lock in a visit for you. May I ask — what budget range are you working with?",
+  },
+  {
+    buyer: "Around 75 to 82 lakhs. My loan is pre-approved with HDFC.",
+    ai: "Pre-approved with HDFC — excellent! 🎯 That puts you in a strong position; sellers here take pre-approved buyers seriously.\n\nThe Life Republic unit fits your range at ₹78 L. There's also a 2BHK at VTP Pegasus, Kharadi for ₹80 L if you're open to the east side.\n\nWhen are you looking to move in?",
+  },
+  {
+    buyer: "Our lease ends in September, so within 2-3 months ideally. Wakad is our first choice — my wife's office is in Hinjewadi.",
+    ai: "That makes total sense — Wakad to Hinjewadi Phase 1 is a 15-minute commute even in peak traffic. 🚗\n\nSo to confirm: 2BHK, Wakad (Hinjewadi commute), ₹75–82 L, moving by September. The Life Republic unit ticks every box.\n\nWould you like to see it this weekend? Rajesh has Saturday 11 AM or Sunday 4 PM open.",
+  },
+  {
+    buyer: "Saturday 11 AM works. Can you also share the RERA details and floor plan?",
+    ai: "Done! 📅 Saturday, 5 July, 11:00 AM at Kolte-Patil Life Republic, Marunji Road, Wakad. Rajesh will meet you at the sales lounge.\n\n📄 RERA: P52100001234 (MahaRERA-registered)\n📐 Floor plan and payment schedule — sending as PDF next.\n\nI've shared your details with Rajesh; he'll call you before the visit. Anything else you'd like to know — loan transfer process, possession timeline, resale trends in Wakad?",
+  },
+  {
+    buyer: "That's all for now. Thanks, this was quick!",
+    ai: "You're welcome, Amit! 🙏 Quick recap on WhatsApp so you have it:\n\n✅ 2BHK · Life Republic, Wakad · ₹78 L\n✅ Site visit: Sat 5 July, 11 AM\n✅ RERA + floor plan: sent\n✅ Rajesh will call you tomorrow morning\n\nSee you Saturday! 🏡",
+  },
+]
+
+export const INSIGHT_WEEKS = [
+  { week: 'W1', before: 260, after: 52 },
+  { week: 'W2', before: 240, after: 45 },
+  { week: 'W3', before: 250, after: 41 },
+  { week: 'W4', before: 230, after: 38 },
+]
+
+export const LEAD_SOURCES = [
+  { name: '99acres', count: 34, pct: 38 },
+  { name: 'MagicBricks', count: 22, pct: 25 },
+  { name: 'Referrals', count: 14, pct: 16 },
+  { name: 'Housing.com', count: 11, pct: 12 },
+  { name: 'Website', count: 8, pct: 9 },
+]
