@@ -4,13 +4,15 @@ export const whatsappConfigured = () =>
   Boolean(process.env.WHATSAPP_ACCESS_TOKEN && process.env.WHATSAPP_PHONE_NUMBER_ID)
 
 // Sends a real text message via the WhatsApp Cloud API. Returns the wa message id.
-export async function sendText(to, text) {
+// phoneNumberId picks the sending business number (per-agent); falls back to the env default.
+export async function sendText(to, text, phoneNumberId) {
   if (!whatsappConfigured()) {
     const err = new Error('WhatsApp is not configured (set WHATSAPP_ACCESS_TOKEN and WHATSAPP_PHONE_NUMBER_ID)')
     err.code = 'WA_NOT_CONFIGURED'
     throw err
   }
-  const res = await fetch(`${GRAPH}/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`, {
+  const fromId = phoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID
+  const res = await fetch(`${GRAPH}/${fromId}/messages`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
@@ -32,9 +34,10 @@ export async function sendText(to, text) {
   return data.messages?.[0]?.id ?? null
 }
 
-export async function markRead(messageId) {
+export async function markRead(messageId, phoneNumberId) {
   if (!whatsappConfigured() || !messageId) return
-  await fetch(`${GRAPH}/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`, {
+  const fromId = phoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID
+  await fetch(`${GRAPH}/${fromId}/messages`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,

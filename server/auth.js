@@ -1,5 +1,13 @@
 import crypto from 'node:crypto'
-import { createAgent, findAgentByEmail, getAgent, getMeta, setMeta } from './db.js'
+import {
+  createAgent,
+  findAgentByEmail,
+  findAgentByPhone,
+  getAgent,
+  getMeta,
+  normalizePhone,
+  setMeta,
+} from './db.js'
 
 // Session secret: env override, else generated once and persisted so restarts keep sessions.
 const SECRET =
@@ -47,19 +55,25 @@ export function verifyToken(token) {
 export function signup({ name, phone, email, password }) {
   name = (name || '').trim()
   phone = (phone || '').trim()
-  email = (email || '').trim().toLowerCase()
-  if (!name || !phone || !email || !password) throw new Error('Name, phone, email and password are required')
-  if (!/^\S+@\S+\.\S+$/.test(email)) throw new Error('Enter a valid email address')
+  email = (email || '').trim().toLowerCase() // optional
+  if (!name || !phone || !password) throw new Error('Name, WhatsApp number and password are required')
+  // A valid WhatsApp number is at least 10 digits (Indian mobile) once normalized.
+  const digits = normalizePhone(phone).replace(/\D/g, '')
+  if (digits.length < 10) throw new Error('Enter a valid WhatsApp number')
+  if (email && !/^\S+@\S+\.\S+$/.test(email)) throw new Error('Enter a valid email address')
   if (password.length < 6) throw new Error('Password must be at least 6 characters')
-  if (findAgentByEmail(email)) throw new Error('An account with this email already exists — log in instead')
-  const agent = createAgent(name, phone, email, hashPassword(password))
+  if (findAgentByPhone(phone))
+    throw new Error('An account with this WhatsApp number already exists — log in instead')
+  if (email && findAgentByEmail(email)) throw new Error('An account with this email already exists — log in instead')
+  const agent = createAgent(name, phone, email || null, hashPassword(password))
   return { token: issueToken(agent.id), agent }
 }
 
-export function login({ email, password }) {
-  const row = findAgentByEmail((email || '').trim())
+export function login({ phone, email, password }) {
+  // Log in by WhatsApp number (email still accepted for older accounts).
+  const row = phone ? findAgentByPhone(phone) : findAgentByEmail((email || '').trim())
   if (!row || !verifyPassword(password || '', row.password_hash)) {
-    throw new Error('Wrong email or password')
+    throw new Error('Wrong WhatsApp number or password')
   }
   const agent = getAgent(row.id)
   return { token: issueToken(agent.id), agent }

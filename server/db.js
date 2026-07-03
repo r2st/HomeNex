@@ -9,7 +9,8 @@ db.exec('PRAGMA journal_mode = WAL')
 db.exec(`
 CREATE TABLE IF NOT EXISTS leads (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  wa_id TEXT UNIQUE NOT NULL,
+  agent_id INTEGER NOT NULL REFERENCES agents(id),
+  wa_id TEXT NOT NULL,
   name TEXT,
   phone TEXT,
   source TEXT DEFAULT 'WhatsApp',
@@ -30,8 +31,10 @@ CREATE TABLE IF NOT EXISTS leads (
   ai_enabled INTEGER DEFAULT 1,
   first_response_s REAL,
   created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now'))
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(agent_id, wa_id)
 );
+CREATE INDEX IF NOT EXISTS idx_leads_agent ON leads(agent_id, updated_at);
 
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,18 +48,21 @@ CREATE INDEX IF NOT EXISTS idx_messages_lead ON messages(lead_id, id);
 
 CREATE TABLE IF NOT EXISTS activity (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id INTEGER,
   lead_id INTEGER,
   kind TEXT NOT NULL,
   text TEXT NOT NULL,
   created_at TEXT DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_activity_agent ON activity(agent_id, id);
 
 CREATE TABLE IF NOT EXISTS agents (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
-  phone TEXT NOT NULL,
-  email TEXT UNIQUE NOT NULL,
+  phone TEXT UNIQUE NOT NULL,        -- WhatsApp number, canonical E.164 e.g. +919812345678
+  email TEXT,                        -- optional
   password_hash TEXT NOT NULL,
+  wa_phone_number_id TEXT,           -- Meta phone_number_id, learned from the first inbound webhook
   created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -79,24 +85,70 @@ CREATE TABLE IF NOT EXISTS network_posts (
 );
 `)
 
+// Canonical storage form for a WhatsApp number: leading "+" and digits only.
+// A bare 10-digit Indian number is assumed to be +91.
+export function normalizePhone(raw) {
+  let d = String(raw || '').replace(/[^\d+]/g, '')
+  if (d.startsWith('+')) d = '+' + d.slice(1).replace(/\D/g, '')
+  else {
+    d = d.replace(/\D/g, '')
+    if (d.length === 10) d = '91' + d // default Indian country code
+    d = '+' + d
+  }
+  return d
+}
+
+// Digits only, for loose comparison against Meta's display_phone_number (which has no "+").
+const phoneDigits = (raw) => String(raw || '').replace(/\D/g, '')
+
 export function createAgent(name, phone, email, passwordHash) {
   const info = db
     .prepare('INSERT INTO agents (name, phone, email, password_hash) VALUES (?, ?, ?, ?)')
-    .run(name, phone, email.toLowerCase(), passwordHash)
+    .run(name, normalizePhone(phone), email ? email.toLowerCase() : null, passwordHash)
   return getAgent(info.lastInsertRowid)
 }
 
 export function getAgent(id) {
-  return db.prepare('SELECT id, name, phone, email, created_at FROM agents WHERE id = ?').get(id)
+  return db
+    .prepare('SELECT id, name, phone, email, wa_phone_number_id, created_at FROM agents WHERE id = ?')
+    .get(id)
+}
+
+export function findAgentByPhone(phone) {
+  return db.prepare('SELECT * FROM agents WHERE phone = ?').get(normalizePhone(phone))
 }
 
 export function findAgentByEmail(email) {
+  if (!email) return null
   return db.prepare('SELECT * FROM agents WHERE email = ?').get(email.toLowerCase())
 }
 
-export function firstAgentName() {
-  const row = db.prepare('SELECT name FROM agents ORDER BY id LIMIT 1').get()
-  return row?.name || null
+export function countAgents() {
+  return db.prepare('SELECT COUNT(*) AS n FROM agents').get().n
+}
+
+// Route an inbound webhook to the right agent by the business number that received it.
+// Matches on full digits, then on a 10-digit suffix as a fallback. If there is exactly
+// one registered agent, fall back to them (single-number demo convenience).
+export function matchAgentByBusinessNumber(displayPhoneNumber) {
+  const digits = phoneDigits(displayPhoneNumber)
+  if (digits) {
+    const agents = db.prepare('SELECT * FROM agents').all()
+    const exact = agents.find((a) => phoneDigits(a.phone) === digits)
+    if (exact) return exact
+    const suffix = digits.slice(-10)
+    const bySuffix = agents.find((a) => phoneDigits(a.phone).slice(-10) === suffix)
+    if (bySuffix) return bySuffix
+  }
+  const all = db.prepare('SELECT * FROM agents').all()
+  return all.length === 1 ? all[0] : null
+}
+
+export function setAgentPhoneNumberId(agentId, phoneNumberId) {
+  if (!phoneNumberId) return
+  db.prepare(
+    'UPDATE agents SET wa_phone_number_id = ? WHERE id = ? AND (wa_phone_number_id IS NULL OR wa_phone_number_id != ?)',
+  ).run(String(phoneNumberId), agentId, String(phoneNumberId))
 }
 
 export function getMeta(key) {
@@ -107,18 +159,23 @@ export function setMeta(key, value) {
   db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value)
 }
 
-export function upsertLead(waId, name) {
+export function upsertLead(agentId, waId, name) {
   db.prepare(
-    `INSERT INTO leads (wa_id, name, phone) VALUES (?, ?, ?)
-     ON CONFLICT(wa_id) DO UPDATE SET
+    `INSERT INTO leads (agent_id, wa_id, name, phone) VALUES (?, ?, ?, ?)
+     ON CONFLICT(agent_id, wa_id) DO UPDATE SET
        name = COALESCE(excluded.name, leads.name),
        updated_at = datetime('now')`,
-  ).run(waId, name || null, waId)
-  return db.prepare('SELECT * FROM leads WHERE wa_id = ?').get(waId)
+  ).run(agentId, waId, name || null, waId)
+  return db.prepare('SELECT * FROM leads WHERE agent_id = ? AND wa_id = ?').get(agentId, waId)
 }
 
 export function getLead(id) {
   return db.prepare('SELECT * FROM leads WHERE id = ?').get(id)
+}
+
+// Ownership-checked lookup for dashboard routes: only returns the lead if it belongs to the agent.
+export function getLeadForAgent(id, agentId) {
+  return db.prepare('SELECT * FROM leads WHERE id = ? AND agent_id = ?').get(id, agentId)
 }
 
 export function addMessage(leadId, role, text, waMessageId = null) {
@@ -191,15 +248,16 @@ export function applyExtraction(leadId, x) {
   )
 }
 
-export function logActivity(leadId, kind, text) {
-  db.prepare('INSERT INTO activity (lead_id, kind, text) VALUES (?, ?, ?)').run(
+export function logActivity(agentId, leadId, kind, text) {
+  db.prepare('INSERT INTO activity (agent_id, lead_id, kind, text) VALUES (?, ?, ?, ?)').run(
+    agentId,
     leadId,
     kind,
     text,
   )
 }
 
-export function listLeads() {
+export function listLeads(agentId) {
   return db
     .prepare(
       `SELECT l.*,
@@ -207,13 +265,16 @@ export function listLeads() {
          (SELECT role FROM messages m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) AS last_role,
          (SELECT created_at FROM messages m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) AS last_at
        FROM leads l
+       WHERE l.agent_id = ?
        ORDER BY l.updated_at DESC`,
     )
-    .all()
+    .all(agentId)
 }
 
-export function listActivity(limit = 30) {
-  return db.prepare('SELECT * FROM activity ORDER BY id DESC LIMIT ?').all(limit)
+export function listActivity(agentId, limit = 30) {
+  return db
+    .prepare('SELECT * FROM activity WHERE agent_id = ? ORDER BY id DESC LIMIT ?')
+    .all(agentId, limit)
 }
 
 export function setAiEnabled(leadId, enabled) {
@@ -244,10 +305,10 @@ export function addNetworkPost(p) {
 }
 
 // Real matching: your qualified buyers x posted inventory, on locality + config + budget overlap.
-export function computeMatches() {
+export function computeMatches(agentId) {
   const leads = db
-    .prepare("SELECT * FROM leads WHERE locality IS NOT NULL AND temp != 'Cold'")
-    .all()
+    .prepare("SELECT * FROM leads WHERE agent_id = ? AND locality IS NOT NULL AND temp != 'Cold'")
+    .all(agentId)
   const inventory = db.prepare("SELECT * FROM network_posts WHERE type = 'INVENTORY'").all()
   const matches = []
   for (const lead of leads) {
@@ -277,41 +338,53 @@ export function computeMatches() {
   return matches.sort((a, b) => b.matchPct - a.matchPct)
 }
 
-export function stats() {
+export function stats(agentId) {
   const one = (sql, ...args) => Object.values(db.prepare(sql).get(...args))[0]
-  const total = one('SELECT COUNT(*) FROM leads')
+  // Messages are scoped to the agent's leads.
+  const myMessages = 'lead_id IN (SELECT id FROM leads WHERE agent_id = @a)'
+  const total = one('SELECT COUNT(*) FROM leads WHERE agent_id = @a', { a: agentId })
   const newToday = one(
-    "SELECT COUNT(*) FROM leads WHERE created_at >= datetime('now', 'start of day')",
+    "SELECT COUNT(*) FROM leads WHERE agent_id = @a AND created_at >= datetime('now', 'start of day')",
+    { a: agentId },
   )
-  const hotNow = one("SELECT COUNT(*) FROM leads WHERE temp = 'Hot'")
+  const hotNow = one("SELECT COUNT(*) FROM leads WHERE agent_id = @a AND temp = 'Hot'", { a: agentId })
   const active24h = one(
-    "SELECT COUNT(DISTINCT lead_id) FROM messages WHERE created_at >= datetime('now', '-1 day')",
+    `SELECT COUNT(DISTINCT lead_id) FROM messages WHERE ${myMessages} AND created_at >= datetime('now', '-1 day')`,
+    { a: agentId },
   )
   const pipelineL =
     one(
-      "SELECT COALESCE(SUM((budget_min_l + budget_max_l) / 2.0), 0) FROM leads WHERE temp != 'Cold' AND budget_max_l IS NOT NULL",
+      "SELECT COALESCE(SUM((budget_min_l + budget_max_l) / 2.0), 0) FROM leads WHERE agent_id = @a AND temp != 'Cold' AND budget_max_l IS NOT NULL",
+      { a: agentId },
     ) || 0
-  const avgFirstResponseS = one('SELECT AVG(first_response_s) FROM leads')
+  const avgFirstResponseS = one('SELECT AVG(first_response_s) FROM leads WHERE agent_id = @a', {
+    a: agentId,
+  })
   const qualified = one(
-    'SELECT COUNT(*) FROM leads WHERE locality IS NOT NULL AND timeline IS NOT NULL AND config IS NOT NULL AND budget_max_l IS NOT NULL',
+    'SELECT COUNT(*) FROM leads WHERE agent_id = @a AND locality IS NOT NULL AND timeline IS NOT NULL AND config IS NOT NULL AND budget_max_l IS NOT NULL',
+    { a: agentId },
   )
   const afterHours = one(
     `SELECT COUNT(*) FROM leads
-     WHERE CAST(strftime('%H', created_at, 'localtime') AS INTEGER) >= 21
-        OR CAST(strftime('%H', created_at, 'localtime') AS INTEGER) < 9`,
+     WHERE agent_id = @a AND (CAST(strftime('%H', created_at, 'localtime') AS INTEGER) >= 21
+        OR CAST(strftime('%H', created_at, 'localtime') AS INTEGER) < 9)`,
+    { a: agentId },
   )
   const sources = db
-    .prepare('SELECT source AS name, COUNT(*) AS count FROM leads GROUP BY source ORDER BY count DESC')
-    .all()
+    .prepare(
+      'SELECT source AS name, COUNT(*) AS count FROM leads WHERE agent_id = @a GROUP BY source ORDER BY count DESC',
+    )
+    .all({ a: agentId })
   const daily = db
     .prepare(
       `SELECT date(created_at, 'localtime') AS day, AVG(first_response_s) AS avg_s, COUNT(*) AS leads
-       FROM leads WHERE created_at >= datetime('now', '-7 days')
+       FROM leads WHERE agent_id = @a AND created_at >= datetime('now', '-7 days')
        GROUP BY day ORDER BY day`,
     )
-    .all()
+    .all({ a: agentId })
   const msgsToday = one(
-    "SELECT COUNT(*) FROM messages WHERE created_at >= datetime('now', 'start of day')",
+    `SELECT COUNT(*) FROM messages WHERE ${myMessages} AND created_at >= datetime('now', 'start of day')`,
+    { a: agentId },
   )
   return {
     total,

@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url'
 import {
   upsertLead,
   getLead,
+  getLeadForAgent,
+  getAgent,
   addMessage,
   getMessages,
   recordFirstResponse,
@@ -18,7 +20,8 @@ import {
   addNetworkPost,
   computeMatches,
   stats,
-  firstAgentName,
+  matchAgentByBusinessNumber,
+  setAgentPhoneNumberId,
 } from './db.js'
 import { generateReply, extractLead, aiConfigured } from './ai.js'
 import { sendText, markRead, whatsappConfigured } from './whatsapp.js'
@@ -50,24 +53,26 @@ function verifySignature(req) {
   }
 }
 
-// Core pipeline: a real inbound buyer message -> persist -> AI reply -> WhatsApp send -> extract BLTC.
-async function handleInbound({ waId, name, text, source = 'WhatsApp', send = true }) {
-  const lead = upsertLead(waId, name)
+// Core pipeline for ONE agent's inbound buyer message:
+// persist -> AI reply (as that agent) -> WhatsApp send (from that agent's number) -> extract BLTC.
+async function handleInbound({ agent, waId, name, text, source = 'WhatsApp', phoneNumberId = null, send = true }) {
+  const agentId = agent.id
+  const lead = upsertLead(agentId, waId, name)
   const isNewLead = !lead.ai_summary && getMessages(lead.id, 1).length === 0
   addMessage(lead.id, 'buyer', text)
-  if (isNewLead) logActivity(lead.id, 'lead', `New lead: ${name || waId} via ${source}`)
+  if (isNewLead) logActivity(agentId, lead.id, 'lead', `New lead: ${name || waId} via ${source}`)
 
   let reply = null
   if (lead.ai_enabled) {
-    reply = await generateReply(getMessages(lead.id), firstAgentName())
+    reply = await generateReply(getMessages(lead.id), agent.name)
     if (reply) {
       let waMsgId = null
       if (send) {
         try {
-          waMsgId = await sendText(waId, reply)
+          waMsgId = await sendText(waId, reply, phoneNumberId || agent.wa_phone_number_id)
         } catch (err) {
           console.error(err.message)
-          logActivity(lead.id, 'error', `WhatsApp send failed for ${name || waId}`)
+          logActivity(agentId, lead.id, 'error', `WhatsApp send failed for ${name || waId}`)
         }
       }
       addMessage(lead.id, 'ai', reply, waMsgId)
@@ -83,9 +88,9 @@ async function handleInbound({ waId, name, text, source = 'WhatsApp', send = tru
       applyExtraction(lead.id, x)
       const updated = getLead(lead.id)
       if (updated.temp === 'Hot' && prevTemp !== 'Hot')
-        logActivity(lead.id, 'hot', `${updated.name || waId} is now HOT (score ${updated.score})`)
+        logActivity(agentId, lead.id, 'hot', `${updated.name || waId} is now HOT (score ${updated.score})`)
       else if (x.score != null)
-        logActivity(lead.id, 'ai', `${updated.name || waId} re-scored: ${updated.score}/100`)
+        logActivity(agentId, lead.id, 'ai', `${updated.name || waId} re-scored: ${updated.score}/100`)
     }
   } catch (err) {
     console.error('extraction failed', err)
@@ -115,10 +120,27 @@ app.post('/webhook', (req, res) => {
       for (const change of entry.changes ?? []) {
         const value = change.value
         const contactName = value?.contacts?.[0]?.profile?.name
+        // Which registered agent owns the business number this message was sent to?
+        const displayNumber = value?.metadata?.display_phone_number
+        const phoneNumberId = value?.metadata?.phone_number_id
+        const agent = matchAgentByBusinessNumber(displayNumber)
+        if (!agent) {
+          if (value?.messages?.length)
+            console.warn(`No agent registered for business number ${displayNumber} — dropping message`)
+          continue
+        }
+        // Remember this agent's phone_number_id so dashboard replies go out from their number.
+        setAgentPhoneNumberId(agent.id, phoneNumberId)
         for (const msg of value?.messages ?? []) {
           if (msg.type !== 'text') continue
-          markRead(msg.id)
-          await handleInbound({ waId: msg.from, name: contactName, text: msg.text.body })
+          markRead(msg.id, phoneNumberId)
+          await handleInbound({
+            agent,
+            waId: msg.from,
+            name: contactName,
+            text: msg.text.body,
+            phoneNumberId,
+          })
         }
       }
     }
@@ -150,38 +172,39 @@ app.use('/api', (req, res, next) => {
   requireAuth(req, res, next)
 })
 
-// --- Dashboard API (real data from SQLite) ---
-app.get('/api/leads', (_req, res) => res.json(listLeads()))
+// --- Dashboard API (real data from SQLite) — every route is scoped to the logged-in agent. ---
+app.get('/api/leads', (req, res) => res.json(listLeads(req.agent.id)))
 
 app.get('/api/leads/:id', (req, res) => {
-  const lead = getLead(req.params.id)
+  const lead = getLeadForAgent(req.params.id, req.agent.id)
   if (!lead) return res.status(404).json({ error: 'not found' })
   res.json({ ...lead, messages: getMessages(lead.id) })
 })
 
 // Agent takes over / hands back to AI.
 app.post('/api/leads/:id/ai', (req, res) => {
-  const lead = getLead(req.params.id)
+  const lead = getLeadForAgent(req.params.id, req.agent.id)
   if (!lead) return res.status(404).json({ error: 'not found' })
   setAiEnabled(lead.id, Boolean(req.body?.enabled))
   logActivity(
+    req.agent.id,
     lead.id,
     'agent',
     req.body?.enabled
       ? `AI re-enabled for ${lead.name || lead.wa_id}`
-      : `Rajesh took over the chat with ${lead.name || lead.wa_id}`,
+      : `${req.agent.name} took over the chat with ${lead.name || lead.wa_id}`,
   )
   res.json(getLead(lead.id))
 })
 
 // Agent sends a real WhatsApp message from the dashboard.
 app.post('/api/leads/:id/reply', async (req, res) => {
-  const lead = getLead(req.params.id)
+  const lead = getLeadForAgent(req.params.id, req.agent.id)
   if (!lead) return res.status(404).json({ error: 'not found' })
   const text = (req.body?.text || '').trim()
   if (!text) return res.status(400).json({ error: 'text required' })
   try {
-    const waMsgId = await sendText(lead.wa_id, text)
+    const waMsgId = await sendText(lead.wa_id, text, req.agent.wa_phone_number_id)
     const msg = addMessage(lead.id, 'agent', text, waMsgId)
     recordFirstResponse(lead.id)
     res.json(msg)
@@ -190,11 +213,11 @@ app.post('/api/leads/:id/reply', async (req, res) => {
   }
 })
 
-app.get('/api/stats', (_req, res) => res.json(stats()))
-app.get('/api/activity', (_req, res) => res.json(listActivity()))
+app.get('/api/stats', (req, res) => res.json(stats(req.agent.id)))
+app.get('/api/activity', (req, res) => res.json(listActivity(req.agent.id)))
 
-app.get('/api/network', (_req, res) =>
-  res.json({ posts: listNetworkPosts(), matches: computeMatches() }),
+app.get('/api/network', (req, res) =>
+  res.json({ posts: listNetworkPosts(), matches: computeMatches(req.agent.id) }),
 )
 app.post('/api/network', (req, res) => {
   const p = req.body ?? {}
@@ -208,7 +231,8 @@ app.post('/api/network', (req, res) => {
 app.post('/api/simulate', async (req, res) => {
   const { from = 'test-' + Date.now(), name = 'Test Buyer', text, source = 'Test' } = req.body ?? {}
   if (!text) return res.status(400).json({ error: 'text required' })
-  const result = await handleInbound({ waId: String(from), name, text, source, send: false })
+  const agent = getAgent(req.agent.id)
+  const result = await handleInbound({ agent, waId: String(from), name, text, source, send: false })
   res.json(result)
 })
 

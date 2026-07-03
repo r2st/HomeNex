@@ -1,24 +1,14 @@
 import { useState } from 'react'
 import { api, setToken } from '../api.js'
 
-const FIELDS = {
-  signup: [
-    { key: 'name', label: 'Your name', type: 'text', placeholder: 'Rajesh Kumar', autoComplete: 'name' },
-    { key: 'phone', label: 'Phone', type: 'tel', placeholder: '+91 98xxx xxxxx', autoComplete: 'tel' },
-    { key: 'email', label: 'Email', type: 'email', placeholder: 'you@example.com', autoComplete: 'email' },
-    { key: 'password', label: 'Password', type: 'password', placeholder: 'At least 6 characters', autoComplete: 'new-password' },
-  ],
-  login: [
-    { key: 'email', label: 'Email', type: 'email', placeholder: 'you@example.com', autoComplete: 'email' },
-    { key: 'password', label: 'Password', type: 'password', placeholder: '••••••••', autoComplete: 'current-password' },
-  ],
-}
-
 export default function AuthScreen({ onAuthed }) {
   const [mode, setMode] = useState('signup')
-  const [form, setForm] = useState({ name: '', phone: '', email: '', password: '' })
+  // `phone` holds the local part only; the +91 country code is fixed in the UI.
+  const [form, setForm] = useState({ name: '', phone: '', password: '' })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
+
+  const setPhone = (v) => setForm((s) => ({ ...s, phone: v.replace(/\D/g, '').slice(0, 10) }))
 
   const submit = async (e) => {
     e.preventDefault()
@@ -26,7 +16,12 @@ export default function AuthScreen({ onAuthed }) {
     setBusy(true)
     setError(null)
     try {
-      const { token, agent } = await (mode === 'signup' ? api.signup(form) : api.login(form))
+      const payload = {
+        phone: '+91' + form.phone,
+        password: form.password,
+        ...(mode === 'signup' ? { name: form.name } : {}),
+      }
+      const { token, agent } = await (mode === 'signup' ? api.signup(payload) : api.login(payload))
       setToken(token)
       onAuthed(agent)
     } catch (err) {
@@ -35,6 +30,9 @@ export default function AuthScreen({ onAuthed }) {
       setBusy(false)
     }
   }
+
+  const inputCls =
+    'mt-1 w-full bg-white border border-line rounded-2xl px-4 py-3.5 text-[14px] outline-none focus:border-brand/60'
 
   return (
     <div className="min-h-dvh flex flex-col justify-center px-6 py-10">
@@ -49,26 +47,61 @@ export default function AuthScreen({ onAuthed }) {
         </h1>
         <p className="text-[13.5px] text-ink-soft mt-2">
           {mode === 'signup'
-            ? 'One quick form — you’ll be in your dashboard in under a minute.'
-            : 'Log in to your HomeNex dashboard.'}
+            ? 'Register your WhatsApp number — every buyer who messages it lands here, qualified by AI.'
+            : 'Log in with your WhatsApp number.'}
         </p>
       </div>
 
       <form onSubmit={submit} className="mt-7 space-y-3.5 rise rise-2">
-        {FIELDS[mode].map((f) => (
-          <label key={f.key} className="block">
-            <span className="text-[11.5px] font-bold text-ink-soft">{f.label}</span>
+        {mode === 'signup' && (
+          <label className="block">
+            <span className="text-[11.5px] font-bold text-ink-soft">Your name</span>
             <input
-              type={f.type}
-              value={form[f.key]}
-              onChange={(e) => setForm((s) => ({ ...s, [f.key]: e.target.value }))}
-              placeholder={f.placeholder}
-              autoComplete={f.autoComplete}
+              type="text"
+              value={form.name}
+              onChange={(e) => setForm((s) => ({ ...s, name: e.target.value }))}
+              placeholder="Rajesh Kumar"
+              autoComplete="name"
               required
-              className="mt-1 w-full bg-white border border-line rounded-2xl px-4 py-3.5 text-[14px] outline-none focus:border-brand/60"
+              className={inputCls}
             />
           </label>
-        ))}
+        )}
+
+        <label className="block">
+          <span className="text-[11.5px] font-bold text-ink-soft">WhatsApp Number</span>
+          <div className="mt-1 flex items-stretch bg-white border border-line rounded-2xl overflow-hidden focus-within:border-brand/60">
+            <span className="flex items-center px-4 text-[14px] font-semibold text-ink-soft bg-cream border-r border-line select-none">
+              +91
+            </span>
+            <input
+              type="tel"
+              inputMode="numeric"
+              value={form.phone}
+              onChange={(e) => setPhone(e.target.value)}
+              placeholder="98xxx xxxxx"
+              autoComplete="tel-national"
+              required
+              className="flex-1 px-4 py-3.5 text-[14px] outline-none bg-white tracking-wide"
+            />
+          </div>
+          <span className="text-[11px] text-ink-faint mt-1 block">
+            This is the number buyers will message on WhatsApp.
+          </span>
+        </label>
+
+        <label className="block">
+          <span className="text-[11.5px] font-bold text-ink-soft">Password</span>
+          <input
+            type="password"
+            value={form.password}
+            onChange={(e) => setForm((s) => ({ ...s, password: e.target.value }))}
+            placeholder={mode === 'signup' ? 'At least 6 characters' : '••••••••'}
+            autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+            required
+            className={inputCls}
+          />
+        </label>
 
         {error && (
           <p className="text-[12.5px] text-hot bg-amber-wash rounded-xl px-4 py-3">{error}</p>

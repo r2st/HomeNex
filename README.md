@@ -8,6 +8,12 @@ Buyers only ever see WhatsApp. HomeNex is the broker's dashboard: every buyer wh
 WhatsApp Business number becomes a lead — answered by AI in seconds, BLTC-qualified
 (Budget · Location · Timeline · Configuration), scored, and handed to you when it matters.
 
+**Multi-agent.** Any number of brokers register with their own WhatsApp number (name + number +
+password — one screen). The single Meta webhook receives messages for every number and routes each
+one to the agent whose business number received it (`value.metadata.display_phone_number`). Each
+agent only ever sees their own leads, conversations, stats and matches; AI replies go out from that
+agent's number (`phone_number_id` is learned from the first inbound webhook).
+
 ## Architecture
 
 - **`server/`** — Node.js + Express, SQLite persistence (built-in `node:sqlite`, zero native deps).
