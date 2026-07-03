@@ -236,6 +236,11 @@ export function findContactByWaId(waId) {
   return contacts.find((c) => phoneDigits(c.phone).slice(-10) === suffix) || null
 }
 
+// Look up a client row by phone (across all agents), used to decide whose list a number is in.
+export function getContactByPhone(phone) {
+  return db.prepare('SELECT * FROM contacts WHERE phone = ?').get(normalizePhone(phone))
+}
+
 // List an agent's clients, annotated with whether that number has ever messaged.
 export function listContacts(agentId) {
   return db

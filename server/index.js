@@ -11,6 +11,7 @@ import {
   getLeadForAgent,
   getAssignableLead,
   getAgent,
+  findAgentByPhone,
   addMessage,
   getMessages,
   recordFirstResponse,
@@ -32,6 +33,7 @@ import {
 import { generateReply, extractLead, aiConfigured } from './ai.js'
 import { sendText, markRead, whatsappConfigured } from './whatsapp.js'
 import { signup, login, requireAuth } from './auth.js'
+import { handleAgentCommand } from './agentCommands.js'
 
 const { PORT = 8787, WHATSAPP_VERIFY_TOKEN = 'homenex-verify', WHATSAPP_APP_SECRET } = process.env
 
@@ -133,9 +135,17 @@ app.post('/webhook', (req, res) => {
         // Everything arrives on ONE shared business number; route by who the sender is.
         const phoneNumberId = value?.metadata?.phone_number_id
         for (const msg of value?.messages ?? []) {
+          // FIRST: is the sender one of our registered agents? Then this is an agent
+          // command (add a client, list clients, ...), not a buyer conversation.
+          const agent = findAgentByPhone(msg.from)
+          if (agent) {
+            markRead(msg.id, phoneNumberId)
+            await handleAgentCommand({ agent, msg, phoneNumberId })
+            continue
+          }
           if (msg.type !== 'text') continue
           markRead(msg.id, phoneNumberId)
-          // Match the sender against every agent's saved clients.
+          // Otherwise it's a buyer: match the sender against every agent's saved clients.
           const contact = findContactByWaId(msg.from)
           if (contact) {
             await handleInbound({
