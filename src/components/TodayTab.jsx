@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { api, usePoll, fmtAgo } from '../api.js'
 
 const DOT = {
@@ -9,6 +10,58 @@ const DOT = {
   msg: 'bg-ink-faint',
 }
 
+// Shared WhatsApp Business number that all clients message.
+const WA_NUMBER = '+13652754408'
+const WA_DIGITS = '13652754408'
+const WA_LINK = `https://wa.me/${WA_DIGITS}`
+
+// Card that surfaces the shared number so agents can hand it to their clients:
+// a tap-to-open WhatsApp link plus a copy-to-clipboard button for the number.
+function ShareNumberCard() {
+  const [copied, setCopied] = useState(false)
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(WA_NUMBER)
+    } catch {
+      return
+    }
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1600)
+  }
+
+  return (
+    <section className="mt-6 bg-card rounded-2xl border border-line shadow-card p-5 rise rise-2">
+      <div className="flex items-center gap-2">
+        <span className="text-[18px] leading-none">💬</span>
+        <p className="text-[11px] font-bold tracking-[0.18em] text-brand">SHARE THIS NUMBER WITH YOUR CLIENTS</p>
+      </div>
+      <p className="text-[12.5px] text-ink-soft leading-relaxed mt-2">
+        When a client messages this WhatsApp Business number, HomeNex recognises them and their
+        qualified lead appears right here.
+      </p>
+      <div className="flex items-center gap-2 mt-3.5">
+        <span className="font-display text-[19px] font-bold text-ink tabular-nums flex-1 truncate">{WA_NUMBER}</span>
+        <button
+          onClick={copy}
+          className="shrink-0 text-[12px] font-bold rounded-full px-3.5 py-1.5 transition active:scale-95 bg-ink/5 text-ink-soft"
+        >
+          {copied ? 'Copied ✓' : 'Copy'}
+        </button>
+      </div>
+      <a
+        href={WA_LINK}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="mt-3 flex items-center justify-center gap-2 w-full rounded-full bg-[#25D366] text-white font-bold text-[13.5px] py-2.5 shadow-card active:scale-[0.99] transition"
+      >
+        <span className="text-[16px] leading-none">💬</span>
+        Open in WhatsApp
+      </a>
+    </section>
+  )
+}
+
 function greeting() {
   const h = new Date().getHours()
   if (h < 12) return 'Good morning'
@@ -16,7 +69,60 @@ function greeting() {
   return 'Good evening'
 }
 
+// Detect the user's city via the browser Geolocation API + OpenStreetMap reverse
+// geocoding. Result is cached in localStorage so we don't re-request every load.
+// Returns '' when geolocation is unavailable/denied — callers should hide the label.
+function useCity() {
+  const [city, setCity] = useState(() => {
+    try {
+      return localStorage.getItem('homenex.city') || ''
+    } catch {
+      return ''
+    }
+  })
+
+  useEffect(() => {
+    // Already resolved (from cache) or no geolocation support → nothing to do.
+    if (city) return
+    if (typeof navigator === 'undefined' || !navigator.geolocation) return
+
+    let cancelled = false
+    navigator.geolocation.getCurrentPosition(
+      async ({ coords }) => {
+        try {
+          const res = await fetch(
+            `https://nominatim.openstreetmap.org/reverse?lat=${coords.latitude}&lon=${coords.longitude}&format=json`,
+            { headers: { 'Accept-Language': 'en' } }
+          )
+          const data = await res.json()
+          const a = data?.address || {}
+          const name = a.city || a.town || a.village || a.county || a.state || ''
+          if (name && !cancelled) {
+            setCity(name)
+            try {
+              localStorage.setItem('homenex.city', name)
+            } catch {}
+          }
+        } catch {
+          // Reverse geocoding failed → leave the label hidden.
+        }
+      },
+      () => {
+        // Permission denied or position unavailable → leave the label hidden.
+      },
+      { timeout: 10000, maximumAge: 24 * 60 * 60 * 1000 }
+    )
+
+    return () => {
+      cancelled = true
+    }
+  }, [city])
+
+  return city
+}
+
 export default function TodayTab({ agent, onGoTo, onOpenConversation, onSignOut }) {
+  const city = useCity()
   const { data: stats } = usePoll(api.stats, 6000)
   const { data: leads } = usePoll(api.leads, 6000)
   const { data: activity } = usePoll(api.activity, 6000)
@@ -44,7 +150,8 @@ export default function TodayTab({ agent, onGoTo, onOpenConversation, onSignOut 
       <header className="rise">
         <div className="flex items-baseline justify-between gap-3">
           <p className="text-[11px] font-bold tracking-[0.18em] text-ink-faint uppercase">
-            {new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })} · Pune
+            {new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}
+            {city ? ` · ${city}` : ''}
           </p>
           <button onClick={onSignOut} className="text-[11px] font-semibold text-ink-faint underline underline-offset-2">
             Sign out
@@ -86,6 +193,8 @@ export default function TodayTab({ agent, onGoTo, onOpenConversation, onSignOut 
           ))}
         </div>
       )}
+
+      <ShareNumberCard />
 
       {empty && (
         <button
