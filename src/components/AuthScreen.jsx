@@ -115,7 +115,7 @@ export default function AuthScreen({ onAuthed }) {
             />
           </div>
           <span className="text-[11px] text-ink-faint mt-1 block">
-            This is the number buyers will message on WhatsApp.
+            Your personal WhatsApp number (used as your login).
           </span>
         </label>
 

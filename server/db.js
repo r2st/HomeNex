@@ -62,7 +62,8 @@ CREATE TABLE IF NOT EXISTS agents (
   phone TEXT UNIQUE NOT NULL,        -- WhatsApp number, canonical E.164 e.g. +919812345678
   email TEXT,                        -- optional
   password_hash TEXT NOT NULL,
-  wa_phone_number_id TEXT,           -- Meta phone_number_id, learned from the first inbound webhook
+  wa_phone_number_id TEXT,           -- Meta phone_number_id for the agent's own WhatsApp Business line
+  wa_phone_number TEXT,              -- display phone number for the agent's WA Business line, E.164
   created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -180,6 +181,15 @@ CREATE TABLE IF NOT EXISTS network_posts (
   }
 }
 
+// Migration: add wa_phone_number column to agents for per-agent WhatsApp Business numbers.
+{
+  const cols = db.prepare('PRAGMA table_info(agents)').all()
+  if (!cols.some((c) => c.name === 'wa_phone_number')) {
+    db.exec('ALTER TABLE agents ADD COLUMN wa_phone_number TEXT')
+    console.log('migrated agents: added wa_phone_number column')
+  }
+}
+
 // Canonical storage form for a WhatsApp number: leading "+" and digits only.
 // A bare 10-digit Indian number is assumed to be +91.
 export function normalizePhone(raw) {
@@ -205,7 +215,7 @@ export function createAgent(name, phone, email, passwordHash) {
 
 export function getAgent(id) {
   return db
-    .prepare('SELECT id, name, phone, email, wa_phone_number_id, created_at FROM agents WHERE id = ?')
+    .prepare('SELECT id, name, phone, email, wa_phone_number_id, wa_phone_number, created_at FROM agents WHERE id = ?')
     .get(id)
 }
 
@@ -220,6 +230,35 @@ export function findAgentByEmail(email) {
 
 export function countAgents() {
   return db.prepare('SELECT COUNT(*) AS n FROM agents').get().n
+}
+
+// Update an agent's per-agent WhatsApp Business number configuration.
+// waPhoneNumber is the display number (E.164), waPhoneNumberId is the Meta API phone_number_id.
+// Either or both can be null to clear the configuration.
+export function updateAgentPhoneConfig(agentId, waPhoneNumber, waPhoneNumberId) {
+  const pn = waPhoneNumber ? normalizePhone(waPhoneNumber) : null
+  if (pn && pn.replace(/\D/g, '').length < 10) throw new Error('Enter a valid WhatsApp Business number')
+  // Ensure wa_phone_number_id is unique across agents (two agents can't share the same line).
+  if (waPhoneNumberId) {
+    const existing = db
+      .prepare('SELECT id FROM agents WHERE wa_phone_number_id = ? AND id != ?')
+      .get(waPhoneNumberId, agentId)
+    if (existing) {
+      const err = new Error('This WhatsApp Business number ID is already assigned to another agent')
+      err.code = 'PHONE_ID_TAKEN'
+      throw err
+    }
+  }
+  db.prepare('UPDATE agents SET wa_phone_number = ?, wa_phone_number_id = ? WHERE id = ?')
+    .run(pn, waPhoneNumberId || null, agentId)
+  return getAgent(agentId)
+}
+
+// Find the agent who owns a specific Meta phone_number_id. Used for inbound webhook routing:
+// when a message arrives on a specific WhatsApp Business line, route it to the agent who owns it.
+export function findAgentByPhoneNumberId(phoneNumberId) {
+  if (!phoneNumberId) return null
+  return db.prepare('SELECT * FROM agents WHERE wa_phone_number_id = ?').get(phoneNumberId) || null
 }
 
 // --- Contacts: the agent's known clients on the shared WhatsApp number ---

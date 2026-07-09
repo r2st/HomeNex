@@ -12,6 +12,8 @@ import {
   getAssignableLead,
   getAgent,
   findAgentByPhone,
+  findAgentByPhoneNumberId,
+  updateAgentPhoneConfig,
   addMessage,
   getMessages,
   recordFirstResponse,
@@ -132,8 +134,11 @@ app.post('/webhook', (req, res) => {
       for (const change of entry.changes ?? []) {
         const value = change.value
         const waProfileName = value?.contacts?.[0]?.profile?.name
-        // Everything arrives on ONE shared business number; route by who the sender is.
+        // Which WhatsApp Business number received this message?
         const phoneNumberId = value?.metadata?.phone_number_id
+        // Per-agent routing: if this phone_number_id belongs to a specific agent,
+        // every message on that line belongs to them (no shared pool needed).
+        const lineOwner = findAgentByPhoneNumberId(phoneNumberId)
         for (const msg of value?.messages ?? []) {
           // FIRST: is the sender one of our registered agents? Then this is an agent
           // command (add a client, list clients, ...), not a buyer conversation.
@@ -145,7 +150,23 @@ app.post('/webhook', (req, res) => {
           }
           if (msg.type !== 'text') continue
           markRead(msg.id, phoneNumberId)
-          // Otherwise it's a buyer: match the sender against every agent's saved clients.
+
+          // Per-agent line: if this number belongs to a specific agent, route directly
+          // to them. The sender is auto-remembered as a contact for future reference.
+          if (lineOwner) {
+            try { addContact(lineOwner.id, msg.from, waProfileName || msg.from) } catch { /* already exists */ }
+            await handleInbound({
+              agentId: lineOwner.id,
+              brokerName: lineOwner.name,
+              waId: msg.from,
+              name: waProfileName,
+              text: msg.text.body,
+              phoneNumberId,
+            })
+            continue
+          }
+
+          // Shared-number fallback: match the sender against every agent's saved clients.
           const contact = findContactByWaId(msg.from)
           if (contact) {
             await handleInbound({
@@ -157,7 +178,7 @@ app.post('/webhook', (req, res) => {
               phoneNumberId,
             })
           } else {
-            // Unknown sender → unassigned pool, visible to all agents to claim.
+            // Unknown sender on a shared number → unassigned pool, visible to all agents to claim.
             await handleInbound({
               agentId: null,
               brokerName: 'the HomeNex team',
@@ -196,6 +217,25 @@ app.get('/api/auth/me', requireAuth, (req, res) => res.json(req.agent))
 app.use('/api', (req, res, next) => {
   if (req.path === '/health') return next()
   requireAuth(req, res, next)
+})
+
+// --- Per-agent WhatsApp Business number configuration ---
+app.get('/api/agent/phone-config', (req, res) => {
+  const agent = getAgent(req.agent.id)
+  res.json({
+    wa_phone_number: agent.wa_phone_number || null,
+    wa_phone_number_id: agent.wa_phone_number_id || null,
+  })
+})
+
+app.put('/api/agent/phone-config', (req, res) => {
+  const { wa_phone_number, wa_phone_number_id } = req.body ?? {}
+  try {
+    const agent = updateAgentPhoneConfig(req.agent.id, wa_phone_number || null, wa_phone_number_id || null)
+    res.json(agent)
+  } catch (err) {
+    res.status(err.code === 'PHONE_ID_TAKEN' ? 409 : 400).json({ error: err.message })
+  }
 })
 
 // --- Dashboard API (real data from SQLite) — every route is scoped to the logged-in agent. ---

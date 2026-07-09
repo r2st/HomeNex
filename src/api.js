@@ -48,6 +48,13 @@ export const api = {
   addContact: (body) => post('/api/contacts', body),
   bulkContacts: (contacts) => post('/api/contacts/bulk', { contacts }),
   deleteContact: (id) => del(`/api/contacts/${id}`),
+  phoneConfig: () => get('/api/agent/phone-config'),
+  updatePhoneConfig: (body) =>
+    fetch('/api/agent/phone-config', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(body),
+    }).then(j),
 }
 
 // Poll an endpoint so the dashboard stays live as real messages arrive.
