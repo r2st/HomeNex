@@ -187,6 +187,52 @@ function SendToChatSheet({ property, onClose }) {
   )
 }
 
+// Public micro-page share card: link + view counter (the engagement signal).
+function MicroPageCard({ propertyId }) {
+  const [page, setPage] = useState(null)
+  const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    api.microPage(propertyId).then(setPage).catch(() => {})
+  }, [propertyId])
+
+  if (!page) return null
+
+  const share = async () => {
+    if (navigator.share) {
+      await navigator.share({ url: page.url }).catch(() => {})
+      return
+    }
+    await navigator.clipboard?.writeText(page.url).catch(() => {})
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  return (
+    <section className="bg-card rounded-2xl border border-line shadow-card p-4">
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-[10.5px] font-bold tracking-[0.18em] text-brand">PUBLIC PAGE</p>
+        <span className="text-[11px] font-bold text-ink-soft tabular-nums">
+          👁 {page.stats?.total ?? page.page_views} views
+          {page.stats?.last_7d ? ` · ${page.stats.last_7d} this week` : ''}
+        </span>
+      </div>
+      <a href={page.url} target="_blank" rel="noopener noreferrer" className="block text-[12px] text-brand underline underline-offset-2 break-all">
+        {page.url}
+      </a>
+      <button
+        onClick={share}
+        className="mt-3 w-full bg-brand-wash text-brand-deep font-bold text-[13px] rounded-full py-2.5 active:scale-[0.99] transition"
+      >
+        {copied ? '✓ Link copied' : '🔗 Share micro-page'}
+      </button>
+      <p className="text-[10.5px] text-ink-faint mt-2">
+        Anyone with the link can view — perfect for broker groups. Views count as engagement.
+      </p>
+    </section>
+  )
+}
+
 export default function PropertyDetail({ propertyId, onClose, onChanged }) {
   const [refreshKey, setRefreshKey] = useState(0)
   const { data: property } = usePoll(() => api.property(propertyId), 30000, [propertyId, refreshKey])
@@ -291,6 +337,8 @@ export default function PropertyDetail({ propertyId, onClose, onChanged }) {
                 </a>
               )}
             </section>
+
+            <MicroPageCard propertyId={property.id} />
 
             <button
               onClick={() => setSending(true)}

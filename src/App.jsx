@@ -8,7 +8,32 @@ import MoreTab from './components/MoreTab.jsx'
 import AdminPanel from './components/AdminPanel.jsx'
 import BottomNav from './components/BottomNav.jsx'
 import AuthScreen from './components/AuthScreen.jsx'
-import { api, getToken, setToken } from './api.js'
+import { api, getToken, setToken, offlineQueueSize, flushOfflineQueue } from './api.js'
+
+// Offline status strip: shows when the network is gone and how many actions
+// are queued for sync. Queued follow-ups/stage moves replay automatically.
+function OfflineBanner() {
+  const [online, setOnline] = useState(navigator.onLine)
+  const [queued, setQueued] = useState(offlineQueueSize())
+
+  useEffect(() => {
+    const update = () => {
+      setOnline(navigator.onLine)
+      setQueued(offlineQueueSize())
+    }
+    const events = ['online', 'offline', 'homenex-queued', 'homenex-queue-flushed']
+    events.forEach((e) => window.addEventListener(e, update))
+    if (navigator.onLine && offlineQueueSize()) flushOfflineQueue().catch(() => {})
+    return () => events.forEach((e) => window.removeEventListener(e, update))
+  }, [])
+
+  if (online && !queued) return null
+  return (
+    <div className={`sticky top-0 z-40 text-center text-[11.5px] font-bold py-1.5 ${online ? 'bg-brand-wash text-brand-deep' : 'bg-amber-wash text-gold'}`}>
+      {online ? `Syncing ${queued} offline action${queued === 1 ? '' : 's'}…` : `📴 Offline — viewing cached data${queued ? ` · ${queued} queued` : ''}`}
+    </div>
+  )
+}
 
 export default function App() {
   const [tab, setTab] = useState('home')
@@ -65,6 +90,7 @@ export default function App() {
 
   return (
     <div className="phone">
+      <OfflineBanner />
       <main className="pb-24">
         {tab === 'home' && (
           <DashboardTab

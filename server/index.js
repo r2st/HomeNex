@@ -55,9 +55,25 @@ import {
   dashboard,
   logAudit,
   normalizePhone,
+  serviceWindow,
+  getPropertyBySlug,
+  ensurePropertySlug,
+  recordPropertyView,
+  propertyViewStats,
+  listMessageTemplates,
+  createMessageTemplate,
+  createFestiveSchedule,
+  listFestiveSchedules,
+  cancelFestiveSchedule,
+  claimDueFestiveSchedules,
+  finishFestiveSchedule,
+  festiveRecipients,
 } from './db.js'
 import { paiseToDisplay } from './money.js'
-import { generateReply, extractLead, aiConfigured } from './ai.js'
+import { generateReply, extractLead, suggestReplies, aiConfigured } from './ai.js'
+import { emiReplyFor, parseEmiQuery, formatEmiMessage } from './emi.js'
+import { FESTIVALS, getFestival, personalizeGreeting } from './festivals.js'
+import { renderMicroPage } from './micropage.js'
 import { sendText, markRead, whatsappConfigured } from './whatsapp.js'
 import { signup, login, requireAuth } from './auth.js'
 import { handleAgentCommand } from './agentCommands.js'
@@ -122,7 +138,9 @@ async function handleInbound({ agentId = null, brokerName, waId, name, text, sou
 
   let reply = null
   if (lead.ai_enabled) {
-    reply = await generateReply(await getMessages(lead.id), brokerName)
+    // EMI questions get an instant, deterministic calculation — no AI round-trip,
+    // and it works even when the AI provider is down.
+    reply = emiReplyFor(text) || (await generateReply(await getMessages(lead.id), brokerName))
     if (reply) {
       let waMsgId = null
       if (send) {
@@ -315,11 +333,29 @@ app.get('/api/leads/:id', ah(async (req, res) => {
   if (!lead) return res.status(404).json({ error: 'not found' })
   res.json({
     ...lead,
+    service_window: serviceWindow(lead),
     messages: await getMessages(lead.id),
     followups: await listFollowups(req.agent.id, { leadId: lead.id }),
     site_visits: await listSiteVisits(req.agent.id, { leadId: lead.id }),
     contact: lead.contact_id ? await getContactDetail(lead.contact_id, req.agent.id).then((c) => c && { ...c, leads: undefined }) : null,
   })
+}))
+
+// AI-suggested replies for the agent's composer. Tap-to-insert only — the agent
+// always reviews and sends; nothing is auto-sent. Empty list when AI is off.
+app.get('/api/leads/:id/suggestions', ah(async (req, res) => {
+  const lead = await getLeadForAgent(req.params.id, req.agent.id)
+  if (!lead) return res.status(404).json({ error: 'not found' })
+  const messages = await getMessages(lead.id)
+  const last = messages[messages.length - 1]
+  // Suggestions only make sense when the buyer is waiting on a reply.
+  if (!last || last.role !== 'buyer') return res.json({ suggestions: [] })
+  try {
+    res.json({ suggestions: await suggestReplies(messages, lead, req.agent.name) })
+  } catch (err) {
+    console.error('suggestions failed', err)
+    res.json({ suggestions: [] })
+  }
 }))
 
 // Update a lead's CRM fields (budget in paise, BHK, property type, localities, ...).
@@ -399,12 +435,33 @@ app.post('/api/leads/:id/ai', ah(async (req, res) => {
   res.json(await getLead(lead.id))
 }))
 
-// Agent sends a real WhatsApp message from the dashboard.
+// Agent sends a real WhatsApp message from the dashboard. Outside the 24-hour
+// service window Meta only accepts template messages, so free-text replies are
+// rejected with 409 and the client must send a template (template_id) instead.
 app.post('/api/leads/:id/reply', ah(async (req, res) => {
   const lead = await getLeadForAgent(req.params.id, req.agent.id)
   if (!lead) return res.status(404).json({ error: 'not found' })
-  const text = (req.body?.text || '').trim()
-  if (!text) return res.status(400).json({ error: 'text required' })
+
+  const templateId = req.body?.template_id
+  let text
+  if (templateId) {
+    const tpl = (await listMessageTemplates(req.agent.id)).find((t) => t.id === Number(templateId))
+    if (!tpl) return res.status(404).json({ error: 'template not found' })
+    text = tpl.body
+  } else {
+    text = (req.body?.text || '').trim()
+    if (!text) return res.status(400).json({ error: 'text required' })
+    const win = serviceWindow(lead)
+    // Only enforce when we know the window state (legacy leads have no anchor).
+    if (lead.last_inbound_at && !win.open) {
+      return res.status(409).json({
+        error: 'The 24-hour service window has closed — send an approved template instead',
+        code: 'WINDOW_EXPIRED',
+        service_window: win,
+      })
+    }
+  }
+
   try {
     const waMsgId = await sendText(lead.wa_id, text, req.agent.wa_phone_number_id)
     const msg = await addMessage(lead.id, 'agent', text, waMsgId)
@@ -413,6 +470,28 @@ app.post('/api/leads/:id/reply', ah(async (req, res) => {
   } catch (err) {
     res.status(err.code === 'WA_NOT_CONFIGURED' ? 503 : 502).json({ error: err.message })
   }
+}))
+
+// --- EMI calculator: agents can compute an EMI for any client question ---
+app.post('/api/emi', ah(async (req, res) => {
+  const { text, principal_l, rate_pct, years } = req.body ?? {}
+  const parsed = text
+    ? parseEmiQuery(text)
+    : principal_l != null
+      ? {
+          principalLakhs: Number(principal_l),
+          ratePct: rate_pct != null ? Number(rate_pct) : 8.5,
+          years: years != null ? Number(years) : 20,
+          assumedRate: rate_pct == null,
+          assumedTenure: years == null,
+        }
+      : null
+  if (!parsed || !(parsed.principalLakhs > 0)) {
+    return res.status(400).json({ error: 'Could not find a loan amount — try "80L at 8.5% for 20 years"' })
+  }
+  const message = formatEmiMessage(parsed)
+  if (!message) return res.status(400).json({ error: 'Invalid EMI inputs' })
+  res.json({ ...parsed, message })
 }))
 
 // --- Contacts: auto-captured from WhatsApp conversations. There is no manual
@@ -512,6 +591,19 @@ app.put('/api/properties/:id', ah(async (req, res) => {
 app.delete('/api/properties/:id', ah(async (req, res) => {
   if (!(await deleteProperty(req.params.id, req.agent.id))) return res.status(404).json({ error: 'not found' })
   res.json({ ok: true })
+}))
+
+// Micro-page share link: ensures the property has a public slug and returns the
+// URL plus view stats. Idempotent — safe to call every time the share sheet opens.
+app.post('/api/properties/:id/micro-page', ah(async (req, res) => {
+  const property = await ensurePropertySlug(req.params.id, req.agent.id)
+  if (!property) return res.status(404).json({ error: 'not found' })
+  res.json({
+    slug: property.micro_page_slug,
+    url: `${req.protocol}://${req.get('host')}/p/${property.micro_page_slug}`,
+    page_views: property.page_views || 0,
+    stats: await propertyViewStats(property.id),
+  })
 }))
 
 // Format a property as a WhatsApp-ready message.
@@ -637,6 +729,81 @@ app.put('/api/site-visits/:id', ah(async (req, res) => {
   }
 }))
 
+// --- Message templates (used by the template-only composer after the 24h window) ---
+app.get('/api/templates', ah(async (req, res) => res.json(await listMessageTemplates(req.agent.id))))
+
+app.post('/api/templates', ah(async (req, res) => {
+  try {
+    res.json(await createMessageTemplate(req.agent.id, pick(req.body ?? {}, ['name', 'category', 'body', 'variables', 'rera_auto_append'])))
+  } catch (err) {
+    if (!pgBadRequest(err) && !/name and body are required/.test(err.message) && err.code !== '23505') throw err
+    res.status(400).json({ error: err.message })
+  }
+}))
+
+// --- Festive greeting templates: pre-built Indian festival greetings the agent
+// can customise and schedule for the festival date. ---
+app.get('/api/templates/festive', ah(async (req, res) =>
+  res.json({ festivals: FESTIVALS, scheduled: await listFestiveSchedules(req.agent.id) }),
+))
+
+// Deliver one festive greeting blast to an agent's contacts (all non-opted-out).
+async function deliverFestiveGreeting(agent, message) {
+  const recipients = await festiveRecipients(agent.id)
+  let sent = 0
+  let failed = 0
+  for (const contact of recipients) {
+    try {
+      await sendText(
+        contact.phone.replace('+', ''),
+        personalizeGreeting(message, { name: contact.name, agent: agent.name }),
+        agent.wa_phone_number_id,
+      )
+      sent++
+    } catch (err) {
+      failed++
+      if (err.code === 'WA_NOT_CONFIGURED') throw err // no point retrying the rest
+    }
+  }
+  return { sent, failed, recipients: recipients.length }
+}
+
+// Send now, or schedule for later (send_at in the future).
+app.post('/api/templates/festive/send', ah(async (req, res) => {
+  const { festival, message, send_at } = req.body ?? {}
+  const fest = getFestival(festival)
+  if (!fest) return res.status(400).json({ error: 'Unknown festival' })
+  const body = (message || '').trim() || fest.default_message
+
+  if (send_at) {
+    const when = new Date(send_at)
+    if (Number.isNaN(when.getTime())) return res.status(400).json({ error: 'Invalid send_at' })
+    if (when.getTime() <= Date.now()) return res.status(400).json({ error: 'send_at must be in the future' })
+    const schedule = await createFestiveSchedule(req.agent.id, {
+      festival_key: fest.key,
+      message: body,
+      send_at: when.toISOString(),
+    })
+    await logActivity(req.agent.id, null, 'agent', `${fest.name} greeting scheduled for ${when.toDateString()}`)
+    return res.json({ scheduled: true, schedule })
+  }
+
+  try {
+    const result = await deliverFestiveGreeting(req.agent, body)
+    await logActivity(req.agent.id, null, 'agent', `${fest.name} greeting sent to ${result.sent} contacts`)
+    res.json({ scheduled: false, ...result })
+  } catch (err) {
+    res.status(err.code === 'WA_NOT_CONFIGURED' ? 503 : 502).json({ error: err.message })
+  }
+}))
+
+// Cancel a pending scheduled greeting.
+app.delete('/api/templates/festive/:id', ah(async (req, res) => {
+  const cancelled = await cancelFestiveSchedule(req.params.id, req.agent.id)
+  if (!cancelled) return res.status(404).json({ error: 'not found or already sent' })
+  res.json(cancelled)
+}))
+
 // --- Home dashboard: everything the agent needs to act on right now ---
 app.get('/api/dashboard', ah(async (req, res) => res.json(await dashboard(req.agent.id))))
 
@@ -669,6 +836,19 @@ app.get('/api/health', (_req, res) =>
   }),
 )
 
+// --- Public property micro-page: /p/:slug — shareable in broker groups, no auth.
+// Every hit is recorded as an engagement signal on the property.
+app.get('/p/:slug', ah(async (req, res) => {
+  const property = await getPropertyBySlug(req.params.slug)
+  if (!property) {
+    return res.status(404).send('<!doctype html><meta charset="utf-8"><title>Not found</title><p style="font-family:sans-serif;text-align:center;margin-top:20vh">🏠 This property page is no longer available.</p>')
+  }
+  recordPropertyView(property.id, req.get('referer') || null).catch((err) =>
+    console.error('page view tracking failed', err),
+  )
+  res.type('html').send(renderMicroPage(property))
+}))
+
 // Serve the built admin site at /admin (built with `npm run build:admin`).
 const adminDist = path.join(__dirname, '..', 'admin', 'dist')
 app.use('/admin', express.static(adminDist))
@@ -688,8 +868,28 @@ app.use((err, _req, res, _next) => {
 // Migrations must be applied before any request touches the schema.
 await ready
 
+// Deliver due festive greetings. Runs once a minute in production; exported so
+// tests can drive it directly.
+export async function deliverDueFestiveSchedules() {
+  const due = await claimDueFestiveSchedules()
+  for (const schedule of due) {
+    try {
+      const agent = await getAgent(schedule.agent_id)
+      const fest = getFestival(schedule.festival_key)
+      const result = await deliverFestiveGreeting(agent, schedule.message)
+      await finishFestiveSchedule(schedule.id, { sentCount: result.sent })
+      await logActivity(agent.id, null, 'agent', `${fest?.name || schedule.festival_key} greeting delivered to ${result.sent} contacts`)
+    } catch (err) {
+      console.error(`festive schedule #${schedule.id} delivery failed:`, err.message)
+      await finishFestiveSchedule(schedule.id, { sentCount: 0, failed: true }).catch(() => {})
+    }
+  }
+  return due.length
+}
+
 // Start listening only when run directly (`node index.js`), not when imported by tests.
 if (process.env.NODE_ENV !== 'test') {
+  setInterval(() => deliverDueFestiveSchedules().catch((err) => console.error('festive scheduler error', err)), 60_000)
   app.listen(PORT, () => {
     console.log(`HomeNex server on :${PORT}`)
     if (!whatsappConfigured()) console.log('⚠ WhatsApp credentials missing — dashboard works, sends disabled')

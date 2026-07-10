@@ -439,9 +439,16 @@ export default function LeadDetail({ leadId, onClose, onOpenConversation, onChan
 
   const bltc = [
     ['💬 Summary', lead.ai_summary, null],
+    ['🎯 Intent', lead.intent && lead.intent[0].toUpperCase() + lead.intent.slice(1), null],
     ['📍 Location', lead.locality, lead.location_note],
     ['🏠 Config', lead.config, lead.config_note],
   ]
+
+  const AI_SCORE_STYLE = {
+    hot: 'bg-amber-wash text-hot border-amber/40',
+    warm: 'bg-brand-wash text-brand-deep border-brand/30',
+    cold: 'bg-cream text-ink-faint border-line',
+  }
 
   const takeOver = async () => {
     if (lead.ai_enabled) await api.setAi(lead.id, false)
@@ -495,9 +502,16 @@ export default function LeadDetail({ leadId, onClose, onOpenConversation, onChan
 
         {!unassigned && <CrmEditor lead={lead} onSaved={refresh} />}
 
-        {(lead.ai_summary || lead.locality || lead.config) && (
+        {(lead.ai_summary || lead.locality || lead.config || lead.intent || lead.ai_score) && (
           <section className="bg-brand-wash rounded-2xl border border-brand/20 p-4">
-            <p className="text-[10.5px] font-bold tracking-[0.18em] text-brand-deep mb-2">✨ AI CAPTURE</p>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-[10.5px] font-bold tracking-[0.18em] text-brand-deep">✨ AI CAPTURE</p>
+              {lead.ai_score && (
+                <span className={`text-[10.5px] font-bold border rounded-full px-2.5 py-0.5 uppercase ${AI_SCORE_STYLE[lead.ai_score] || AI_SCORE_STYLE.cold}`}>
+                  {lead.ai_score}
+                </span>
+              )}
+            </div>
             <dl className="space-y-2">
               {bltc.filter(([, v]) => v).map(([k, v, note]) => (
                 <div key={k} className="flex gap-3">
@@ -509,6 +523,11 @@ export default function LeadDetail({ leadId, onClose, onOpenConversation, onChan
                 </div>
               ))}
             </dl>
+            {lead.ai_score_reason && (
+              <p className="text-[12px] text-ink-soft mt-2">
+                <strong className="text-ink">Why {lead.ai_score}:</strong> {lead.ai_score_reason}
+              </p>
+            )}
             {lead.next_step && (
               <p className="text-[12px] text-ink-soft mt-2">
                 <strong className="text-ink">Next step:</strong> {lead.next_step}

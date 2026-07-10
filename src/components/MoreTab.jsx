@@ -5,6 +5,7 @@ import ContactsTab from './ContactsTab.jsx'
 import InsightsTab from './InsightsTab.jsx'
 import SettingsTab from './SettingsTab.jsx'
 import LeadDetail from './LeadDetail.jsx'
+import FestiveTab from './FestiveTab.jsx'
 
 function SubScreen({ title, onBack, children }) {
   return (
@@ -145,6 +146,7 @@ const MENU = [
   { id: 'followups', icon: '⏰', label: 'Follow-ups', sub: 'Reminders and overdue nudges' },
   { id: 'sitevisits', icon: '🏗️', label: 'Site visits', sub: "Today's and upcoming visits" },
   { id: 'contacts', icon: '👥', label: 'Contacts', sub: 'Auto-captured from WhatsApp' },
+  { id: 'festive', icon: '🪔', label: 'Festive greetings', sub: 'Diwali, Holi, Eid & more — schedule wishes' },
   { id: 'insights', icon: '📊', label: 'Insights', sub: 'Performance and market network' },
   { id: 'settings', icon: '⚙️', label: 'Settings', sub: 'WhatsApp Business number, account' },
 ]
@@ -169,6 +171,12 @@ export default function MoreTab({ agent, onAgentUpdate, onOpenConversation }) {
           <LeadDetail leadId={leadId} onClose={() => setLeadId(null)} onOpenConversation={onOpenConversation} />
         )}
       </div>
+    )
+  if (screen === 'festive')
+    return (
+      <SubScreen title="Festive greetings" onBack={() => setScreen(null)}>
+        <FestiveTab />
+      </SubScreen>
     )
   if (screen === 'insights')
     return (

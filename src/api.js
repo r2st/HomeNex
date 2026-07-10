@@ -34,6 +34,55 @@ const put = (url, body) =>
     headers: { 'content-type': 'application/json', ...authHeaders() },
     body: JSON.stringify(body),
   }).then(j)
+
+// --- Offline action queue: follow-up creation and stage moves survive dead spots.
+// Failed-by-network writes are stored locally and replayed when connectivity returns.
+const QUEUE_KEY = 'homenex-offline-queue'
+const readQueue = () => {
+  try {
+    return JSON.parse(localStorage.getItem(QUEUE_KEY) || '[]')
+  } catch {
+    return []
+  }
+}
+const writeQueue = (queue) => localStorage.setItem(QUEUE_KEY, JSON.stringify(queue))
+export const offlineQueueSize = () => readQueue().length
+
+// A fetch that throws TypeError (no response at all) means the network is down.
+const isNetworkError = (err) => err instanceof TypeError
+
+async function queueable(method, url, body) {
+  try {
+    return await (method === 'POST' ? post(url, body) : put(url, body))
+  } catch (err) {
+    if (!isNetworkError(err)) throw err
+    writeQueue([...readQueue(), { method, url, body, queued_at: new Date().toISOString() }])
+    window.dispatchEvent(new Event('homenex-queued'))
+    return { queued: true }
+  }
+}
+
+// Replay queued actions in order; stop at the first network failure (still offline).
+// Non-network errors (validation, 404) drop the action — it can never succeed.
+export async function flushOfflineQueue() {
+  let queue = readQueue()
+  while (queue.length) {
+    const [action, ...rest] = queue
+    try {
+      await (action.method === 'POST' ? post(action.url, action.body) : put(action.url, action.body))
+    } catch (err) {
+      if (isNetworkError(err)) break
+    }
+    queue = rest
+    writeQueue(queue)
+  }
+  if (!queue.length) window.dispatchEvent(new Event('homenex-queue-flushed'))
+  return queue.length
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('online', () => flushOfflineQueue().catch(() => {}))
+}
 const del = (url) => fetch(url, { method: 'DELETE', headers: authHeaders() }).then(j)
 
 const qs = (params) => {
@@ -51,7 +100,9 @@ export const api = {
   leads: (filters) => get(`/api/leads${qs(filters)}`),
   lead: (id) => get(`/api/leads/${id}`),
   updateLead: (id, body) => put(`/api/leads/${id}`, body),
-  moveLeadStage: (id, stage, lost_reason) => put(`/api/leads/${id}/stage`, { stage, lost_reason }),
+  moveLeadStage: (id, stage, lost_reason) => queueable('PUT', `/api/leads/${id}/stage`, { stage, lost_reason }),
+  suggestions: (id) => get(`/api/leads/${id}/suggestions`),
+  emi: (body) => post('/api/emi', body),
   pipelineStages: (type) => get(`/api/pipeline-stages${qs({ type })}`),
   stats: () => get('/api/stats'),
   activity: () => get('/api/activity'),
@@ -59,6 +110,13 @@ export const api = {
   network: () => get('/api/network'),
   postNetwork: (body) => post('/api/network', body),
   reply: (id, text) => post(`/api/leads/${id}/reply`, { text }),
+  replyTemplate: (id, templateId) => post(`/api/leads/${id}/reply`, { template_id: templateId }),
+  templates: () => get('/api/templates'),
+  createTemplate: (body) => post('/api/templates', body),
+  festive: () => get('/api/templates/festive'),
+  sendFestive: (body) => post('/api/templates/festive/send', body),
+  cancelFestive: (id) => del(`/api/templates/festive/${id}`),
+  microPage: (propertyId) => post(`/api/properties/${propertyId}/micro-page`, {}),
   setAi: (id, enabled) => post(`/api/leads/${id}/ai`, { enabled }),
   assignLead: (id) => post(`/api/leads/${id}/assign`, {}),
   contacts: (search) => get(`/api/contacts${qs({ q: search })}`),
@@ -72,7 +130,7 @@ export const api = {
   deleteProperty: (id) => del(`/api/properties/${id}`),
   sendPropertyToChat: (id, leadId) => post(`/api/properties/${id}/send-to-chat`, { lead_id: leadId }),
   followups: (filters) => get(`/api/followups${qs(filters)}`),
-  createFollowup: (body) => post('/api/followups', body),
+  createFollowup: (body) => queueable('POST', '/api/followups', body),
   updateFollowup: (id, body) => put(`/api/followups/${id}`, body),
   siteVisits: (filters) => get(`/api/site-visits${qs(filters)}`),
   createSiteVisit: (body) => post('/api/site-visits', body),

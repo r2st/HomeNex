@@ -416,8 +416,21 @@ export async function addMessage(leadId, role, text, waMessageId = null) {
     'INSERT INTO messages (lead_id, role, text, wa_message_id) VALUES ($1, $2, $3, $4) RETURNING *',
     [leadId, role, text, waMessageId],
   )
-  await q('UPDATE leads SET updated_at = now() WHERE id = $1', [leadId])
+  // A buyer message (re)opens the WhatsApp 24-hour service window.
+  if (role === 'buyer') {
+    await q('UPDATE leads SET last_inbound_at = now(), updated_at = now() WHERE id = $1', [leadId])
+  } else {
+    await q('UPDATE leads SET updated_at = now() WHERE id = $1', [leadId])
+  }
   return rows[0]
+}
+
+// WhatsApp 24h service window state for a lead. The window opens on the last
+// inbound (buyer) message; after 24h only template messages may be sent.
+export function serviceWindow(lead) {
+  if (!lead?.last_inbound_at) return { open: false, expires_at: null }
+  const expires = new Date(new Date(lead.last_inbound_at).getTime() + 24 * 3600_000)
+  return { open: expires.getTime() > Date.now(), expires_at: expires.toISOString() }
 }
 
 export async function getMessages(leadId, limit = 200) {
@@ -441,8 +454,19 @@ export async function recordFirstResponse(leadId) {
 }
 
 export async function applyExtraction(leadId, x) {
+  // Legacy budget columns are lakhs; the CRM columns (budget_min/budget_max) are paise.
+  const paise = (lakhs) => (lakhs == null ? null : Math.round(Number(lakhs) * 1e7))
   await q(
     `UPDATE leads SET
+       intent = COALESCE($17, intent),
+       bhk = COALESCE($18, bhk),
+       preferred_localities = COALESCE($19, preferred_localities),
+       financing = COALESCE($20, financing),
+       budget_min = COALESCE($21, budget_min),
+       budget_max = COALESCE($22, budget_max),
+       ai_score = COALESCE($23, ai_score),
+       ai_score_reason = COALESCE($24, ai_score_reason),
+       ai_extracted = COALESCE($25, ai_extracted),
        name = COALESCE($1, name),
        temp = COALESCE($2, temp),
        score = COALESCE($3, score),
@@ -477,6 +501,15 @@ export async function applyExtraction(leadId, x) {
       x.next_step ?? null,
       x.score_breakdown ? JSON.stringify(x.score_breakdown) : null,
       leadId,
+      x.intent ?? null,
+      x.bhk ?? null,
+      x.preferred_localities ? JSON.stringify(x.preferred_localities) : null,
+      x.financing ?? null,
+      paise(x.budget_min_l),
+      paise(x.budget_max_l),
+      x.temp ? x.temp.toLowerCase() : null,
+      x.score_reason ?? null,
+      JSON.stringify(x),
     ],
   )
 }
@@ -952,8 +985,20 @@ const PROPERTY_FIELDS = {
   micro_page_slug: 'text',
 }
 
+// URL slug for a property micro-page: slugified title + short random suffix.
+function makePropertySlug(title) {
+  const base = String(title || 'property')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60) || 'property'
+  return `${base}-${Math.random().toString(36).slice(2, 8)}`
+}
+
 export async function createProperty(agentId, p) {
   if (!p.title || !String(p.title).trim()) throw new Error('Property title is required')
+  // Every property gets a shareable public micro-page slug from birth.
+  if (!p.micro_page_slug) p = { ...p, micro_page_slug: makePropertySlug(p.title) }
   const cols = ['agent_id']
   const params = [agentId]
   for (const [col, kind] of Object.entries(PROPERTY_FIELDS)) {
@@ -1015,8 +1060,114 @@ export async function updateProperty(id, agentId, fields) {
 }
 
 export async function deleteProperty(id, agentId) {
+  await q('DELETE FROM property_page_views WHERE property_id IN (SELECT id FROM properties WHERE id = $1 AND agent_id = $2)', [id, agentId])
   const res = await q('DELETE FROM properties WHERE id = $1 AND agent_id = $2', [id, agentId])
   return res.rowCount > 0
+}
+
+// --- Property micro-pages (public, no auth) ---
+
+// Public lookup by slug, joined with the owning agent's contact details for the CTA.
+export async function getPropertyBySlug(slug) {
+  const { rows } = await q(
+    `SELECT p.*, a.name AS agent_name, a.wa_phone_number AS agent_wa_number, a.phone AS agent_phone
+     FROM properties p JOIN agents a ON a.id = p.agent_id
+     WHERE p.micro_page_slug = $1`,
+    [slug],
+  )
+  return rows[0]
+}
+
+// Backfill a slug for a property created before micro-pages existed.
+export async function ensurePropertySlug(id, agentId) {
+  const property = await getProperty(id, agentId)
+  if (!property) return null
+  if (property.micro_page_slug) return property
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const { rows } = await q(
+        'UPDATE properties SET micro_page_slug = $3, updated_at = now() WHERE id = $1 AND agent_id = $2 RETURNING *',
+        [id, agentId, makePropertySlug(property.title)],
+      )
+      return rows[0]
+    } catch (err) {
+      if (err.code !== '23505') throw err // retry only on slug collision
+    }
+  }
+  throw new Error('Could not generate a unique micro-page slug')
+}
+
+// Record one public page view — the engagement signal agents see on the property card.
+export async function recordPropertyView(propertyId, referrer = null) {
+  await q('INSERT INTO property_page_views (property_id, referrer) VALUES ($1, $2)', [
+    propertyId,
+    referrer ? String(referrer).slice(0, 500) : null,
+  ])
+  await q('UPDATE properties SET page_views = page_views + 1 WHERE id = $1', [propertyId])
+}
+
+export async function propertyViewStats(propertyId) {
+  const { rows } = await q(
+    `SELECT COUNT(*)::int AS total,
+            COUNT(*) FILTER (WHERE viewed_at >= now() - interval '7 days')::int AS last_7d
+     FROM property_page_views WHERE property_id = $1`,
+    [propertyId],
+  )
+  return rows[0]
+}
+
+// --- Festive greeting schedules ---
+
+export async function createFestiveSchedule(agentId, { festival_key, message, send_at }) {
+  const { rows } = await q(
+    `INSERT INTO festive_schedules (agent_id, festival_key, message, send_at)
+     VALUES ($1, $2, $3, $4) RETURNING *`,
+    [agentId, festival_key, message, send_at],
+  )
+  return rows[0]
+}
+
+export async function listFestiveSchedules(agentId) {
+  return (
+    await q('SELECT * FROM festive_schedules WHERE agent_id = $1 ORDER BY send_at DESC LIMIT 100', [agentId])
+  ).rows
+}
+
+export async function cancelFestiveSchedule(id, agentId) {
+  const { rows } = await q(
+    `UPDATE festive_schedules SET status = 'cancelled', updated_at = now()
+     WHERE id = $1 AND agent_id = $2 AND status = 'scheduled' RETURNING *`,
+    [id, agentId],
+  )
+  return rows[0]
+}
+
+// Claim due schedules for delivery (status flips to 'sent' up front so two
+// server instances can't double-send; sent_count is stamped after delivery).
+export async function claimDueFestiveSchedules() {
+  return (
+    await q(
+      `UPDATE festive_schedules SET status = 'sent', updated_at = now()
+       WHERE status = 'scheduled' AND send_at <= now() RETURNING *`,
+    )
+  ).rows
+}
+
+export async function finishFestiveSchedule(id, { sentCount, failed = false }) {
+  await q(
+    `UPDATE festive_schedules SET sent_count = $2, status = $3, updated_at = now() WHERE id = $1`,
+    [id, sentCount, failed ? 'failed' : 'sent'],
+  )
+}
+
+// Recipients for a festive blast: the agent's contacts who haven't opted out.
+export async function festiveRecipients(agentId) {
+  return (
+    await q(
+      `SELECT * FROM contacts WHERE agent_id = $1 AND opt_in_status != 'opted_out' ORDER BY id`,
+      [agentId],
+    )
+  ).rows
 }
 
 // --- CRM: site visits ---

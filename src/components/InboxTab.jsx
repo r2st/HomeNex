@@ -1,12 +1,81 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, usePoll, fmtTime, fmtAgo } from '../api.js'
+import { api, usePoll, fmtTime, fmtAgo, parseTs } from '../api.js'
 
 const ROLE_LABEL = { ai: 'HomeNex AI', agent: 'You' }
+
+// WhatsApp 24h service window state, derived from the last inbound message.
+// Leads without an anchor (pre-tracking) are treated as open.
+function windowState(lead, now) {
+  if (!lead?.last_inbound_at) return { known: false, open: true, msLeft: null }
+  const expires = parseTs(lead.last_inbound_at).getTime() + 24 * 3600_000
+  return { known: true, open: expires > now, msLeft: expires - now }
+}
+
+const fmtCountdown = (ms) => {
+  const h = Math.floor(ms / 3600_000)
+  const m = Math.floor((ms % 3600_000) / 60_000)
+  return h > 0 ? `${h}h ${m}m` : `${Math.max(1, m)}m`
+}
+
+// Template picker shown when the service window has closed (Meta policy:
+// only approved templates may start a business-initiated conversation).
+function TemplateComposer({ lead, onSent, onError }) {
+  const [templates, setTemplates] = useState(null)
+  const [sendingId, setSendingId] = useState(null)
+
+  useEffect(() => {
+    api.templates().then(setTemplates).catch(() => setTemplates([]))
+  }, [])
+
+  const sendTemplate = async (t) => {
+    setSendingId(t.id)
+    try {
+      await api.replyTemplate(lead.id, t.id)
+      onSent()
+    } catch (e) {
+      onError(e.message)
+    } finally {
+      setSendingId(null)
+    }
+  }
+
+  return (
+    <div>
+      <p className="text-[11.5px] font-bold text-hot bg-amber-wash rounded-lg px-3 py-2 mb-2">
+        ⏱️ 24-hour window closed — only template messages can be sent until{' '}
+        {lead.name || 'the client'} replies again.
+      </p>
+      {templates === null && <p className="text-[11.5px] text-ink-faint px-1">Loading templates…</p>}
+      {templates?.length === 0 && (
+        <p className="text-[11.5px] text-ink-soft px-1">
+          No templates yet. Create one in Settings to re-open conversations.
+        </p>
+      )}
+      <div className="space-y-1.5 max-h-40 overflow-y-auto no-scrollbar">
+        {(templates || []).map((t) => (
+          <button
+            key={t.id}
+            onClick={() => sendTemplate(t)}
+            disabled={sendingId != null}
+            className="w-full text-left bg-white border border-line rounded-xl px-3.5 py-2.5 active:scale-[0.99] transition disabled:opacity-50"
+          >
+            <p className="text-[12px] font-bold text-ink">{t.name}</p>
+            <p className="text-[11.5px] text-ink-soft truncate">{t.body}</p>
+            {sendingId === t.id && <p className="text-[10.5px] text-brand font-bold mt-0.5">Sending…</p>}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 function Conversation({ leadId, onBack }) {
   const [sendError, setSendError] = useState(null)
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
+  const [suggestions, setSuggestions] = useState([])
+  const [now, setNow] = useState(Date.now())
+  const suggestedForRef = useRef(null)
   const scrollRef = useRef(null)
   const { data: lead } = usePoll(() => api.lead(leadId), 3000, [leadId])
 
@@ -14,7 +83,36 @@ function Conversation({ leadId, onBack }) {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
   }, [lead?.messages?.length])
 
+  // Tick every 30s so the 24h-window countdown stays fresh.
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 30_000)
+    return () => clearInterval(t)
+  }, [])
+
+  // Fetch AI reply suggestions when the buyer is waiting on an answer.
+  // Keyed on the last message so we only ask once per inbound message.
+  const lastMsg = lead?.messages?.[lead.messages.length - 1]
+  useEffect(() => {
+    if (!lead || !lastMsg) return
+    if (lastMsg.role !== 'buyer') {
+      suggestedForRef.current = null
+      setSuggestions([])
+      return
+    }
+    if (suggestedForRef.current === lastMsg.id) return
+    suggestedForRef.current = lastMsg.id
+    api
+      .suggestions(lead.id)
+      .then((r) => {
+        if (suggestedForRef.current === lastMsg.id) setSuggestions(r.suggestions || [])
+      })
+      .catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lead?.id, lastMsg?.id, lastMsg?.role])
+
   if (!lead) return <p className="text-center text-[13px] text-ink-faint pt-16">Loading…</p>
+
+  const win = windowState(lead, now)
 
   const toggleAi = async () => {
     await api.setAi(lead.id, !lead.ai_enabled)
@@ -48,6 +146,11 @@ function Conversation({ leadId, onBack }) {
           <p className="text-white/75 text-[11px] truncate">
             +{lead.wa_id} · {lead.temp} · score {lead.score}
           </p>
+          {win.known && (
+            <p className={`text-[10px] font-bold ${win.open ? 'text-emerald-300' : 'text-amber-300'}`}>
+              {win.open ? `🟢 window open · ${fmtCountdown(win.msLeft)} left` : '🔒 window closed · templates only'}
+            </p>
+          )}
         </div>
         <button
           onClick={toggleAi}
@@ -88,6 +191,23 @@ function Conversation({ leadId, onBack }) {
         {sendError && (
           <p className="text-[11.5px] text-hot bg-amber-wash rounded-lg px-3 py-2 mb-2">{sendError}</p>
         )}
+        {!win.open ? (
+          <TemplateComposer lead={lead} onSent={() => setSendError(null)} onError={setSendError} />
+        ) : (
+        <>
+        {suggestions.length > 0 && (
+          <div className="flex gap-2 overflow-x-auto no-scrollbar pb-2">
+            {suggestions.map((s, i) => (
+              <button
+                key={i}
+                onClick={() => setDraft(s)}
+                className="shrink-0 max-w-[240px] text-left text-[11.5px] leading-snug bg-brand-wash text-brand-deep border border-brand/25 rounded-xl px-3 py-2 active:scale-95 transition"
+              >
+                ✨ <span className="line-clamp-2">{s}</span>
+              </button>
+            ))}
+          </div>
+        )}
         <div className="flex items-end gap-2">
           <textarea
             value={draft}
@@ -115,6 +235,8 @@ function Conversation({ leadId, onBack }) {
         <p className="text-[10.5px] text-ink-faint mt-1.5 px-1">
           Sends a real WhatsApp message from your business number.
         </p>
+        </>
+        )}
       </div>
     </div>
   )
