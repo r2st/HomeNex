@@ -35,6 +35,35 @@ function OfflineBanner() {
   )
 }
 
+// WhatsApp health strip: warns when the business number can't send right now — almost
+// always an expired access token. Without this, agents only discover it on a failed send.
+function WhatsAppBanner() {
+  const [status, setStatus] = useState(null)
+
+  useEffect(() => {
+    let alive = true
+    const check = () =>
+      api.health().then((h) => alive && setStatus(h)).catch(() => {})
+    check()
+    const id = setInterval(check, 60_000) // matches the server-side token-check cache
+    return () => {
+      alive = false
+      clearInterval(id)
+    }
+  }, [])
+
+  // Only warn once we know credentials are present but sending is down.
+  if (!status || !status.whatsapp || status.whatsapp_send !== false) return null
+  const expired = status.whatsapp_reason === 'token_expired'
+  return (
+    <div className="sticky top-0 z-40 text-center text-[11.5px] font-bold py-1.5 bg-amber-wash text-gold">
+      {expired
+        ? '⚠️ WhatsApp token expired — messages can’t be sent until it’s refreshed'
+        : '⚠️ WhatsApp sending is unavailable right now'}
+    </div>
+  )
+}
+
 export default function App() {
   const [tab, setTab] = useState('home')
   const [inboxLeadId, setInboxLeadId] = useState(null)
@@ -91,6 +120,7 @@ export default function App() {
   return (
     <div className="phone">
       <OfflineBanner />
+      <WhatsAppBanner />
       <main className="pb-24">
         {tab === 'home' && (
           <DashboardTab

@@ -102,7 +102,7 @@ import { renderMicroPage } from './micropage.js'
 import { buildBriefing } from './briefing.js'
 import { evaluateSend, warmupDailyCap, SEND_BLOCK_REASONS } from './sendLimiter.js'
 import { runDueJobs } from './scheduler.js'
-import { sendText, markRead, whatsappConfigured } from './whatsapp.js'
+import { sendText, markRead, whatsappConfigured, checkToken } from './whatsapp.js'
 import { signup, login, changePhone, changePassword, requireAuth } from './auth.js'
 import { handleAgentCommand } from './agentCommands.js'
 import adminRouter from './adminRoutes.js'
@@ -175,8 +175,11 @@ async function handleInbound({ agentId = null, brokerName, waId, name, text, sou
         try {
           waMsgId = await sendText(waId, reply, phoneNumberId)
         } catch (err) {
-          console.error(err.message)
-          await logActivity(agentId, lead.id, 'error', `WhatsApp send failed for ${name || waId}`)
+          console.error('agent reply send failed', err.message)
+          const note = err.code === 'WA_TOKEN_EXPIRED'
+            ? `WhatsApp token expired — reply to ${name || waId} not delivered`
+            : `WhatsApp send failed for ${name || waId}`
+          await logActivity(agentId, lead.id, 'error', note)
         }
       }
       await addMessage(lead.id, 'ai', reply, waMsgId)
@@ -582,7 +585,7 @@ app.post('/api/leads/:id/reply', ah(async (req, res) => {
     await recordFirstResponse(lead.id)
     res.json(msg)
   } catch (err) {
-    res.status(err.code === 'WA_NOT_CONFIGURED' ? 503 : 502).json({ error: err.message })
+    res.status(err.code === 'WA_NOT_CONFIGURED' ? 503 : 502).json({ error: err.message, code: err.code })
   }
 }))
 
@@ -761,7 +764,7 @@ app.post('/api/properties/:id/send-to-chat', ah(async (req, res) => {
     await logAudit(req.agent.id, 'property', property.id, 'send_to_chat', { lead_id: lead.id })
     res.json({ ok: true, message: msg })
   } catch (err) {
-    res.status(err.code === 'WA_NOT_CONFIGURED' ? 503 : 502).json({ error: err.message })
+    res.status(err.code === 'WA_NOT_CONFIGURED' ? 503 : 502).json({ error: err.message, code: err.code })
   }
 }))
 
@@ -948,7 +951,7 @@ app.post('/api/templates/festive/send', ah(async (req, res) => {
     await logActivity(req.agent.id, null, 'agent', `${fest.name} greeting sent to ${result.sent} contacts`)
     res.json({ scheduled: false, ...result })
   } catch (err) {
-    res.status(err.code === 'WA_NOT_CONFIGURED' ? 503 : 502).json({ error: err.message })
+    res.status(err.code === 'WA_NOT_CONFIGURED' ? 503 : 502).json({ error: err.message, code: err.code })
   }
 }))
 
@@ -1066,7 +1069,7 @@ app.post('/api/groups/:id/send', ah(async (req, res) => {
     await logActivity(req.agent.id, null, 'agent', `Group blast to ${result.sent}/${recipients.length} (${result.skipped} skipped by limiter)`)
     res.json(result)
   } catch (err) {
-    res.status(err.code === 'WA_NOT_CONFIGURED' ? 503 : 502).json({ error: err.message })
+    res.status(err.code === 'WA_NOT_CONFIGURED' ? 503 : 502).json({ error: err.message, code: err.code })
   }
 }))
 
@@ -1090,14 +1093,29 @@ app.post('/api/simulate', ah(async (req, res) => {
   res.json(result)
 }))
 
-app.get('/api/health', (_req, res) =>
+// Cache the live token probe so a polling dashboard doesn't hit the Graph API on every request.
+let waTokenCache = { at: 0, result: null }
+async function waTokenStatus() {
+  if (!whatsappConfigured()) return { ok: false, reason: 'not_configured' }
+  const now = Date.now()
+  if (waTokenCache.result && now - waTokenCache.at < 60_000) return waTokenCache.result
+  const result = await checkToken()
+  waTokenCache = { at: now, result }
+  return result
+}
+
+app.get('/api/health', ah(async (_req, res) => {
+  // whatsapp = credentials present; whatsapp_send = the token can actually send right now.
+  const token = await waTokenStatus()
   res.json({
     ok: true,
     whatsapp: whatsappConfigured(),
+    whatsapp_send: token.ok,
+    whatsapp_reason: token.ok ? undefined : (token.expired ? 'token_expired' : token.reason),
     ai: aiConfigured(),
     signature: Boolean(WHATSAPP_APP_SECRET),
-  }),
-)
+  })
+}))
 
 // --- Public property micro-page: /p/:slug — shareable in broker groups, no auth.
 // Every hit is recorded as an engagement signal on the property.
