@@ -103,6 +103,7 @@ import { buildBriefing } from './briefing.js'
 import { evaluateSend, warmupDailyCap, SEND_BLOCK_REASONS } from './sendLimiter.js'
 import { runDueJobs } from './scheduler.js'
 import { sendText, markRead, whatsappConfigured, checkToken } from './whatsapp.js'
+import { privacyPage, termsPage } from './legal.js'
 import { signup, login, changePhone, changePassword, requireAuth } from './auth.js'
 import { handleAgentCommand } from './agentCommands.js'
 import adminRouter from './adminRoutes.js'
@@ -1137,6 +1138,11 @@ app.get('/p/:slug', ah(async (req, res) => {
   )
   res.type('html').send(renderMicroPage(property))
 }))
+
+// Public legal pages — needed for Meta app review (Privacy Policy + Terms URLs).
+// Must be registered before the SPA catch-all so they aren't swallowed by index.html.
+app.get('/privacy', (_req, res) => res.type('html').send(privacyPage()))
+app.get('/terms', (_req, res) => res.type('html').send(termsPage()))
 
 // Serve the built admin site at /admin (built with `npm run build:admin`).
 const adminDist = path.join(__dirname, '..', 'admin', 'dist')
