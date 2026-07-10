@@ -178,7 +178,9 @@ export async function suggestReplies(messages, lead, brokerName) {
       { role: 'system', content: SUGGEST_PROMPT(brokerName, context) },
       { role: 'user', content: taggedTranscript(messages, 24) },
     ],
-    { json: true, maxTokens: 500 },
+    // Reasoning models (gpt-oss-*) spend this budget on reasoning tokens before
+    // emitting any content; too low and chat() returns null and the chips vanish.
+    { json: true, maxTokens: 1000 },
   )
   const parsed = parseJson(raw)
   if (!Array.isArray(parsed?.suggestions)) return []
