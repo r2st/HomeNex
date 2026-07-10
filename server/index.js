@@ -3,7 +3,8 @@ import express from 'express'
 import crypto from 'node:crypto'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import db, {
+import {
+  ready,
   upsertLead,
   upsertUnassignedLead,
   assignLead,
@@ -14,6 +15,7 @@ import db, {
   findAgentByPhone,
   findAgentByPhoneNumberId,
   updateAgentPhoneConfig,
+  setAgentWaPhone,
   addMessage,
   getMessages,
   recordFirstResponse,
@@ -27,12 +29,12 @@ import db, {
   computeMatches,
   stats,
   findContactByWaId,
+  recordContactMessage,
   listContacts,
   addContact,
   bulkAddContacts,
   deleteContact,
   normalizePhone,
-  countAgents,
 } from './db.js'
 import { generateReply, extractLead, aiConfigured } from './ai.js'
 import { sendText, markRead, whatsappConfigured } from './whatsapp.js'
@@ -44,6 +46,9 @@ const { PORT = 8787, WHATSAPP_VERIFY_TOKEN = 'homenex-verify', WHATSAPP_APP_SECR
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
+
+// Express 4 doesn't forward rejected-promise errors from async handlers; wrap them.
+const ah = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next)
 
 app.use(
   express.json({
@@ -70,18 +75,19 @@ function verifySignature(req) {
 // persist -> AI reply -> WhatsApp send (from the shared number) -> extract BLTC.
 // agentId is null for the unassigned pool (an unknown sender); brokerName personalises the AI.
 async function handleInbound({ agentId = null, brokerName, waId, name, text, source = 'WhatsApp', phoneNumberId = null, send = true }) {
-  const lead = agentId ? upsertLead(agentId, waId, name) : upsertUnassignedLead(waId, name)
-  const isNewLead = !lead.ai_summary && getMessages(lead.id, 1).length === 0
-  addMessage(lead.id, 'buyer', text)
+  const lead = agentId ? await upsertLead(agentId, waId, name) : await upsertUnassignedLead(waId, name)
+  const isNewLead = !lead.ai_summary && (await getMessages(lead.id, 1)).length === 0
+  await addMessage(lead.id, 'buyer', text)
+  await recordContactMessage(waId) // stamp first/last message time on the CRM contact, if known
   if (isNewLead) {
-    logActivity(agentId, lead.id, 'lead', agentId
+    await logActivity(agentId, lead.id, 'lead', agentId
       ? `New lead: ${name || waId} via ${source}`
       : `Unclaimed lead: ${name || waId} messaged the shared number`)
   }
 
   let reply = null
   if (lead.ai_enabled) {
-    reply = await generateReply(getMessages(lead.id), brokerName)
+    reply = await generateReply(await getMessages(lead.id), brokerName)
     if (reply) {
       let waMsgId = null
       if (send) {
@@ -89,31 +95,31 @@ async function handleInbound({ agentId = null, brokerName, waId, name, text, sou
           waMsgId = await sendText(waId, reply, phoneNumberId)
         } catch (err) {
           console.error(err.message)
-          logActivity(agentId, lead.id, 'error', `WhatsApp send failed for ${name || waId}`)
+          await logActivity(agentId, lead.id, 'error', `WhatsApp send failed for ${name || waId}`)
         }
       }
-      addMessage(lead.id, 'ai', reply, waMsgId)
-      recordFirstResponse(lead.id)
+      await addMessage(lead.id, 'ai', reply, waMsgId)
+      await recordFirstResponse(lead.id)
     }
   }
 
   // Best-effort structured extraction after every buyer message.
   try {
     const prevTemp = lead.temp
-    const x = await extractLead(getMessages(lead.id))
+    const x = await extractLead(await getMessages(lead.id))
     if (x) {
-      applyExtraction(lead.id, x)
-      const updated = getLead(lead.id)
+      await applyExtraction(lead.id, x)
+      const updated = await getLead(lead.id)
       if (updated.temp === 'Hot' && prevTemp !== 'Hot')
-        logActivity(agentId, lead.id, 'hot', `${updated.name || waId} is now HOT (score ${updated.score})`)
+        await logActivity(agentId, lead.id, 'hot', `${updated.name || waId} is now HOT (score ${updated.score})`)
       else if (x.score != null)
-        logActivity(agentId, lead.id, 'ai', `${updated.name || waId} re-scored: ${updated.score}/100`)
+        await logActivity(agentId, lead.id, 'ai', `${updated.name || waId} re-scored: ${updated.score}/100`)
     }
   } catch (err) {
     console.error('extraction failed', err)
   }
 
-  return { lead: getLead(lead.id), reply }
+  return { lead: await getLead(lead.id), reply }
 }
 
 // --- Meta webhook verification (GET) ---
@@ -141,11 +147,11 @@ app.post('/webhook', (req, res) => {
         const phoneNumberId = value?.metadata?.phone_number_id
         // Per-agent routing: if this phone_number_id belongs to a specific agent,
         // every message on that line belongs to them (no shared pool needed).
-        const lineOwner = findAgentByPhoneNumberId(phoneNumberId)
+        const lineOwner = await findAgentByPhoneNumberId(phoneNumberId)
         for (const msg of value?.messages ?? []) {
           // FIRST: is the sender one of our registered agents? Then this is an agent
           // command (add a client, list clients, ...), not a buyer conversation.
-          const agent = findAgentByPhone(msg.from)
+          const agent = await findAgentByPhone(msg.from)
           if (agent) {
             markRead(msg.id, phoneNumberId)
             await handleAgentCommand({ agent, msg, phoneNumberId })
@@ -158,8 +164,8 @@ app.post('/webhook', (req, res) => {
           // to them. The sender is auto-remembered as a contact for future reference.
           if (lineOwner) {
             try {
-              addContact(lineOwner.id, msg.from, waProfileName || msg.from)
-              logActivity(lineOwner.id, null, 'lead', `Auto-added client: ${waProfileName || msg.from} (${msg.from})`)
+              await addContact(lineOwner.id, msg.from, waProfileName || msg.from)
+              await logActivity(lineOwner.id, null, 'lead', `Auto-added client: ${waProfileName || msg.from} (${msg.from})`)
             } catch { /* already exists */ }
             await handleInbound({
               agentId: lineOwner.id,
@@ -173,11 +179,11 @@ app.post('/webhook', (req, res) => {
           }
 
           // Shared-number fallback: match the sender against every agent's saved clients.
-          const contact = findContactByWaId(msg.from)
+          const contact = await findContactByWaId(msg.from)
           if (contact) {
             await handleInbound({
               agentId: contact.agent_id,
-              brokerName: getAgent(contact.agent_id)?.name,
+              brokerName: (await getAgent(contact.agent_id))?.name,
               waId: msg.from,
               name: contact.name || waProfileName,
               text: msg.text.body,
@@ -201,21 +207,21 @@ app.post('/webhook', (req, res) => {
 })
 
 // --- Auth: one-screen signup (name, phone, email, password) and login ---
-app.post('/api/auth/signup', (req, res) => {
+app.post('/api/auth/signup', ah(async (req, res) => {
   try {
-    res.json(signup(req.body ?? {}))
+    res.json(await signup(req.body ?? {}))
   } catch (err) {
     res.status(400).json({ error: err.message })
   }
-})
+}))
 
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', ah(async (req, res) => {
   try {
-    res.json(login(req.body ?? {}))
+    res.json(await login(req.body ?? {}))
   } catch (err) {
     res.status(401).json({ error: err.message })
   }
-})
+}))
 
 app.get('/api/auth/me', requireAuth, (req, res) => res.json(req.agent))
 
@@ -226,26 +232,26 @@ app.use('/api', (req, res, next) => {
 })
 
 // --- Per-agent WhatsApp Business number configuration ---
-app.get('/api/agent/phone-config', (req, res) => {
-  const agent = getAgent(req.agent.id)
+app.get('/api/agent/phone-config', ah(async (req, res) => {
+  const agent = await getAgent(req.agent.id)
   res.json({
     wa_phone_number: agent.wa_phone_number || null,
     wa_phone_number_id: agent.wa_phone_number_id || null,
   })
-})
+}))
 
-app.put('/api/agent/phone-config', (req, res) => {
+app.put('/api/agent/phone-config', ah(async (req, res) => {
   const { wa_phone_number, wa_phone_number_id } = req.body ?? {}
   try {
-    const agent = updateAgentPhoneConfig(req.agent.id, wa_phone_number || null, wa_phone_number_id || null)
+    const agent = await updateAgentPhoneConfig(req.agent.id, wa_phone_number || null, wa_phone_number_id || null)
     res.json(agent)
   } catch (err) {
     res.status(err.code === 'PHONE_ID_TAKEN' ? 409 : 400).json({ error: err.message })
   }
-})
+}))
 
 // Agent sets/updates their WA Business phone number (for WABA registration).
-app.put('/api/agent/wa-phone', (req, res) => {
+app.put('/api/agent/wa-phone', ah(async (req, res) => {
   const { wa_phone_number } = req.body ?? {}
   if (!wa_phone_number) return res.status(400).json({ error: 'wa_phone_number is required' })
   try {
@@ -255,47 +261,40 @@ app.put('/api/agent/wa-phone', (req, res) => {
     if (norm === req.agent.phone) {
       return res.status(400).json({ error: 'Your WhatsApp Business number must be different from your personal WhatsApp number' })
     }
-    const current = getAgent(req.agent.id)
-    const isNew = !current.wa_phone_number
-    db.prepare('UPDATE agents SET wa_phone_number = ?, waba_status = CASE WHEN waba_status = ? THEN ? ELSE waba_status END WHERE id = ?')
-      .run(norm, 'none', 'pending', req.agent.id)
-    if (isNew) {
-      db.prepare("UPDATE agents SET waba_status = 'pending' WHERE id = ?").run(req.agent.id)
-    }
-    res.json(getAgent(req.agent.id))
+    res.json(await setAgentWaPhone(req.agent.id, norm))
   } catch (err) {
     res.status(400).json({ error: err.message })
   }
-})
+}))
 
-// --- Dashboard API (real data from SQLite) — every route is scoped to the logged-in agent. ---
-app.get('/api/leads', (req, res) => res.json(listLeads(req.agent.id)))
+// --- Dashboard API — every route is scoped to the logged-in agent. ---
+app.get('/api/leads', ah(async (req, res) => res.json(await listLeads(req.agent.id))))
 
-app.get('/api/leads/:id', (req, res) => {
-  const lead = getAssignableLead(req.params.id, req.agent.id)
+app.get('/api/leads/:id', ah(async (req, res) => {
+  const lead = await getAssignableLead(req.params.id, req.agent.id)
   if (!lead) return res.status(404).json({ error: 'not found' })
-  res.json({ ...lead, messages: getMessages(lead.id) })
-})
+  res.json({ ...lead, messages: await getMessages(lead.id) })
+}))
 
 // Claim an unassigned lead from the shared pool, and remember the sender as a client.
-app.post('/api/leads/:id/assign', (req, res) => {
-  const lead = assignLead(req.params.id, req.agent.id)
+app.post('/api/leads/:id/assign', ah(async (req, res) => {
+  const lead = await assignLead(req.params.id, req.agent.id)
   if (!lead) return res.status(409).json({ error: 'lead is not available to claim' })
   try {
-    addContact(req.agent.id, lead.wa_id, lead.name || lead.wa_id)
+    await addContact(req.agent.id, lead.wa_id, lead.name || lead.wa_id)
   } catch {
     // Already a contact (or claimed elsewhere) — assignment still stands.
   }
-  logActivity(req.agent.id, lead.id, 'agent', `${req.agent.name} claimed ${lead.name || lead.wa_id}`)
+  await logActivity(req.agent.id, lead.id, 'agent', `${req.agent.name} claimed ${lead.name || lead.wa_id}`)
   res.json(lead)
-})
+}))
 
 // Agent takes over / hands back to AI.
-app.post('/api/leads/:id/ai', (req, res) => {
-  const lead = getLeadForAgent(req.params.id, req.agent.id)
+app.post('/api/leads/:id/ai', ah(async (req, res) => {
+  const lead = await getLeadForAgent(req.params.id, req.agent.id)
   if (!lead) return res.status(404).json({ error: 'not found' })
-  setAiEnabled(lead.id, Boolean(req.body?.enabled))
-  logActivity(
+  await setAiEnabled(lead.id, Boolean(req.body?.enabled))
+  await logActivity(
     req.agent.id,
     lead.id,
     'agent',
@@ -303,68 +302,68 @@ app.post('/api/leads/:id/ai', (req, res) => {
       ? `AI re-enabled for ${lead.name || lead.wa_id}`
       : `${req.agent.name} took over the chat with ${lead.name || lead.wa_id}`,
   )
-  res.json(getLead(lead.id))
-})
+  res.json(await getLead(lead.id))
+}))
 
 // Agent sends a real WhatsApp message from the dashboard.
-app.post('/api/leads/:id/reply', async (req, res) => {
-  const lead = getLeadForAgent(req.params.id, req.agent.id)
+app.post('/api/leads/:id/reply', ah(async (req, res) => {
+  const lead = await getLeadForAgent(req.params.id, req.agent.id)
   if (!lead) return res.status(404).json({ error: 'not found' })
   const text = (req.body?.text || '').trim()
   if (!text) return res.status(400).json({ error: 'text required' })
   try {
     const waMsgId = await sendText(lead.wa_id, text, req.agent.wa_phone_number_id)
-    const msg = addMessage(lead.id, 'agent', text, waMsgId)
-    recordFirstResponse(lead.id)
+    const msg = await addMessage(lead.id, 'agent', text, waMsgId)
+    await recordFirstResponse(lead.id)
     res.json(msg)
   } catch (err) {
     res.status(err.code === 'WA_NOT_CONFIGURED' ? 503 : 502).json({ error: err.message })
   }
-})
+}))
 
 // --- Contacts (My Clients): the agent's known numbers on the shared line ---
-app.get('/api/contacts', (req, res) => res.json(listContacts(req.agent.id)))
+app.get('/api/contacts', ah(async (req, res) => res.json(await listContacts(req.agent.id))))
 
-app.post('/api/contacts', (req, res) => {
+app.post('/api/contacts', ah(async (req, res) => {
   const { phone, name, notes } = req.body ?? {}
   if (!phone || !name) return res.status(400).json({ error: 'phone and name are required' })
   try {
-    res.json(addContact(req.agent.id, phone, name, notes))
+    res.json(await addContact(req.agent.id, phone, name, notes))
   } catch (err) {
     res.status(err.code === 'CONTACT_EXISTS' ? 409 : 400).json({ error: err.message })
   }
-})
+}))
 
-app.post('/api/contacts/bulk', (req, res) => {
+app.post('/api/contacts/bulk', ah(async (req, res) => {
   const rows = req.body?.contacts
   if (!Array.isArray(rows)) return res.status(400).json({ error: 'contacts array required' })
-  res.json(bulkAddContacts(req.agent.id, rows))
-})
+  res.json(await bulkAddContacts(req.agent.id, rows))
+}))
 
-app.delete('/api/contacts/:id', (req, res) => {
-  if (!deleteContact(req.params.id, req.agent.id)) return res.status(404).json({ error: 'not found' })
+app.delete('/api/contacts/:id', ah(async (req, res) => {
+  if (!(await deleteContact(req.params.id, req.agent.id))) return res.status(404).json({ error: 'not found' })
   res.json({ ok: true })
-})
+}))
 
-app.get('/api/stats', (req, res) => res.json(stats(req.agent.id)))
-app.get('/api/activity', (req, res) => res.json(listActivity(req.agent.id)))
+app.get('/api/stats', ah(async (req, res) => res.json(await stats(req.agent.id))))
+app.get('/api/activity', ah(async (req, res) => res.json(await listActivity(req.agent.id))))
 
-app.get('/api/network', (req, res) =>
-  res.json({ posts: listNetworkPosts(), matches: computeMatches(req.agent.id) }),
-)
-app.post('/api/network', (req, res) => {
+app.get('/api/network', ah(async (req, res) =>
+  res.json({ posts: await listNetworkPosts(), matches: await computeMatches(req.agent.id) }),
+))
+app.post('/api/network', ah(async (req, res) => {
   const p = req.body ?? {}
   if (!p.type || !p.broker || !p.text) return res.status(400).json({ error: 'type, broker, text required' })
   if (!['INVENTORY', 'REQUIREMENT'].includes(p.type)) return res.status(400).json({ error: 'bad type' })
-  res.json(addNetworkPost(p))
-})
+  res.json(await addNetworkPost(p))
+}))
 
 // --- Admin API (requires admin privileges; see adminRoutes.js) ---
 app.use('/api/admin', adminRouter)
 
 // Dev/test endpoint: pushes a message through the SAME real pipeline (DB + AI),
 // without an outbound WhatsApp send. Useful before the Meta webhook is wired up.
-app.post('/api/simulate', async (req, res) => {
+app.post('/api/simulate', ah(async (req, res) => {
   const { from = 'test-' + Date.now(), name = 'Test Buyer', text, source = 'Test' } = req.body ?? {}
   if (!text) return res.status(400).json({ error: 'text required' })
   const result = await handleInbound({
@@ -377,7 +376,7 @@ app.post('/api/simulate', async (req, res) => {
     send: false,
   })
   res.json(result)
-})
+}))
 
 app.get('/api/health', (_req, res) =>
   res.json({
@@ -397,6 +396,15 @@ app.get(/^\/admin(\/.*)?$/, (_req, res) => res.sendFile(path.join(adminDist, 'in
 const dist = path.join(__dirname, '..', 'dist')
 app.use(express.static(dist))
 app.get(/^\/(?!api|webhook|admin).*/, (_req, res) => res.sendFile(path.join(dist, 'index.html')))
+
+// Last-resort error handler so unexpected DB failures return JSON, not an HTML stack.
+app.use((err, _req, res, _next) => {
+  console.error('unhandled error', err)
+  if (!res.headersSent) res.status(500).json({ error: 'internal error' })
+})
+
+// Migrations must be applied before any request touches the schema.
+await ready
 
 // Start listening only when run directly (`node index.js`), not when imported by tests.
 if (process.env.NODE_ENV !== 'test') {

@@ -1,28 +1,21 @@
 // Tests for per-agent WhatsApp Business number configuration.
-// Run with: npm test  (from server/)  — uses Node's built-in test runner.
+// Run with: npm test  (from server/)  — needs a local PostgreSQL (docker compose up -d).
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { createTestDb, dropTestDb } from './helpers.js'
 
-// Isolate a throwaway DB and skip listen() before importing the app.
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const DB_FILE = `/tmp/test-phoneconfig-${process.pid}.db`
+// Isolate a throwaway database and skip listen() before importing the app.
 process.env.NODE_ENV = 'test'
-process.env.DB_FILE = DB_FILE
 delete process.env.OPENROUTER_API_KEY
 delete process.env.WHATSAPP_ACCESS_TOKEN
+const dbName = await createTestDb('phoneconfig')
 
 const { app } = await import('../index.js')
-const db = (await import('../db.js')).default
 const {
-  createAgent,
-  getAgent,
+  closePool,
   updateAgentPhoneConfig,
   findAgentByPhoneNumberId,
 } = await import('../db.js')
-const { hashPassword } = await import('../auth.js')
 
 let server
 let base
@@ -68,70 +61,69 @@ before(async () => {
   agentB = dataB.agent
 })
 
-after(() => {
+after(async () => {
   server?.close()
-  for (const suffix of ['', '-wal', '-shm', '-journal']) {
-    fs.rmSync(DB_FILE + suffix, { force: true })
-  }
+  await closePool()
+  await dropTestDb(dbName)
 })
 
 // --- DB-level tests for updateAgentPhoneConfig ---
 
-test('updateAgentPhoneConfig sets wa_phone_number and wa_phone_number_id', () => {
-  const updated = updateAgentPhoneConfig(agentA.id, '+13655551234', 'pnid_alpha_001')
+test('updateAgentPhoneConfig sets wa_phone_number and wa_phone_number_id', async () => {
+  const updated = await updateAgentPhoneConfig(agentA.id, '+13655551234', 'pnid_alpha_001')
   assert.equal(updated.wa_phone_number, '+13655551234')
   assert.equal(updated.wa_phone_number_id, 'pnid_alpha_001')
 })
 
-test('updateAgentPhoneConfig normalizes the phone number', () => {
-  const updated = updateAgentPhoneConfig(agentA.id, '9876543210', 'pnid_alpha_001')
+test('updateAgentPhoneConfig normalizes the phone number', async () => {
+  const updated = await updateAgentPhoneConfig(agentA.id, '9876543210', 'pnid_alpha_001')
   assert.equal(updated.wa_phone_number, '+919876543210', 'bare 10-digit number gets +91 prefix')
 })
 
-test('updateAgentPhoneConfig rejects short phone numbers', () => {
-  assert.throws(
+test('updateAgentPhoneConfig rejects short phone numbers', async () => {
+  await assert.rejects(
     () => updateAgentPhoneConfig(agentA.id, '12345', 'pnid_short'),
     /valid WhatsApp Business number/,
   )
 })
 
-test('updateAgentPhoneConfig rejects duplicate wa_phone_number_id', () => {
-  updateAgentPhoneConfig(agentA.id, '+13655551111', 'pnid_unique_test')
-  assert.throws(
+test('updateAgentPhoneConfig rejects duplicate wa_phone_number_id', async () => {
+  await updateAgentPhoneConfig(agentA.id, '+13655551111', 'pnid_unique_test')
+  await assert.rejects(
     () => updateAgentPhoneConfig(agentB.id, '+13655552222', 'pnid_unique_test'),
     /already assigned to another agent/,
   )
   // Clean up
-  updateAgentPhoneConfig(agentA.id, '+13655551234', 'pnid_alpha_001')
+  await updateAgentPhoneConfig(agentA.id, '+13655551234', 'pnid_alpha_001')
 })
 
-test('updateAgentPhoneConfig allows clearing config with nulls', () => {
-  updateAgentPhoneConfig(agentB.id, '+13655559999', 'pnid_beta_temp')
-  const cleared = updateAgentPhoneConfig(agentB.id, null, null)
+test('updateAgentPhoneConfig allows clearing config with nulls', async () => {
+  await updateAgentPhoneConfig(agentB.id, '+13655559999', 'pnid_beta_temp')
+  const cleared = await updateAgentPhoneConfig(agentB.id, null, null)
   assert.equal(cleared.wa_phone_number, null)
   assert.equal(cleared.wa_phone_number_id, null)
 })
 
-test('updateAgentPhoneConfig allows same agent to keep their own phone_number_id', () => {
-  const updated = updateAgentPhoneConfig(agentA.id, '+13655551234', 'pnid_alpha_001')
+test('updateAgentPhoneConfig allows same agent to keep their own phone_number_id', async () => {
+  const updated = await updateAgentPhoneConfig(agentA.id, '+13655551234', 'pnid_alpha_001')
   assert.equal(updated.wa_phone_number_id, 'pnid_alpha_001', 'agent can update and keep same id')
 })
 
 // --- DB-level tests for findAgentByPhoneNumberId ---
 
-test('findAgentByPhoneNumberId returns the correct agent', () => {
-  const found = findAgentByPhoneNumberId('pnid_alpha_001')
+test('findAgentByPhoneNumberId returns the correct agent', async () => {
+  const found = await findAgentByPhoneNumberId('pnid_alpha_001')
   assert.ok(found)
   assert.equal(found.id, agentA.id)
 })
 
-test('findAgentByPhoneNumberId returns null for unknown id', () => {
-  assert.equal(findAgentByPhoneNumberId('pnid_nonexistent'), null)
+test('findAgentByPhoneNumberId returns null for unknown id', async () => {
+  assert.equal(await findAgentByPhoneNumberId('pnid_nonexistent'), null)
 })
 
-test('findAgentByPhoneNumberId returns null for null/empty', () => {
-  assert.equal(findAgentByPhoneNumberId(null), null)
-  assert.equal(findAgentByPhoneNumberId(''), null)
+test('findAgentByPhoneNumberId returns null for null/empty', async () => {
+  assert.equal(await findAgentByPhoneNumberId(null), null)
+  assert.equal(await findAgentByPhoneNumberId(''), null)
 })
 
 // --- API endpoint tests ---

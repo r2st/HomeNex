@@ -1,31 +1,24 @@
 // Tests for WABA registration flow, admin panel, signup with wa_phone_number, and auto-client creation.
-// Run with: npm test  (from server/)  — uses Node's built-in test runner.
+// Run with: npm test  (from server/)  — needs a local PostgreSQL (docker compose up -d).
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { createTestDb, dropTestDb } from './helpers.js'
 
-// Isolate a throwaway DB and skip listen() before importing the app.
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const DB_FILE = path.join('/tmp', `test-waba-${process.pid}.db`)
+// Isolate a throwaway database and skip listen() before importing the app.
 process.env.NODE_ENV = 'test'
-process.env.DB_FILE = DB_FILE
 delete process.env.OPENROUTER_API_KEY
 delete process.env.WHATSAPP_ACCESS_TOKEN
+const dbName = await createTestDb('waba')
 
 const { app } = await import('../index.js')
-const db = (await import('../db.js')).default
 const {
-  createAgent,
+  closePool,
   getAgent,
   updateWabaStatus,
   listAllAgents,
   adminStats,
   findAgentByPhoneNumberId,
-  normalizePhone,
 } = await import('../db.js')
-const { hashPassword, issueToken } = await import('../auth.js')
 
 let server
 let base
@@ -53,11 +46,10 @@ before(async () => {
   })
 })
 
-after(() => {
+after(async () => {
   server?.close()
-  for (const suffix of ['', '-wal', '-shm', '-journal']) {
-    fs.rmSync(DB_FILE + suffix, { force: true })
-  }
+  await closePool()
+  await dropTestDb(dbName)
 })
 
 // === Signup with wa_phone_number ===
@@ -140,15 +132,15 @@ test('PUT /api/agent/wa-phone requires auth', async () => {
 
 // === DB-level WABA status management ===
 
-test('updateWabaStatus transitions none -> pending', () => {
-  const agent = getAgent(agentB.id)
+test('updateWabaStatus transitions none -> pending', async () => {
+  const agent = await getAgent(agentB.id)
   assert.equal(agent.waba_status, 'pending') // was set by PUT /api/agent/wa-phone
-  const updated = updateWabaStatus(agentB.id, { status: 'pending' })
+  const updated = await updateWabaStatus(agentB.id, { status: 'pending' })
   assert.equal(updated.waba_status, 'pending')
 })
 
-test('updateWabaStatus transitions pending -> registered with meta IDs', () => {
-  const updated = updateWabaStatus(agentA.id, {
+test('updateWabaStatus transitions pending -> registered with meta IDs', async () => {
+  const updated = await updateWabaStatus(agentA.id, {
     status: 'registered',
     metaWabaId: 'waba_001',
     waPhoneNumberId: 'pnid_001',
@@ -159,38 +151,38 @@ test('updateWabaStatus transitions pending -> registered with meta IDs', () => {
   assert.ok(updated.waba_registered_at, 'registered_at should be set')
 })
 
-test('updateWabaStatus transitions registered -> active', () => {
-  const updated = updateWabaStatus(agentA.id, { status: 'active' })
+test('updateWabaStatus transitions registered -> active', async () => {
+  const updated = await updateWabaStatus(agentA.id, { status: 'active' })
   assert.equal(updated.waba_status, 'active')
   assert.ok(updated.waba_registered_at, 'registered_at should persist')
 })
 
-test('updateWabaStatus rejects invalid status', () => {
-  assert.throws(
+test('updateWabaStatus rejects invalid status', async () => {
+  await assert.rejects(
     () => updateWabaStatus(agentA.id, { status: 'invalid' }),
     /Invalid WABA status/,
   )
 })
 
-test('updateWabaStatus clears registered_at when going back to none', () => {
-  const updated = updateWabaStatus(agentB.id, { status: 'none' })
+test('updateWabaStatus clears registered_at when going back to none', async () => {
+  const updated = await updateWabaStatus(agentB.id, { status: 'none' })
   assert.equal(updated.waba_status, 'none')
   assert.equal(updated.waba_registered_at, null)
 })
 
 // === findAgentByPhoneNumberId prioritizes active WABA ===
 
-test('findAgentByPhoneNumberId returns agent with active WABA', () => {
+test('findAgentByPhoneNumberId returns agent with active WABA', async () => {
   // agentA has waba_status=active and wa_phone_number_id=pnid_001
-  const found = findAgentByPhoneNumberId('pnid_001')
+  const found = await findAgentByPhoneNumberId('pnid_001')
   assert.ok(found)
   assert.equal(found.id, agentA.id)
 })
 
-test('findAgentByPhoneNumberId fallback to non-active agent', () => {
+test('findAgentByPhoneNumberId fallback to non-active agent', async () => {
   // agentB has no phone_number_id yet, set one without active status
-  updateWabaStatus(agentB.id, { status: 'pending', waPhoneNumberId: 'pnid_002' })
-  const found = findAgentByPhoneNumberId('pnid_002')
+  await updateWabaStatus(agentB.id, { status: 'pending', waPhoneNumberId: 'pnid_002' })
+  const found = await findAgentByPhoneNumberId('pnid_002')
   assert.ok(found, 'should still find by fallback')
   assert.equal(found.id, agentB.id)
 })
@@ -256,8 +248,8 @@ test('admin WABA update requires status field', async () => {
 
 // === listAllAgents and adminStats ===
 
-test('listAllAgents returns all agents with WABA fields', () => {
-  const agents = listAllAgents()
+test('listAllAgents returns all agents with WABA fields', async () => {
+  const agents = await listAllAgents()
   assert.ok(agents.length >= 2)
   for (const a of agents) {
     assert.ok('waba_status' in a)
@@ -267,8 +259,8 @@ test('listAllAgents returns all agents with WABA fields', () => {
   }
 })
 
-test('adminStats returns correct counts', () => {
-  const s = adminStats()
+test('adminStats returns correct counts', async () => {
+  const s = await adminStats()
   assert.ok(s.totalAgents >= 2)
   assert.ok(typeof s.pendingWaba === 'number')
   assert.ok(typeof s.activeWaba === 'number')

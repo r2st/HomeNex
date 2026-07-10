@@ -47,8 +47,8 @@ export function parseAgentCommand(msg) {
   return { kind: 'help' }
 }
 
-function formatClientList(agentId) {
-  const clients = listContacts(agentId)
+async function formatClientList(agentId) {
+  const clients = await listContacts(agentId)
   if (!clients.length) return 'You have no clients yet. Send a phone number to add one.'
   const lines = clients.map(
     (c, i) => `${i + 1}. ${c.phone}${c.name && c.name !== c.phone ? ' — ' + c.name : ''}`,
@@ -58,20 +58,20 @@ function formatClientList(agentId) {
 
 // Decide the reply for an agent command and apply any DB change. Pure of WhatsApp I/O
 // so it can be unit-tested; the caller sends the returned text back over WhatsApp.
-export function runAgentCommand(agent, msg) {
+export async function runAgentCommand(agent, msg) {
   const cmd = parseAgentCommand(msg)
   if (cmd.kind === 'list') return formatClientList(agent.id)
   if (cmd.kind === 'add') {
     const p = normalizePhone(cmd.phone)
-    const existing = getContactByPhone(p)
+    const existing = await getContactByPhone(p)
     if (existing) {
       return existing.agent_id === agent.id
         ? 'Already in your client list'
         : 'This number is already registered by another agent'
     }
     try {
-      addContact(agent.id, p, cmd.name || p)
-      logActivity(agent.id, null, 'agent', `Added client ${p} via WhatsApp`)
+      await addContact(agent.id, p, cmd.name || p)
+      await logActivity(agent.id, null, 'agent', `Added client ${p} via WhatsApp`)
       return `Added ${p} to your client list`
     } catch (err) {
       return err.message || HELP_TEXT
@@ -82,7 +82,7 @@ export function runAgentCommand(agent, msg) {
 
 // Full handler used by the webhook: run the command and reply to the agent on WhatsApp.
 export async function handleAgentCommand({ agent, msg, phoneNumberId = null, send = true }) {
-  const reply = runAgentCommand(agent, msg)
+  const reply = await runAgentCommand(agent, msg)
   if (send) {
     try {
       await sendText(msg.from, reply, phoneNumberId)

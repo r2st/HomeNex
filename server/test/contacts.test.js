@@ -1,21 +1,17 @@
 // API tests for the shared-number contacts + unassigned-lead flow.
-// Run with: npm test  (from server/)  — uses Node's built-in test runner.
+// Run with: npm test  (from server/)  — needs a local PostgreSQL (docker compose up -d).
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { createTestDb, dropTestDb } from './helpers.js'
 
-// Isolate a throwaway DB and skip listen() before importing the app.
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const DB_FILE = `/tmp/test-contacts-${process.pid}.db`
+// Isolate a throwaway database and skip listen() before importing the app.
 process.env.NODE_ENV = 'test'
-process.env.DB_FILE = DB_FILE
 delete process.env.OPENROUTER_API_KEY // keep AI/WhatsApp inert during tests
 delete process.env.WHATSAPP_ACCESS_TOKEN
+const dbName = await createTestDb('contacts')
 
 const { app } = await import('../index.js')
-const db = (await import('../db.js')).default
+const { closePool, query, upsertUnassignedLead } = await import('../db.js')
 
 let server
 let base
@@ -47,11 +43,10 @@ before(async () => {
   assert.ok(token, 'signup should return a token')
 })
 
-after(() => {
+after(async () => {
   server?.close()
-  for (const suffix of ['', '-wal', '-shm', '-journal']) {
-    fs.rmSync(DB_FILE + suffix, { force: true })
-  }
+  await closePool()
+  await dropTestDb(dbName)
 })
 
 test('POST /api/contacts adds a client and GET lists it', async () => {
@@ -105,10 +100,8 @@ test('DELETE /api/contacts/:id 404s for an unknown id', async () => {
 
 test('unassigned lead is visible to the agent and can be claimed once', async () => {
   // Simulate an unknown sender landing in the shared pool.
-  const lead = db.prepare(
-    "INSERT INTO leads (agent_id, wa_id, name, phone) VALUES (NULL, ?, ?, ?)",
-  ).run('919700000123', 'Walk-in Buyer', '919700000123')
-  const leadId = lead.lastInsertRowid
+  const lead = await upsertUnassignedLead('919700000123', 'Walk-in Buyer')
+  const leadId = lead.id
 
   const leads = await (await req('GET', '/api/leads')).json()
   const pooled = leads.find((l) => l.id === leadId)
@@ -118,7 +111,8 @@ test('unassigned lead is visible to the agent and can be claimed once', async ()
   const claim = await req('POST', `/api/leads/${leadId}/assign`)
   assert.equal(claim.status, 200)
   const claimed = await claim.json()
-  assert.equal(claimed.agent_id, db.prepare('SELECT id FROM agents LIMIT 1').get().id)
+  const { rows } = await query('SELECT id FROM agents LIMIT 1')
+  assert.equal(claimed.agent_id, rows[0].id)
 
   // Claiming also saves the sender as a contact for future routing.
   const contacts = await (await req('GET', '/api/contacts')).json()

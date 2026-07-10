@@ -1,0 +1,25 @@
+# Local PostgreSQL for HomeNex development.
+#   docker compose up -d
+# Connection string (matches the server default and server/.env.example):
+#   postgres://homenex:homenex@localhost:5432/homenex
+# If port 5432 is taken on your machine: POSTGRES_PORT=5433 docker compose up -d
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: homenex
+      POSTGRES_PASSWORD: homenex
+      POSTGRES_DB: homenex
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - homenex_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U homenex -d homenex']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  homenex_pgdata:

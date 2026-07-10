@@ -1,220 +1,86 @@
-import { DatabaseSync } from 'node:sqlite'
+import pg from 'pg'
+import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const dbFile = process.env.DB_FILE || 'homenex.db'
-const db = new DatabaseSync(path.isAbsolute(dbFile) ? dbFile : path.join(__dirname, dbFile))
-db.exec('PRAGMA journal_mode = WAL')
 
-db.exec(`
-CREATE TABLE IF NOT EXISTS leads (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  agent_id INTEGER REFERENCES agents(id),   -- NULL = unassigned pool (unknown sender on the shared number)
-  wa_id TEXT NOT NULL,
-  name TEXT,
-  phone TEXT,
-  source TEXT DEFAULT 'WhatsApp',
-  temp TEXT DEFAULT 'Cold',
-  score INTEGER DEFAULT 0,
-  config TEXT,
-  config_note TEXT,
-  locality TEXT,
-  location_note TEXT,
-  budget_min_l REAL,
-  budget_max_l REAL,
-  budget_note TEXT,
-  timeline TEXT,
-  timeline_note TEXT,
-  ai_summary TEXT,
-  next_step TEXT,
-  score_breakdown TEXT,
-  ai_enabled INTEGER DEFAULT 1,
-  first_response_s REAL,
-  created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now')),
-  UNIQUE(agent_id, wa_id)
-);
-CREATE INDEX IF NOT EXISTS idx_leads_agent ON leads(agent_id, updated_at);
+// COUNT()/BIGINT (paise) come back as JS numbers, not strings. Safe: 2^53 paise
+// is ~90 trillion rupees. NUMERIC (commission_pct) likewise parses to a number.
+pg.types.setTypeParser(20, (v) => (v === null ? null : Number(v)))
+pg.types.setTypeParser(1700, (v) => (v === null ? null : parseFloat(v)))
 
-CREATE TABLE IF NOT EXISTS messages (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  lead_id INTEGER NOT NULL REFERENCES leads(id),
-  role TEXT NOT NULL CHECK (role IN ('buyer','ai','agent')),
-  text TEXT NOT NULL,
-  wa_message_id TEXT,
-  created_at TEXT DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_messages_lead ON messages(lead_id, id);
+const connectionString =
+  process.env.DATABASE_URL || 'postgres://homenex:homenex@localhost:5432/homenex'
 
-CREATE TABLE IF NOT EXISTS activity (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  agent_id INTEGER,
-  lead_id INTEGER,
-  kind TEXT NOT NULL,
-  text TEXT NOT NULL,
-  created_at TEXT DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_activity_agent ON activity(agent_id, id);
+const pool = new pg.Pool({
+  connectionString,
+  max: Number(process.env.PG_POOL_SIZE || 10),
+  idleTimeoutMillis: 30_000,
+  connectionTimeoutMillis: 10_000,
+})
+pool.on('error', (err) => console.error('idle postgres client error', err.message))
 
-CREATE TABLE IF NOT EXISTS agents (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL,
-  phone TEXT UNIQUE NOT NULL,        -- WhatsApp number, canonical E.164 e.g. +919812345678
-  email TEXT,                        -- optional
-  password_hash TEXT NOT NULL,
-  wa_phone_number_id TEXT,           -- Meta phone_number_id for the agent's own WhatsApp Business line
-  wa_phone_number TEXT,              -- display phone number for the agent's WA Business line, E.164
-  waba_status TEXT DEFAULT 'none',   -- none | pending | registered | active
-  waba_registered_at TEXT,           -- datetime when WABA registration completed
-  meta_waba_id TEXT,                 -- Meta WABA (WhatsApp Business Account) ID
-  is_admin INTEGER DEFAULT 0,        -- 1 = admin user
-  created_at TEXT DEFAULT (datetime('now'))
-);
+const q = (text, params) => pool.query(text, params)
 
-CREATE TABLE IF NOT EXISTS meta (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
+// --- Migrations: versioned SQL files in server/migrations/, applied in order once. ---
+const MIGRATION_LOCK = 727274 // arbitrary app-wide advisory lock id
 
--- Clients an agent owns on the shared WhatsApp Business number. When one of these
--- numbers messages the shared line, the inbound is routed to this agent.
-CREATE TABLE IF NOT EXISTS contacts (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  agent_id INTEGER NOT NULL REFERENCES agents(id),
-  phone TEXT NOT NULL UNIQUE,        -- client's WhatsApp number, canonical E.164 e.g. +919812345678
-  name TEXT NOT NULL,
-  notes TEXT,
-  created_at TEXT DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_contacts_agent ON contacts(agent_id, created_at);
-
-CREATE TABLE IF NOT EXISTS network_posts (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  type TEXT NOT NULL CHECK (type IN ('INVENTORY','REQUIREMENT')),
-  broker TEXT NOT NULL,
-  firm TEXT,
-  text TEXT NOT NULL,
-  config TEXT,
-  locality TEXT,
-  budget_min_l REAL,
-  budget_max_l REAL,
-  created_at TEXT DEFAULT (datetime('now'))
-);
-`)
-
-// Migration: older DBs created leads.agent_id as NOT NULL. The shared-number model
-// needs it nullable so unknown senders can land in an unassigned pool. Rebuild the
-// table in place (same columns/order) if the NOT NULL constraint is still present.
-//
-// legacy_alter_table = ON is essential: without it, renaming/dropping `leads` makes
-// SQLite rewrite the foreign-key reference in `messages` to point at the temp table,
-// which then breaks every INSERT into messages. We also repair any DB already damaged
-// that way by rebuilding messages with a correct FK.
-{
-  const tableSql = (name) =>
-    db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(name)?.sql || ''
-  const agentCol = db.prepare('PRAGMA table_info(leads)').all().find((c) => c.name === 'agent_id')
-  const leadsNeedsRebuild = agentCol && agentCol.notnull === 1
-  const messagesBroken = /leads_old/.test(tableSql('messages'))
-
-  if (leadsNeedsRebuild || messagesBroken) {
-    // FK enforcement (on by default in node:sqlite) and reference-rewriting must both be
-    // off while we swap tables; must be set outside the transaction to take effect.
-    db.exec('PRAGMA foreign_keys = OFF')
-    db.exec('PRAGMA legacy_alter_table = ON')
-    db.exec('BEGIN')
-    try {
-      if (leadsNeedsRebuild) {
-        db.exec(`
-          CREATE TABLE leads_new (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            agent_id INTEGER REFERENCES agents(id),
-            wa_id TEXT NOT NULL,
-            name TEXT,
-            phone TEXT,
-            source TEXT DEFAULT 'WhatsApp',
-            temp TEXT DEFAULT 'Cold',
-            score INTEGER DEFAULT 0,
-            config TEXT,
-            config_note TEXT,
-            locality TEXT,
-            location_note TEXT,
-            budget_min_l REAL,
-            budget_max_l REAL,
-            budget_note TEXT,
-            timeline TEXT,
-            timeline_note TEXT,
-            ai_summary TEXT,
-            next_step TEXT,
-            score_breakdown TEXT,
-            ai_enabled INTEGER DEFAULT 1,
-            first_response_s REAL,
-            created_at TEXT DEFAULT (datetime('now')),
-            updated_at TEXT DEFAULT (datetime('now')),
-            UNIQUE(agent_id, wa_id)
-          )`)
-        db.exec('INSERT INTO leads_new SELECT * FROM leads')
-        db.exec('DROP TABLE leads')
-        db.exec('ALTER TABLE leads_new RENAME TO leads')
-        db.exec('CREATE INDEX IF NOT EXISTS idx_leads_agent ON leads(agent_id, updated_at)')
+async function runMigrations() {
+  const client = await pool.connect()
+  try {
+    await client.query('SELECT pg_advisory_lock($1)', [MIGRATION_LOCK])
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        version TEXT PRIMARY KEY,
+        applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )`)
+    const dir = path.join(__dirname, 'migrations')
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()
+    const applied = new Set(
+      (await client.query('SELECT version FROM schema_migrations')).rows.map((r) => r.version),
+    )
+    for (const file of files) {
+      if (applied.has(file)) continue
+      const sql = fs.readFileSync(path.join(dir, file), 'utf8')
+      await client.query('BEGIN')
+      try {
+        await client.query(sql)
+        await client.query('INSERT INTO schema_migrations (version) VALUES ($1)', [file])
+        await client.query('COMMIT')
+        console.log(`migration applied: ${file}`)
+      } catch (err) {
+        await client.query('ROLLBACK')
+        err.message = `migration ${file} failed: ${err.message}`
+        throw err
       }
-      if (messagesBroken) {
-        db.exec(`
-          CREATE TABLE messages_new (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            lead_id INTEGER NOT NULL REFERENCES leads(id),
-            role TEXT NOT NULL CHECK (role IN ('buyer','ai','agent')),
-            text TEXT NOT NULL,
-            wa_message_id TEXT,
-            created_at TEXT DEFAULT (datetime('now'))
-          )`)
-        db.exec('INSERT INTO messages_new SELECT * FROM messages')
-        db.exec('DROP TABLE messages')
-        db.exec('ALTER TABLE messages_new RENAME TO messages')
-        db.exec('CREATE INDEX IF NOT EXISTS idx_messages_lead ON messages(lead_id, id)')
-      }
-      db.exec('COMMIT')
-      console.log('migrated schema for shared-number model (leads nullable / messages FK repaired)')
-    } catch (err) {
-      db.exec('ROLLBACK')
-      throw err
-    } finally {
-      db.exec('PRAGMA legacy_alter_table = OFF')
-      db.exec('PRAGMA foreign_keys = ON')
     }
+  } finally {
+    await client.query('SELECT pg_advisory_unlock($1)', [MIGRATION_LOCK]).catch(() => {})
+    client.release()
   }
 }
 
-// Migration: add wa_phone_number column to agents for per-agent WhatsApp Business numbers.
-{
-  const cols = db.prepare('PRAGMA table_info(agents)').all()
-  if (!cols.some((c) => c.name === 'wa_phone_number')) {
-    db.exec('ALTER TABLE agents ADD COLUMN wa_phone_number TEXT')
-    console.log('migrated agents: added wa_phone_number column')
-  }
+// Await this before serving requests (index.js and tests do).
+export const ready = runMigrations()
+
+export async function closePool() {
+  await pool.end()
 }
 
-// Migration: add WABA registration fields to agents.
-{
-  const cols = db.prepare('PRAGMA table_info(agents)').all()
-  const colNames = cols.map((c) => c.name)
-  if (!colNames.includes('waba_status')) {
-    db.exec("ALTER TABLE agents ADD COLUMN waba_status TEXT DEFAULT 'none'")
-    console.log('migrated agents: added waba_status column')
+// Build "SET col = $n" fragments from an allowlisted field object. JSONB columns
+// need their JS values stringified or pg would send arrays as postgres arrays.
+function buildSet(allowed, fields, startIndex = 1) {
+  const sets = []
+  const params = []
+  for (const [col, kind] of Object.entries(allowed)) {
+    if (!(col in fields)) continue
+    let v = fields[col]
+    if (kind === 'jsonb' && v !== null && v !== undefined) v = JSON.stringify(v)
+    sets.push(`${col} = $${startIndex + params.length}`)
+    params.push(v === undefined ? null : v)
   }
-  if (!colNames.includes('waba_registered_at')) {
-    db.exec('ALTER TABLE agents ADD COLUMN waba_registered_at TEXT')
-    console.log('migrated agents: added waba_registered_at column')
-  }
-  if (!colNames.includes('meta_waba_id')) {
-    db.exec('ALTER TABLE agents ADD COLUMN meta_waba_id TEXT')
-    console.log('migrated agents: added meta_waba_id column')
-  }
-  if (!colNames.includes('is_admin')) {
-    db.exec('ALTER TABLE agents ADD COLUMN is_admin INTEGER DEFAULT 0')
-    console.log('migrated agents: added is_admin column')
-  }
+  return { sets, params }
 }
 
 // Canonical storage form for a WhatsApp number: leading "+" and digits only.
@@ -233,76 +99,103 @@ export function normalizePhone(raw) {
 // Digits only, for loose comparison against Meta's display_phone_number (which has no "+").
 const phoneDigits = (raw) => String(raw || '').replace(/\D/g, '')
 
-export function createAgent(name, phone, email, passwordHash, waPhoneNumber = null) {
+const AGENT_COLS =
+  'id, name, phone, email, wa_phone_number_id, wa_phone_number, waba_status, waba_registered_at, meta_waba_id, is_admin, created_at'
+
+export async function createAgent(name, phone, email, passwordHash, waPhoneNumber = null) {
   const pn = waPhoneNumber ? normalizePhone(waPhoneNumber) : null
   if (pn && pn.replace(/\D/g, '').length < 10) throw new Error('Enter a valid WhatsApp Business number')
-  const info = db
-    .prepare('INSERT INTO agents (name, phone, email, password_hash, wa_phone_number, waba_status) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(name, normalizePhone(phone), email ? email.toLowerCase() : null, passwordHash, pn, pn ? 'pending' : 'none')
-  return getAgent(info.lastInsertRowid)
+  const { rows } = await q(
+    `INSERT INTO agents (name, phone, email, password_hash, wa_phone_number, waba_status)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+    [name, normalizePhone(phone), email ? email.toLowerCase() : null, passwordHash, pn, pn ? 'pending' : 'none'],
+  )
+  return getAgent(rows[0].id)
 }
 
-export function getAgent(id) {
-  return db
-    .prepare('SELECT id, name, phone, email, wa_phone_number_id, wa_phone_number, waba_status, waba_registered_at, meta_waba_id, is_admin, created_at FROM agents WHERE id = ?')
-    .get(id)
+export async function getAgent(id) {
+  const { rows } = await q(`SELECT ${AGENT_COLS} FROM agents WHERE id = $1`, [id])
+  return rows[0]
 }
 
-export function findAgentByPhone(phone) {
-  return db.prepare('SELECT * FROM agents WHERE phone = ?').get(normalizePhone(phone))
+export async function findAgentByPhone(phone) {
+  const { rows } = await q('SELECT * FROM agents WHERE phone = $1', [normalizePhone(phone)])
+  return rows[0]
 }
 
-export function findAgentByEmail(email) {
+export async function findAgentByEmail(email) {
   if (!email) return null
-  return db.prepare('SELECT * FROM agents WHERE email = ?').get(email.toLowerCase())
+  const { rows } = await q('SELECT * FROM agents WHERE email = $1', [email.toLowerCase()])
+  return rows[0] || null
 }
 
-export function countAgents() {
-  return db.prepare('SELECT COUNT(*) AS n FROM agents').get().n
+export async function countAgents() {
+  return (await q('SELECT COUNT(*) AS n FROM agents')).rows[0].n
 }
 
 // Update an agent's per-agent WhatsApp Business number configuration.
 // waPhoneNumber is the display number (E.164), waPhoneNumberId is the Meta API phone_number_id.
 // Either or both can be null to clear the configuration.
-export function updateAgentPhoneConfig(agentId, waPhoneNumber, waPhoneNumberId) {
+export async function updateAgentPhoneConfig(agentId, waPhoneNumber, waPhoneNumberId) {
   const pn = waPhoneNumber ? normalizePhone(waPhoneNumber) : null
   if (pn && pn.replace(/\D/g, '').length < 10) throw new Error('Enter a valid WhatsApp Business number')
   // Ensure wa_phone_number_id is unique across agents (two agents can't share the same line).
   if (waPhoneNumberId) {
-    const existing = db
-      .prepare('SELECT id FROM agents WHERE wa_phone_number_id = ? AND id != ?')
-      .get(waPhoneNumberId, agentId)
-    if (existing) {
+    const { rows } = await q('SELECT id FROM agents WHERE wa_phone_number_id = $1 AND id != $2', [
+      waPhoneNumberId,
+      agentId,
+    ])
+    if (rows[0]) {
       const err = new Error('This WhatsApp Business number ID is already assigned to another agent')
       err.code = 'PHONE_ID_TAKEN'
       throw err
     }
   }
-  db.prepare('UPDATE agents SET wa_phone_number = ?, wa_phone_number_id = ? WHERE id = ?')
-    .run(pn, waPhoneNumberId || null, agentId)
+  await q('UPDATE agents SET wa_phone_number = $1, wa_phone_number_id = $2 WHERE id = $3', [
+    pn,
+    waPhoneNumberId || null,
+    agentId,
+  ])
+  return getAgent(agentId)
+}
+
+// Agent sets/updates their WA Business number: first-time set moves waba_status to 'pending'.
+export async function setAgentWaPhone(agentId, waPhoneNumber) {
+  const norm = normalizePhone(waPhoneNumber)
+  const current = await getAgent(agentId)
+  const isNew = !current.wa_phone_number
+  await q(
+    `UPDATE agents SET wa_phone_number = $1,
+       waba_status = CASE WHEN waba_status = 'none' THEN 'pending' ELSE waba_status END
+     WHERE id = $2`,
+    [norm, agentId],
+  )
+  if (isNew) await q(`UPDATE agents SET waba_status = 'pending' WHERE id = $1`, [agentId])
   return getAgent(agentId)
 }
 
 // Find the agent who owns a specific Meta phone_number_id. Used for inbound webhook routing:
 // when a message arrives on a specific WhatsApp Business line, route it to the agent who owns it.
 // Only returns agents whose WABA status is 'active' — pending/registered numbers aren't live yet.
-export function findAgentByPhoneNumberId(phoneNumberId) {
+export async function findAgentByPhoneNumberId(phoneNumberId) {
   if (!phoneNumberId) return null
   // First try active WABA agents (the main production path).
-  const active = db.prepare("SELECT * FROM agents WHERE wa_phone_number_id = ? AND waba_status = 'active'").get(phoneNumberId)
+  const active = (
+    await q(`SELECT * FROM agents WHERE wa_phone_number_id = $1 AND waba_status = 'active'`, [phoneNumberId])
+  ).rows[0]
   if (active) return active
   // Fallback: agents who manually configured phone_number_id (pre-WABA flow, backward compat).
-  return db.prepare('SELECT * FROM agents WHERE wa_phone_number_id = ?').get(phoneNumberId) || null
+  return (await q('SELECT * FROM agents WHERE wa_phone_number_id = $1', [phoneNumberId])).rows[0] || null
 }
 
 // --- Contacts: the agent's known clients on the shared WhatsApp number ---
 
 // Shared number routing: find which agent owns an inbound sender's number.
 // Matches on full digits, then on a 10-digit suffix as a fallback.
-export function findContactByWaId(waId) {
+export async function findContactByWaId(waId) {
   const digits = phoneDigits(waId)
   if (!digits) return null
-  const contacts = db.prepare('SELECT * FROM contacts').all()
+  const { rows: contacts } = await q('SELECT * FROM contacts')
   const exact = contacts.find((c) => phoneDigits(c.phone) === digits)
   if (exact) return exact
   const suffix = digits.slice(-10)
@@ -310,33 +203,35 @@ export function findContactByWaId(waId) {
 }
 
 // Look up a client row by phone (across all agents), used to decide whose list a number is in.
-export function getContactByPhone(phone) {
-  return db.prepare('SELECT * FROM contacts WHERE phone = ?').get(normalizePhone(phone))
+export async function getContactByPhone(phone) {
+  const { rows } = await q('SELECT * FROM contacts WHERE phone = $1', [normalizePhone(phone)])
+  return rows[0]
 }
 
 // List an agent's clients, annotated with whether that number has ever messaged.
-export function listContacts(agentId) {
-  return db
-    .prepare(
-      `SELECT c.*,
-         (SELECT COUNT(*) FROM messages m
-            JOIN leads l ON l.id = m.lead_id
-            WHERE l.wa_id = replace(c.phone, '+', '') AND m.role = 'buyer') AS msg_count,
-         (SELECT MAX(l.updated_at) FROM leads l
-            WHERE l.wa_id = replace(c.phone, '+', '')) AS last_at
-       FROM contacts c
-       WHERE c.agent_id = ?
-       ORDER BY c.created_at DESC`,
-    )
-    .all(agentId)
+export async function listContacts(agentId) {
+  const { rows } = await q(
+    `SELECT c.*,
+       (SELECT COUNT(*) FROM messages m
+          JOIN leads l ON l.id = m.lead_id
+          WHERE l.wa_id = replace(c.phone, '+', '') AND m.role = 'buyer') AS msg_count,
+       (SELECT MAX(l.updated_at) FROM leads l
+          WHERE l.wa_id = replace(c.phone, '+', '')) AS last_at
+     FROM contacts c
+     WHERE c.agent_id = $1
+     ORDER BY c.created_at DESC`,
+    [agentId],
+  )
+  return rows
 }
 
 // Add one client. Throws on a phone already claimed (by any agent — UNIQUE(phone)).
-export function addContact(agentId, phone, name, notes = null) {
+// opts.source tags where the contact came from (whatsapp_inbound/portal/facebook/walk_in/referral).
+export async function addContact(agentId, phone, name, notes = null, opts = {}) {
   const p = normalizePhone(phone)
   if (p.replace(/\D/g, '').length < 10) throw new Error('Enter a valid phone number')
   if (!name || !String(name).trim()) throw new Error('Client name is required')
-  const existing = db.prepare('SELECT agent_id FROM contacts WHERE phone = ?').get(p)
+  const existing = await getContactByPhone(p)
   if (existing) {
     const err = new Error(
       existing.agent_id === agentId
@@ -346,19 +241,28 @@ export function addContact(agentId, phone, name, notes = null) {
     err.code = 'CONTACT_EXISTS'
     throw err
   }
-  const info = db
-    .prepare('INSERT INTO contacts (agent_id, phone, name, notes) VALUES (?, ?, ?, ?)')
-    .run(agentId, p, String(name).trim(), notes ? String(notes).trim() : null)
-  return db.prepare('SELECT * FROM contacts WHERE id = ?').get(info.lastInsertRowid)
+  const { rows } = await q(
+    `INSERT INTO contacts (agent_id, phone, name, notes, source, source_detail)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+    [
+      agentId,
+      p,
+      String(name).trim(),
+      notes ? String(notes).trim() : null,
+      opts.source || 'whatsapp_inbound',
+      opts.sourceDetail || null,
+    ],
+  )
+  return rows[0]
 }
 
 // Bulk add. Returns { added, skipped: [{phone, reason}] }; never throws on a bad row.
-export function bulkAddContacts(agentId, rows) {
+export async function bulkAddContacts(agentId, rows) {
   const added = []
   const skipped = []
   for (const row of rows || []) {
     try {
-      added.push(addContact(agentId, row.phone, row.name, row.notes))
+      added.push(await addContact(agentId, row.phone, row.name, row.notes))
     } catch (err) {
       skipped.push({ phone: row.phone, name: row.name, reason: err.message })
     }
@@ -366,204 +270,233 @@ export function bulkAddContacts(agentId, rows) {
   return { added, skipped }
 }
 
-export function deleteContact(id, agentId) {
-  return db.prepare('DELETE FROM contacts WHERE id = ? AND agent_id = ?').run(id, agentId).changes > 0
+export async function getContact(id, agentId) {
+  const { rows } = await q('SELECT * FROM contacts WHERE id = $1 AND agent_id = $2', [id, agentId])
+  return rows[0]
 }
 
-export function getMeta(key) {
-  return db.prepare('SELECT value FROM meta WHERE key = ?').get(key)?.value
+export async function updateContact(id, agentId, fields) {
+  const { sets, params } = buildSet(
+    { name: 'text', notes: 'text', opt_in_status: 'text', labels: 'jsonb', source: 'text', source_detail: 'text' },
+    fields,
+  )
+  if (!sets.length) return getContact(id, agentId)
+  const { rows } = await q(
+    `UPDATE contacts SET ${sets.join(', ')}, updated_at = now()
+     WHERE id = $${params.length + 1} AND agent_id = $${params.length + 2} RETURNING *`,
+    [...params, id, agentId],
+  )
+  return rows[0]
 }
 
-export function setMeta(key, value) {
-  db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value)
-}
-
-export function upsertLead(agentId, waId, name) {
-  db.prepare(
-    `INSERT INTO leads (agent_id, wa_id, name, phone) VALUES (?, ?, ?, ?)
-     ON CONFLICT(agent_id, wa_id) DO UPDATE SET
-       name = COALESCE(excluded.name, leads.name),
-       updated_at = datetime('now')`,
-  ).run(agentId, waId, name || null, waId)
-  return db.prepare('SELECT * FROM leads WHERE agent_id = ? AND wa_id = ?').get(agentId, waId)
-}
-
-// Unassigned pool: a message from an unknown sender on the shared number. Deduped by
-// wa_id among the NULL-agent rows (UNIQUE(agent_id,wa_id) does not cover NULLs in SQLite).
-export function upsertUnassignedLead(waId, name) {
-  const existing = db.prepare('SELECT * FROM leads WHERE agent_id IS NULL AND wa_id = ?').get(waId)
-  if (existing) {
-    db.prepare(
-      "UPDATE leads SET name = COALESCE(?, name), updated_at = datetime('now') WHERE id = ?",
-    ).run(name || null, existing.id)
-    return db.prepare('SELECT * FROM leads WHERE id = ?').get(existing.id)
-  }
-  const info = db
-    .prepare("INSERT INTO leads (agent_id, wa_id, name, phone, source) VALUES (NULL, ?, ?, ?, 'WhatsApp')")
-    .run(waId, name || null, waId)
-  return db.prepare('SELECT * FROM leads WHERE id = ?').get(info.lastInsertRowid)
-}
-
-// Claim an unassigned lead. Only succeeds while the lead is still in the pool.
-export function assignLead(leadId, agentId) {
-  const changed = db
-    .prepare('UPDATE leads SET agent_id = ? WHERE id = ? AND agent_id IS NULL').run(agentId, leadId).changes
-  return changed > 0 ? getLead(leadId) : null
-}
-
-export function getLead(id) {
-  return db.prepare('SELECT * FROM leads WHERE id = ?').get(id)
-}
-
-// Ownership-checked lookup for dashboard routes: only returns the lead if it belongs to the agent.
-export function getLeadForAgent(id, agentId) {
-  return db.prepare('SELECT * FROM leads WHERE id = ? AND agent_id = ?').get(id, agentId)
-}
-
-// Like getLeadForAgent, but also returns unassigned-pool leads so any agent can inspect/claim them.
-export function getAssignableLead(id, agentId) {
-  return db
-    .prepare('SELECT * FROM leads WHERE id = ? AND (agent_id = ? OR agent_id IS NULL)')
-    .get(id, agentId)
-}
-
-export function addMessage(leadId, role, text, waMessageId = null) {
-  const info = db
-    .prepare('INSERT INTO messages (lead_id, role, text, wa_message_id) VALUES (?, ?, ?, ?)')
-    .run(leadId, role, text, waMessageId)
-  db.prepare("UPDATE leads SET updated_at = datetime('now') WHERE id = ?").run(leadId)
-  return db.prepare('SELECT * FROM messages WHERE id = ?').get(info.lastInsertRowid)
-}
-
-export function getMessages(leadId, limit = 200) {
-  return db
-    .prepare('SELECT * FROM messages WHERE lead_id = ? ORDER BY id LIMIT ?')
-    .all(leadId, limit)
-}
-
-export function recordFirstResponse(leadId) {
-  const lead = getLead(leadId)
-  if (!lead || lead.first_response_s != null) return
-  const row = db
-    .prepare(
-      `SELECT
-         (SELECT MIN(created_at) FROM messages WHERE lead_id = ? AND role = 'buyer') AS first_in,
-         (SELECT MIN(created_at) FROM messages WHERE lead_id = ? AND role IN ('ai','agent')) AS first_out`,
-    )
-    .get(leadId, leadId)
-  if (!row.first_in || !row.first_out) return
-  const s =
-    (new Date(row.first_out + 'Z').getTime() - new Date(row.first_in + 'Z').getTime()) / 1000
-  db.prepare('UPDATE leads SET first_response_s = ? WHERE id = ?').run(Math.max(s, 0), leadId)
-}
-
-export function applyExtraction(leadId, x) {
-  db.prepare(
-    `UPDATE leads SET
-       name = COALESCE(?, name),
-       temp = COALESCE(?, temp),
-       score = COALESCE(?, score),
-       config = COALESCE(?, config),
-       config_note = COALESCE(?, config_note),
-       locality = COALESCE(?, locality),
-       location_note = COALESCE(?, location_note),
-       budget_min_l = COALESCE(?, budget_min_l),
-       budget_max_l = COALESCE(?, budget_max_l),
-       budget_note = COALESCE(?, budget_note),
-       timeline = COALESCE(?, timeline),
-       timeline_note = COALESCE(?, timeline_note),
-       ai_summary = COALESCE(?, ai_summary),
-       next_step = COALESCE(?, next_step),
-       score_breakdown = COALESCE(?, score_breakdown),
-       updated_at = datetime('now')
-     WHERE id = ?`,
-  ).run(
-    x.name ?? null,
-    x.temp ?? null,
-    x.score ?? null,
-    x.config ?? null,
-    x.config_note ?? null,
-    x.locality ?? null,
-    x.location_note ?? null,
-    x.budget_min_l ?? null,
-    x.budget_max_l ?? null,
-    x.budget_note ?? null,
-    x.timeline ?? null,
-    x.timeline_note ?? null,
-    x.summary ?? null,
-    x.next_step ?? null,
-    x.score_breakdown ? JSON.stringify(x.score_breakdown) : null,
-    leadId,
+// Stamp message activity on a contact (first/last message timestamps).
+export async function recordContactMessage(phone) {
+  await q(
+    `UPDATE contacts SET
+       first_message_at = COALESCE(first_message_at, now()),
+       last_message_at = now(),
+       updated_at = now()
+     WHERE phone = $1`,
+    [normalizePhone(phone)],
   )
 }
 
-export function logActivity(agentId, leadId, kind, text) {
-  db.prepare('INSERT INTO activity (agent_id, lead_id, kind, text) VALUES (?, ?, ?, ?)').run(
+export async function deleteContact(id, agentId) {
+  const res = await q('DELETE FROM contacts WHERE id = $1 AND agent_id = $2', [id, agentId])
+  return res.rowCount > 0
+}
+
+export async function getMeta(key) {
+  const { rows } = await q('SELECT value FROM meta WHERE key = $1', [key])
+  return rows[0]?.value
+}
+
+export async function setMeta(key, value) {
+  await q(
+    'INSERT INTO meta (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value',
+    [key, value],
+  )
+}
+
+export async function upsertLead(agentId, waId, name) {
+  const { rows } = await q(
+    `INSERT INTO leads (agent_id, wa_id, name, phone) VALUES ($1, $2, $3, $4)
+     ON CONFLICT (agent_id, wa_id) DO UPDATE SET
+       name = COALESCE(EXCLUDED.name, leads.name),
+       updated_at = now()
+     RETURNING *`,
+    [agentId, waId, name || null, waId],
+  )
+  return rows[0]
+}
+
+// Unassigned pool: a message from an unknown sender on the shared number. Deduped by
+// wa_id among the NULL-agent rows (the UNIQUE constraint does not cover NULLs).
+export async function upsertUnassignedLead(waId, name) {
+  const existing = (await q('SELECT * FROM leads WHERE agent_id IS NULL AND wa_id = $1', [waId])).rows[0]
+  if (existing) {
+    const { rows } = await q(
+      'UPDATE leads SET name = COALESCE($1, name), updated_at = now() WHERE id = $2 RETURNING *',
+      [name || null, existing.id],
+    )
+    return rows[0]
+  }
+  const { rows } = await q(
+    `INSERT INTO leads (agent_id, wa_id, name, phone, source) VALUES (NULL, $1, $2, $3, 'WhatsApp') RETURNING *`,
+    [waId, name || null, waId],
+  )
+  return rows[0]
+}
+
+// Claim an unassigned lead. Only succeeds while the lead is still in the pool.
+export async function assignLead(leadId, agentId) {
+  const res = await q('UPDATE leads SET agent_id = $1 WHERE id = $2 AND agent_id IS NULL', [agentId, leadId])
+  return res.rowCount > 0 ? getLead(leadId) : null
+}
+
+export async function getLead(id) {
+  return (await q('SELECT * FROM leads WHERE id = $1', [id])).rows[0]
+}
+
+// Ownership-checked lookup for dashboard routes: only returns the lead if it belongs to the agent.
+export async function getLeadForAgent(id, agentId) {
+  return (await q('SELECT * FROM leads WHERE id = $1 AND agent_id = $2', [id, agentId])).rows[0]
+}
+
+// Like getLeadForAgent, but also returns unassigned-pool leads so any agent can inspect/claim them.
+export async function getAssignableLead(id, agentId) {
+  return (
+    await q('SELECT * FROM leads WHERE id = $1 AND (agent_id = $2 OR agent_id IS NULL)', [id, agentId])
+  ).rows[0]
+}
+
+export async function addMessage(leadId, role, text, waMessageId = null) {
+  const { rows } = await q(
+    'INSERT INTO messages (lead_id, role, text, wa_message_id) VALUES ($1, $2, $3, $4) RETURNING *',
+    [leadId, role, text, waMessageId],
+  )
+  await q('UPDATE leads SET updated_at = now() WHERE id = $1', [leadId])
+  return rows[0]
+}
+
+export async function getMessages(leadId, limit = 200) {
+  return (await q('SELECT * FROM messages WHERE lead_id = $1 ORDER BY id LIMIT $2', [leadId, limit])).rows
+}
+
+export async function recordFirstResponse(leadId) {
+  const lead = await getLead(leadId)
+  if (!lead || lead.first_response_s != null) return
+  const row = (
+    await q(
+      `SELECT EXTRACT(EPOCH FROM (
+         (SELECT MIN(created_at) FROM messages WHERE lead_id = $1 AND role IN ('ai','agent')) -
+         (SELECT MIN(created_at) FROM messages WHERE lead_id = $1 AND role = 'buyer')
+       ))::float AS seconds`,
+      [leadId],
+    )
+  ).rows[0]
+  if (row.seconds == null) return
+  await q('UPDATE leads SET first_response_s = $1 WHERE id = $2', [Math.max(row.seconds, 0), leadId])
+}
+
+export async function applyExtraction(leadId, x) {
+  await q(
+    `UPDATE leads SET
+       name = COALESCE($1, name),
+       temp = COALESCE($2, temp),
+       score = COALESCE($3, score),
+       config = COALESCE($4, config),
+       config_note = COALESCE($5, config_note),
+       locality = COALESCE($6, locality),
+       location_note = COALESCE($7, location_note),
+       budget_min_l = COALESCE($8, budget_min_l),
+       budget_max_l = COALESCE($9, budget_max_l),
+       budget_note = COALESCE($10, budget_note),
+       timeline = COALESCE($11, timeline),
+       timeline_note = COALESCE($12, timeline_note),
+       ai_summary = COALESCE($13, ai_summary),
+       next_step = COALESCE($14, next_step),
+       score_breakdown = COALESCE($15, score_breakdown),
+       updated_at = now()
+     WHERE id = $16`,
+    [
+      x.name ?? null,
+      x.temp ?? null,
+      x.score ?? null,
+      x.config ?? null,
+      x.config_note ?? null,
+      x.locality ?? null,
+      x.location_note ?? null,
+      x.budget_min_l ?? null,
+      x.budget_max_l ?? null,
+      x.budget_note ?? null,
+      x.timeline ?? null,
+      x.timeline_note ?? null,
+      x.summary ?? null,
+      x.next_step ?? null,
+      x.score_breakdown ? JSON.stringify(x.score_breakdown) : null,
+      leadId,
+    ],
+  )
+}
+
+export async function logActivity(agentId, leadId, kind, text) {
+  await q('INSERT INTO activity (agent_id, lead_id, kind, text) VALUES ($1, $2, $3, $4)', [
     agentId,
     leadId,
     kind,
     text,
-  )
+  ])
 }
 
 // The agent's own leads plus the shared unassigned pool. `unassigned` flags pool rows;
 // `contact_name` is the client name from the agent's contacts, when the sender is known.
-export function listLeads(agentId) {
-  return db
-    .prepare(
-      `SELECT l.*,
-         (l.agent_id IS NULL) AS unassigned,
-         (SELECT c.name FROM contacts c
-            WHERE c.agent_id = ? AND replace(c.phone, '+', '') = l.wa_id LIMIT 1) AS contact_name,
-         (SELECT text FROM messages m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) AS last_msg,
-         (SELECT role FROM messages m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) AS last_role,
-         (SELECT created_at FROM messages m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) AS last_at
-       FROM leads l
-       WHERE l.agent_id = ? OR l.agent_id IS NULL
-       ORDER BY l.updated_at DESC`,
-    )
-    .all(agentId, agentId)
+export async function listLeads(agentId) {
+  const { rows } = await q(
+    `SELECT l.*,
+       (l.agent_id IS NULL)::int AS unassigned,
+       (SELECT c.name FROM contacts c
+          WHERE c.agent_id = $1 AND replace(c.phone, '+', '') = l.wa_id LIMIT 1) AS contact_name,
+       (SELECT text FROM messages m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) AS last_msg,
+       (SELECT role FROM messages m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) AS last_role,
+       (SELECT created_at FROM messages m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) AS last_at
+     FROM leads l
+     WHERE l.agent_id = $1 OR l.agent_id IS NULL
+     ORDER BY l.updated_at DESC`,
+    [agentId],
+  )
+  return rows
 }
 
-export function listActivity(agentId, limit = 30) {
-  return db
-    .prepare('SELECT * FROM activity WHERE agent_id = ? ORDER BY id DESC LIMIT ?')
-    .all(agentId, limit)
+export async function listActivity(agentId, limit = 30) {
+  return (
+    await q('SELECT * FROM activity WHERE agent_id = $1 ORDER BY id DESC LIMIT $2', [agentId, limit])
+  ).rows
 }
 
-export function setAiEnabled(leadId, enabled) {
-  db.prepare('UPDATE leads SET ai_enabled = ? WHERE id = ?').run(enabled ? 1 : 0, leadId)
+export async function setAiEnabled(leadId, enabled) {
+  await q('UPDATE leads SET ai_enabled = $1 WHERE id = $2', [enabled ? 1 : 0, leadId])
 }
 
-export function listNetworkPosts() {
-  return db.prepare('SELECT * FROM network_posts ORDER BY id DESC LIMIT 50').all()
+export async function listNetworkPosts() {
+  return (await q('SELECT * FROM network_posts ORDER BY id DESC LIMIT 50')).rows
 }
 
-export function addNetworkPost(p) {
-  const info = db
-    .prepare(
-      `INSERT INTO network_posts (type, broker, firm, text, config, locality, budget_min_l, budget_max_l)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
-      p.type,
-      p.broker,
-      p.firm ?? null,
-      p.text,
-      p.config ?? null,
-      p.locality ?? null,
-      p.budget_min_l ?? null,
-      p.budget_max_l ?? null,
-    )
-  return db.prepare('SELECT * FROM network_posts WHERE id = ?').get(info.lastInsertRowid)
+export async function addNetworkPost(p) {
+  const { rows } = await q(
+    `INSERT INTO network_posts (type, broker, firm, text, config, locality, budget_min_l, budget_max_l)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+    [p.type, p.broker, p.firm ?? null, p.text, p.config ?? null, p.locality ?? null, p.budget_min_l ?? null, p.budget_max_l ?? null],
+  )
+  return rows[0]
 }
 
 // Real matching: your qualified buyers x posted inventory, on locality + config + budget overlap.
-export function computeMatches(agentId) {
-  const leads = db
-    .prepare("SELECT * FROM leads WHERE agent_id = ? AND locality IS NOT NULL AND temp != 'Cold'")
-    .all(agentId)
-  const inventory = db.prepare("SELECT * FROM network_posts WHERE type = 'INVENTORY'").all()
+export async function computeMatches(agentId) {
+  const leads = (
+    await q(`SELECT * FROM leads WHERE agent_id = $1 AND locality IS NOT NULL AND temp != 'Cold'`, [agentId])
+  ).rows
+  const inventory = (await q(`SELECT * FROM network_posts WHERE type = 'INVENTORY'`)).rows
   const matches = []
   for (const lead of leads) {
     for (const inv of inventory) {
@@ -595,31 +528,43 @@ export function computeMatches(agentId) {
 // --- Admin / WABA management ---
 
 // List all agents with their WABA status (for admin panel).
-export function listAllAgents() {
-  return db
-    .prepare(
+export async function listAllAgents() {
+  return (
+    await q(
       `SELECT id, name, phone, email, wa_phone_number, wa_phone_number_id,
               waba_status, waba_registered_at, meta_waba_id, is_admin, created_at
        FROM agents ORDER BY created_at DESC`,
     )
-    .all()
+  ).rows
+}
+
+// Auto-promote the first agent to admin if no admins exist (lazy, on first admin-route hit).
+export async function ensureAdminExists() {
+  const hasAdmin = (await q('SELECT 1 FROM agents WHERE is_admin = 1 LIMIT 1')).rows[0]
+  if (!hasAdmin) {
+    const first = (await q('SELECT id FROM agents ORDER BY id LIMIT 1')).rows[0]
+    if (first) {
+      await q('UPDATE agents SET is_admin = 1 WHERE id = $1', [first.id])
+      console.log(`Auto-promoted agent #${first.id} to admin (first agent)`)
+    }
+  }
 }
 
 // Update an agent's WABA registration status (admin action).
 // status must be one of: none, pending, registered, active.
-export function updateWabaStatus(agentId, { status, metaWabaId, waPhoneNumberId, waPhoneNumber }) {
+export async function updateWabaStatus(agentId, { status, metaWabaId, waPhoneNumberId, waPhoneNumber }) {
   const valid = ['none', 'pending', 'registered', 'active']
   if (!valid.includes(status)) throw new Error(`Invalid WABA status: ${status}`)
 
-  const agent = getAgent(agentId)
+  const agent = await getAgent(agentId)
   if (!agent) throw new Error('Agent not found')
 
-  const updates = ['waba_status = ?']
+  const updates = ['waba_status = $1']
   const params = [status]
 
   // Set registered_at when transitioning to 'registered' or 'active'
   if ((status === 'registered' || status === 'active') && !agent.waba_registered_at) {
-    updates.push("waba_registered_at = datetime('now')")
+    updates.push('waba_registered_at = now()')
   }
   // Clear registered_at when going back to 'none' or 'pending'
   if (status === 'none' || status === 'pending') {
@@ -627,98 +572,97 @@ export function updateWabaStatus(agentId, { status, metaWabaId, waPhoneNumberId,
   }
 
   if (metaWabaId !== undefined) {
-    updates.push('meta_waba_id = ?')
     params.push(metaWabaId || null)
+    updates.push(`meta_waba_id = $${params.length}`)
   }
   if (waPhoneNumberId !== undefined) {
-    updates.push('wa_phone_number_id = ?')
     params.push(waPhoneNumberId || null)
+    updates.push(`wa_phone_number_id = $${params.length}`)
   }
   if (waPhoneNumber !== undefined) {
-    const pn = waPhoneNumber ? normalizePhone(waPhoneNumber) : null
-    updates.push('wa_phone_number = ?')
-    params.push(pn)
+    params.push(waPhoneNumber ? normalizePhone(waPhoneNumber) : null)
+    updates.push(`wa_phone_number = $${params.length}`)
   }
 
   params.push(agentId)
-  db.prepare(`UPDATE agents SET ${updates.join(', ')} WHERE id = ?`).run(...params)
+  await q(`UPDATE agents SET ${updates.join(', ')} WHERE id = $${params.length}`, params)
   return getAgent(agentId)
 }
 
 // Admin dashboard stats.
-export function adminStats() {
-  const one = (sql) => Object.values(db.prepare(sql).get())[0]
+export async function adminStats() {
+  const one = async (sql) => Object.values((await q(sql)).rows[0])[0]
   return {
-    totalAgents: one('SELECT COUNT(*) FROM agents'),
-    newAgents7d: one("SELECT COUNT(*) FROM agents WHERE created_at >= datetime('now', '-7 days')"),
-    newAgents30d: one("SELECT COUNT(*) FROM agents WHERE created_at >= datetime('now', '-30 days')"),
-    noneWaba: one("SELECT COUNT(*) FROM agents WHERE waba_status = 'none' OR waba_status IS NULL"),
-    pendingWaba: one("SELECT COUNT(*) FROM agents WHERE waba_status = 'pending'"),
-    registeredWaba: one("SELECT COUNT(*) FROM agents WHERE waba_status = 'registered'"),
-    activeWaba: one("SELECT COUNT(*) FROM agents WHERE waba_status = 'active'"),
-    totalLeads: one('SELECT COUNT(*) FROM leads'),
-    totalContacts: one('SELECT COUNT(*) FROM contacts'),
+totalAgents: await one('SELECT COUNT(*) FROM agents'),
+    newAgents7d: await one(`SELECT COUNT(*) FROM agents WHERE created_at >= now() - interval '7 days'`),
+    newAgents30d: await one(`SELECT COUNT(*) FROM agents WHERE created_at >= now() - interval '30 days'`),
+    noneWaba: await one(`SELECT COUNT(*) FROM agents WHERE waba_status = 'none'`),
+    pendingWaba: await one(`SELECT COUNT(*) FROM agents WHERE waba_status = 'pending'`),
+    registeredWaba: await one(`SELECT COUNT(*) FROM agents WHERE waba_status = 'registered'`),
+    activeWaba: await one(`SELECT COUNT(*) FROM agents WHERE waba_status = 'active'`),
+    totalLeads: await one('SELECT COUNT(*) FROM leads'),
+    totalContacts: await one('SELECT COUNT(*) FROM contacts'),
     // A conversation is "active" when the lead exchanged at least one message in the last 24h.
-    activeConversations: one(
-      "SELECT COUNT(DISTINCT lead_id) FROM messages WHERE created_at >= datetime('now', '-1 day')",
+    activeConversations: await one(
+      `SELECT COUNT(DISTINCT lead_id) FROM messages WHERE created_at >= now() - interval '1 day'`,
     ),
   }
 }
 
 // Paginated, searchable agent listing for the admin site.
 // search matches name/email/phone (substring); status filters on waba_status.
-export function listAgentsAdmin({ search = '', status = '', page = 1, pageSize = 20 } = {}) {
+export async function listAgentsAdmin({ search = '', status = '', page = 1, pageSize = 20 } = {}) {
   const where = []
-  const params = {}
+  const params = []
   if (search) {
-    where.push('(a.name LIKE @q OR a.email LIKE @q OR a.phone LIKE @q OR a.wa_phone_number LIKE @q)')
-    params.q = `%${search}%`
+    params.push(`%${search}%`)
+    const n = params.length
+    where.push(`(a.name ILIKE $${n} OR a.email ILIKE $${n} OR a.phone ILIKE $${n} OR a.wa_phone_number ILIKE $${n})`)
   }
   if (status) {
-    where.push("COALESCE(a.waba_status, 'none') = @status")
-    params.status = status
+    params.push(status)
+    where.push(`a.waba_status = $${params.length}`)
   }
   const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : ''
-  const total = db.prepare(`SELECT COUNT(*) AS n FROM agents a ${whereSql}`).get(params).n
+  const total = (await q(`SELECT COUNT(*) AS n FROM agents a ${whereSql}`, params)).rows[0].n
   const size = Math.min(Math.max(1, Number(pageSize) || 20), 100)
   const p = Math.max(1, Number(page) || 1)
-  const agents = db
-    .prepare(
-      `SELECT a.id, a.name, a.phone, a.email, a.wa_phone_number, a.wa_phone_number_id,
-              a.waba_status, a.waba_registered_at, a.meta_waba_id, a.is_admin, a.created_at,
-              (SELECT MAX(created_at) FROM activity WHERE agent_id = a.id) AS last_active,
-              (SELECT COUNT(*) FROM leads l WHERE l.agent_id = a.id) AS lead_count
-       FROM agents a ${whereSql}
-       ORDER BY a.created_at DESC, a.id DESC
-       LIMIT @limit OFFSET @offset`,
-    )
-    .all({ ...params, limit: size, offset: (p - 1) * size })
+  const { rows: agents } = await q(
+    `SELECT a.id, a.name, a.phone, a.email, a.wa_phone_number, a.wa_phone_number_id,
+            a.waba_status, a.waba_registered_at, a.meta_waba_id, a.is_admin, a.created_at,
+            (SELECT MAX(created_at) FROM activity WHERE agent_id = a.id) AS last_active,
+            (SELECT COUNT(*) FROM leads l WHERE l.agent_id = a.id) AS lead_count
+     FROM agents a ${whereSql}
+     ORDER BY a.created_at DESC, a.id DESC
+     LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    [...params, size, (p - 1) * size],
+  )
   return { agents, total, page: p, pageSize: size, totalPages: Math.max(1, Math.ceil(total / size)) }
 }
 
 // Full agent profile for the admin detail view: counts + recent activity.
-export function getAgentDetail(id) {
-  const agent = getAgent(id)
+export async function getAgentDetail(id) {
+  const agent = await getAgent(id)
   if (!agent) return null
-  const one = (sql, ...args) => Object.values(db.prepare(sql).get(...args))[0]
+  const one = async (sql, ...args) => Object.values((await q(sql, args)).rows[0])[0]
   return {
     ...agent,
-    lead_count: one('SELECT COUNT(*) FROM leads WHERE agent_id = ?', id),
-    contact_count: one('SELECT COUNT(*) FROM contacts WHERE agent_id = ?', id),
-    message_count: one(
-      'SELECT COUNT(*) FROM messages WHERE lead_id IN (SELECT id FROM leads WHERE agent_id = ?)',
+    lead_count: await one('SELECT COUNT(*) FROM leads WHERE agent_id = $1', id),
+    contact_count: await one('SELECT COUNT(*) FROM contacts WHERE agent_id = $1', id),
+    message_count: await one(
+      'SELECT COUNT(*) FROM messages WHERE lead_id IN (SELECT id FROM leads WHERE agent_id = $1)',
       id,
     ),
-    last_active: one('SELECT MAX(created_at) FROM activity WHERE agent_id = ?', id),
-    recent_activity: db
-      .prepare('SELECT * FROM activity WHERE agent_id = ? ORDER BY id DESC LIMIT 15')
-      .all(id),
+    last_active: await one('SELECT MAX(created_at) FROM activity WHERE agent_id = $1', id),
+    recent_activity: (
+      await q('SELECT * FROM activity WHERE agent_id = $1 ORDER BY id DESC LIMIT 15', [id])
+    ).rows,
   }
 }
 
 // Admin edit of an agent's profile. Only provided fields are changed.
-export function updateAgentProfile(agentId, { name, email, phone, is_admin } = {}) {
-  const agent = getAgent(agentId)
+export async function updateAgentProfile(agentId, { name, email, phone, is_admin } = {}) {
+  const agent = await getAgent(agentId)
   if (!agent) {
     const err = new Error('Agent not found')
     err.code = 'NOT_FOUND'
@@ -729,98 +673,108 @@ export function updateAgentProfile(agentId, { name, email, phone, is_admin } = {
   if (name !== undefined) {
     const n = String(name || '').trim()
     if (!n) throw new Error('Name cannot be empty')
-    updates.push('name = ?')
     params.push(n)
+    updates.push(`name = $${params.length}`)
   }
   if (email !== undefined) {
     const e = String(email || '').trim().toLowerCase() || null
     if (e && !/^\S+@\S+\.\S+$/.test(e)) throw new Error('Enter a valid email address')
     if (e) {
-      const clash = db.prepare('SELECT id FROM agents WHERE email = ? AND id != ?').get(e, agentId)
+      const clash = (await q('SELECT id FROM agents WHERE email = $1 AND id != $2', [e, agentId])).rows[0]
       if (clash) {
         const err = new Error('Another agent already uses this email')
         err.code = 'EMAIL_TAKEN'
         throw err
       }
     }
-    updates.push('email = ?')
     params.push(e)
+    updates.push(`email = $${params.length}`)
   }
   if (phone !== undefined) {
     const pn = normalizePhone(phone)
     if (pn.replace(/\D/g, '').length < 10) throw new Error('Enter a valid phone number')
-    const clash = db.prepare('SELECT id FROM agents WHERE phone = ? AND id != ?').get(pn, agentId)
+    const clash = (await q('SELECT id FROM agents WHERE phone = $1 AND id != $2', [pn, agentId])).rows[0]
     if (clash) {
       const err = new Error('Another agent already uses this phone number')
       err.code = 'PHONE_TAKEN'
       throw err
     }
-    updates.push('phone = ?')
     params.push(pn)
+    updates.push(`phone = $${params.length}`)
   }
   if (is_admin !== undefined) {
-    updates.push('is_admin = ?')
     params.push(is_admin ? 1 : 0)
+    updates.push(`is_admin = $${params.length}`)
   }
   if (!updates.length) return agent
   params.push(agentId)
-  db.prepare(`UPDATE agents SET ${updates.join(', ')} WHERE id = ?`).run(...params)
+  await q(`UPDATE agents SET ${updates.join(', ')} WHERE id = $${params.length}`, params)
   return getAgent(agentId)
 }
 
 // Make an agent an admin (or revoke).
-export function setAdmin(agentId, isAdmin) {
-  db.prepare('UPDATE agents SET is_admin = ? WHERE id = ?').run(isAdmin ? 1 : 0, agentId)
+export async function setAdmin(agentId, isAdmin) {
+  await q('UPDATE agents SET is_admin = $1 WHERE id = $2', [isAdmin ? 1 : 0, agentId])
   return getAgent(agentId)
 }
 
-export function stats(agentId) {
-  const one = (sql, ...args) => Object.values(db.prepare(sql).get(...args))[0]
+// Dashboard stats. Day boundaries use Asia/Kolkata — HomeNex targets Indian agents.
+const TZ = process.env.APP_TIMEZONE || 'Asia/Kolkata'
+
+export async function stats(agentId) {
+  const one = async (sql, params) => Object.values((await q(sql, params)).rows[0])[0]
   // Messages are scoped to the agent's leads.
-  const myMessages = 'lead_id IN (SELECT id FROM leads WHERE agent_id = @a)'
-  const total = one('SELECT COUNT(*) FROM leads WHERE agent_id = @a', { a: agentId })
-  const newToday = one(
-    "SELECT COUNT(*) FROM leads WHERE agent_id = @a AND created_at >= datetime('now', 'start of day')",
-    { a: agentId },
+  const myMessages = 'lead_id IN (SELECT id FROM leads WHERE agent_id = $1)'
+  const total = await one('SELECT COUNT(*) FROM leads WHERE agent_id = $1', [agentId])
+  const newToday = await one(
+    `SELECT COUNT(*) FROM leads WHERE agent_id = $1
+       AND created_at >= date_trunc('day', now() AT TIME ZONE $2) AT TIME ZONE $2`,
+    [agentId, TZ],
   )
-  const hotNow = one("SELECT COUNT(*) FROM leads WHERE agent_id = @a AND temp = 'Hot'", { a: agentId })
-  const active24h = one(
-    `SELECT COUNT(DISTINCT lead_id) FROM messages WHERE ${myMessages} AND created_at >= datetime('now', '-1 day')`,
-    { a: agentId },
+  const hotNow = await one(`SELECT COUNT(*) FROM leads WHERE agent_id = $1 AND temp = 'Hot'`, [agentId])
+  const active24h = await one(
+    `SELECT COUNT(DISTINCT lead_id) FROM messages WHERE ${myMessages} AND created_at >= now() - interval '1 day'`,
+    [agentId],
   )
   const pipelineL =
-    one(
-      "SELECT COALESCE(SUM((budget_min_l + budget_max_l) / 2.0), 0) FROM leads WHERE agent_id = @a AND temp != 'Cold' AND budget_max_l IS NOT NULL",
-      { a: agentId },
-    ) || 0
-  const avgFirstResponseS = one('SELECT AVG(first_response_s) FROM leads WHERE agent_id = @a', {
-    a: agentId,
-  })
-  const qualified = one(
-    'SELECT COUNT(*) FROM leads WHERE agent_id = @a AND locality IS NOT NULL AND timeline IS NOT NULL AND config IS NOT NULL AND budget_max_l IS NOT NULL',
-    { a: agentId },
+    (await one(
+      `SELECT COALESCE(SUM((budget_min_l + budget_max_l) / 2.0), 0) FROM leads
+       WHERE agent_id = $1 AND temp != 'Cold' AND budget_max_l IS NOT NULL`,
+      [agentId],
+    )) || 0
+  const avgFirstResponseS = await one('SELECT AVG(first_response_s) FROM leads WHERE agent_id = $1', [
+    agentId,
+  ])
+  const qualified = await one(
+    `SELECT COUNT(*) FROM leads WHERE agent_id = $1 AND locality IS NOT NULL
+       AND timeline IS NOT NULL AND config IS NOT NULL AND budget_max_l IS NOT NULL`,
+    [agentId],
   )
-  const afterHours = one(
+  const afterHours = await one(
     `SELECT COUNT(*) FROM leads
-     WHERE agent_id = @a AND (CAST(strftime('%H', created_at, 'localtime') AS INTEGER) >= 21
-        OR CAST(strftime('%H', created_at, 'localtime') AS INTEGER) < 9)`,
-    { a: agentId },
+     WHERE agent_id = $1 AND (EXTRACT(HOUR FROM created_at AT TIME ZONE $2) >= 21
+        OR EXTRACT(HOUR FROM created_at AT TIME ZONE $2) < 9)`,
+    [agentId, TZ],
   )
-  const sources = db
-    .prepare(
-      'SELECT source AS name, COUNT(*) AS count FROM leads WHERE agent_id = @a GROUP BY source ORDER BY count DESC',
+  const sources = (
+    await q(
+      'SELECT source AS name, COUNT(*) AS count FROM leads WHERE agent_id = $1 GROUP BY source ORDER BY count DESC',
+      [agentId],
     )
-    .all({ a: agentId })
-  const daily = db
-    .prepare(
-      `SELECT date(created_at, 'localtime') AS day, AVG(first_response_s) AS avg_s, COUNT(*) AS leads
-       FROM leads WHERE agent_id = @a AND created_at >= datetime('now', '-7 days')
+  ).rows
+  const daily = (
+    await q(
+      `SELECT to_char((created_at AT TIME ZONE $2)::date, 'YYYY-MM-DD') AS day,
+              AVG(first_response_s) AS avg_s, COUNT(*) AS leads
+       FROM leads WHERE agent_id = $1 AND created_at >= now() - interval '7 days'
        GROUP BY day ORDER BY day`,
+      [agentId, TZ],
     )
-    .all({ a: agentId })
-  const msgsToday = one(
-    `SELECT COUNT(*) FROM messages WHERE ${myMessages} AND created_at >= datetime('now', 'start of day')`,
-    { a: agentId },
+  ).rows
+  const msgsToday = await one(
+    `SELECT COUNT(*) FROM messages WHERE ${myMessages}
+       AND created_at >= date_trunc('day', now() AT TIME ZONE $2) AT TIME ZONE $2`,
+    [agentId, TZ],
   )
   return {
     total,
@@ -837,4 +791,324 @@ export function stats(agentId) {
   }
 }
 
-export default db
+// --- CRM: lead pipeline fields ---
+
+const LEAD_CRM_FIELDS = {
+  contact_id: 'int',
+  pipeline_type: 'text',
+  stage: 'text',
+  budget_min: 'bigint',
+  budget_max: 'bigint',
+  bhk: 'text',
+  property_type: 'text',
+  preferred_localities: 'jsonb',
+  timeline: 'text',
+  financing: 'text',
+  ai_score: 'text',
+  ai_score_reason: 'text',
+  lost_reason: 'text',
+  notes: 'text',
+  closed_at: 'timestamptz',
+}
+
+// Update the CRM/pipeline fields of a lead the agent owns.
+export async function updateLeadCrm(leadId, agentId, fields) {
+  const { sets, params } = buildSet(LEAD_CRM_FIELDS, fields)
+  if (!sets.length) return getLeadForAgent(leadId, agentId)
+  const { rows } = await q(
+    `UPDATE leads SET ${sets.join(', ')}, updated_at = now()
+     WHERE id = $${params.length + 1} AND agent_id = $${params.length + 2} RETURNING *`,
+    [...params, leadId, agentId],
+  )
+  return rows[0]
+}
+
+// --- CRM: pipeline stages ---
+
+export async function listPipelineStages(pipelineType = null) {
+  if (pipelineType) {
+    return (
+      await q('SELECT * FROM pipeline_stages WHERE pipeline_type = $1 ORDER BY stage_order', [pipelineType])
+    ).rows
+  }
+  return (await q('SELECT * FROM pipeline_stages ORDER BY pipeline_type, stage_order')).rows
+}
+
+// --- CRM: properties (agent inventory) ---
+
+const PROPERTY_FIELDS = {
+  title: 'text',
+  property_type: 'text',
+  bhk: 'text',
+  size_sqft: 'float',
+  size_unit: 'text',
+  price_paise: 'bigint',
+  locality: 'text',
+  city: 'text',
+  status: 'text',
+  rera_project_number: 'text',
+  builder_name: 'text',
+  owner_name: 'text',
+  facing: 'text',
+  floor: 'int',
+  total_floors: 'int',
+  amenities: 'jsonb',
+  photos: 'jsonb',
+  brochure_url: 'text',
+  video_url: 'text',
+  notes: 'text',
+  micro_page_slug: 'text',
+}
+
+export async function createProperty(agentId, p) {
+  if (!p.title || !String(p.title).trim()) throw new Error('Property title is required')
+  const cols = ['agent_id']
+  const params = [agentId]
+  for (const [col, kind] of Object.entries(PROPERTY_FIELDS)) {
+    if (!(col in p) || p[col] === undefined) continue
+    cols.push(col)
+    params.push(kind === 'jsonb' && p[col] !== null ? JSON.stringify(p[col]) : p[col])
+  }
+  const placeholders = params.map((_, i) => `$${i + 1}`)
+  const { rows } = await q(
+    `INSERT INTO properties (${cols.join(', ')}) VALUES (${placeholders.join(', ')}) RETURNING *`,
+    params,
+  )
+  return rows[0]
+}
+
+export async function listProperties(agentId, { status } = {}) {
+  if (status) {
+    return (
+      await q('SELECT * FROM properties WHERE agent_id = $1 AND status = $2 ORDER BY updated_at DESC', [
+        agentId,
+        status,
+      ])
+    ).rows
+  }
+  return (await q('SELECT * FROM properties WHERE agent_id = $1 ORDER BY updated_at DESC', [agentId])).rows
+}
+
+export async function getProperty(id, agentId) {
+  return (await q('SELECT * FROM properties WHERE id = $1 AND agent_id = $2', [id, agentId])).rows[0]
+}
+
+export async function updateProperty(id, agentId, fields) {
+  const { sets, params } = buildSet(PROPERTY_FIELDS, fields)
+  if (!sets.length) return getProperty(id, agentId)
+  const { rows } = await q(
+    `UPDATE properties SET ${sets.join(', ')}, updated_at = now()
+     WHERE id = $${params.length + 1} AND agent_id = $${params.length + 2} RETURNING *`,
+    [...params, id, agentId],
+  )
+  return rows[0]
+}
+
+export async function deleteProperty(id, agentId) {
+  const res = await q('DELETE FROM properties WHERE id = $1 AND agent_id = $2', [id, agentId])
+  return res.rowCount > 0
+}
+
+// --- CRM: site visits ---
+
+export async function createSiteVisit(agentId, v) {
+  if (!v.lead_id || !v.scheduled_at) throw new Error('lead_id and scheduled_at are required')
+  const { rows } = await q(
+    `INSERT INTO site_visits (lead_id, property_id, agent_id, scheduled_at, pickup_required, pickup_location, builder_preregistered)
+     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+    [
+      v.lead_id,
+      v.property_id ?? null,
+      agentId,
+      v.scheduled_at,
+      Boolean(v.pickup_required),
+      v.pickup_location ?? null,
+      Boolean(v.builder_preregistered),
+    ],
+  )
+  return rows[0]
+}
+
+export async function listSiteVisits(agentId, { leadId } = {}) {
+  if (leadId) {
+    return (
+      await q('SELECT * FROM site_visits WHERE agent_id = $1 AND lead_id = $2 ORDER BY scheduled_at', [
+        agentId,
+        leadId,
+      ])
+    ).rows
+  }
+  return (await q('SELECT * FROM site_visits WHERE agent_id = $1 ORDER BY scheduled_at', [agentId])).rows
+}
+
+export async function updateSiteVisit(id, agentId, fields) {
+  const { sets, params } = buildSet(
+    {
+      scheduled_at: 'timestamptz',
+      pickup_required: 'bool',
+      pickup_location: 'text',
+      status: 'text',
+      outcome_notes: 'text',
+      builder_preregistered: 'bool',
+      property_id: 'int',
+    },
+    fields,
+  )
+  if (!sets.length)
+    return (await q('SELECT * FROM site_visits WHERE id = $1 AND agent_id = $2', [id, agentId])).rows[0]
+  const { rows } = await q(
+    `UPDATE site_visits SET ${sets.join(', ')}, updated_at = now()
+     WHERE id = $${params.length + 1} AND agent_id = $${params.length + 2} RETURNING *`,
+    [...params, id, agentId],
+  )
+  return rows[0]
+}
+
+// --- CRM: follow-ups ---
+
+export async function createFollowup(agentId, f) {
+  if (!f.lead_id || !f.due_at) throw new Error('lead_id and due_at are required')
+  const { rows } = await q(
+    `INSERT INTO followups (lead_id, agent_id, due_at, type, note)
+     VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+    [f.lead_id, agentId, f.due_at, f.type || 'manual', f.note ?? null],
+  )
+  return rows[0]
+}
+
+export async function listFollowups(agentId, { pendingOnly = false } = {}) {
+  const where = pendingOnly ? 'AND completed_at IS NULL' : ''
+  return (await q(`SELECT * FROM followups WHERE agent_id = $1 ${where} ORDER BY due_at`, [agentId])).rows
+}
+
+export async function completeFollowup(id, agentId) {
+  const { rows } = await q(
+    'UPDATE followups SET completed_at = now() WHERE id = $1 AND agent_id = $2 RETURNING *',
+    [id, agentId],
+  )
+  return rows[0]
+}
+
+// --- CRM: commissions ---
+
+export async function createCommission(agentId, c) {
+  if (!c.lead_id) throw new Error('lead_id is required')
+  const { rows } = await q(
+    `INSERT INTO commissions (lead_id, agent_id, deal_value_paise, commission_pct, commission_flat_paise,
+                              payer_type, expected_payout_date, status, notes)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+    [
+      c.lead_id,
+      agentId,
+      c.deal_value_paise ?? null,
+      c.commission_pct ?? null,
+      c.commission_flat_paise ?? null,
+      c.payer_type ?? null,
+      c.expected_payout_date ?? null,
+      c.status || 'expected',
+      c.notes ?? null,
+    ],
+  )
+  return rows[0]
+}
+
+export async function listCommissions(agentId, { status } = {}) {
+  if (status) {
+    return (
+      await q('SELECT * FROM commissions WHERE agent_id = $1 AND status = $2 ORDER BY created_at DESC', [
+        agentId,
+        status,
+      ])
+    ).rows
+  }
+  return (await q('SELECT * FROM commissions WHERE agent_id = $1 ORDER BY created_at DESC', [agentId])).rows
+}
+
+export async function updateCommission(id, agentId, fields) {
+  const { sets, params } = buildSet(
+    {
+      deal_value_paise: 'bigint',
+      commission_pct: 'numeric',
+      commission_flat_paise: 'bigint',
+      payer_type: 'text',
+      expected_payout_date: 'date',
+      actual_payout_date: 'date',
+      status: 'text',
+      notes: 'text',
+    },
+    fields,
+  )
+  if (!sets.length)
+    return (await q('SELECT * FROM commissions WHERE id = $1 AND agent_id = $2', [id, agentId])).rows[0]
+  const { rows } = await q(
+    `UPDATE commissions SET ${sets.join(', ')}, updated_at = now()
+     WHERE id = $${params.length + 1} AND agent_id = $${params.length + 2} RETURNING *`,
+    [...params, id, agentId],
+  )
+  return rows[0]
+}
+
+// --- CRM: message templates ---
+
+export async function createMessageTemplate(agentId, t) {
+  if (!t.name || !t.body) throw new Error('name and body are required')
+  const { rows } = await q(
+    `INSERT INTO message_templates (agent_id, name, category, body, variables, meta_template_id, rera_auto_append)
+     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+    [
+      agentId,
+      t.name,
+      t.category || 'utility',
+      t.body,
+      JSON.stringify(t.variables || []),
+      t.meta_template_id ?? null,
+      Boolean(t.rera_auto_append),
+    ],
+  )
+  return rows[0]
+}
+
+export async function listMessageTemplates(agentId) {
+  return (await q('SELECT * FROM message_templates WHERE agent_id = $1 ORDER BY name', [agentId])).rows
+}
+
+export async function updateMessageTemplate(id, agentId, fields) {
+  const { sets, params } = buildSet(
+    {
+      name: 'text',
+      category: 'text',
+      body: 'text',
+      variables: 'jsonb',
+      meta_template_id: 'text',
+      meta_status: 'text',
+      rera_auto_append: 'bool',
+    },
+    fields,
+  )
+  if (!sets.length)
+    return (await q('SELECT * FROM message_templates WHERE id = $1 AND agent_id = $2', [id, agentId])).rows[0]
+  const { rows } = await q(
+    `UPDATE message_templates SET ${sets.join(', ')}, updated_at = now()
+     WHERE id = $${params.length + 1} AND agent_id = $${params.length + 2} RETURNING *`,
+    [...params, id, agentId],
+  )
+  return rows[0]
+}
+
+// --- CRM: audit log ---
+
+export async function logAudit(agentId, entityType, entityId, action, details = {}) {
+  await q(
+    'INSERT INTO audit_logs (agent_id, entity_type, entity_id, action, details) VALUES ($1, $2, $3, $4, $5)',
+    [agentId, entityType, entityId, action, JSON.stringify(details)],
+  )
+}
+
+export async function listAuditLogs(agentId, limit = 100) {
+  return (
+    await q('SELECT * FROM audit_logs WHERE agent_id = $1 ORDER BY id DESC LIMIT $2', [agentId, limit])
+  ).rows
+}
+
+export { pool, q as query }
+export default pool

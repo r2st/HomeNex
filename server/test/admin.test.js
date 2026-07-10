@@ -1,19 +1,18 @@
 // Tests for the admin API used by the standalone admin website (adminRoutes.js):
 // dashboard stats, paginated/searchable agent list, agent detail, profile edit, WABA update.
-// Run with: npm test  (from server/)  — uses Node's built-in test runner.
+// Run with: npm test  (from server/)  — needs a local PostgreSQL (docker compose up -d).
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
+import { createTestDb, dropTestDb } from './helpers.js'
 
-// Isolate a throwaway DB and skip listen() before importing the app.
-const DB_FILE = `/tmp/test-admin-${process.pid}.db`
+// Isolate a throwaway database and skip listen() before importing the app.
 process.env.NODE_ENV = 'test'
-process.env.DB_FILE = DB_FILE
 delete process.env.OPENROUTER_API_KEY
 delete process.env.WHATSAPP_ACCESS_TOKEN
+const dbName = await createTestDb('admin')
 
 const { app } = await import('../index.js')
-const { upsertLead, addMessage, setAdmin } = await import('../db.js')
+const { closePool, upsertLead, addMessage, setAdmin } = await import('../db.js')
 
 let server
 let base
@@ -67,11 +66,10 @@ before(async () => {
   }
 })
 
-after(() => {
+after(async () => {
   server?.close()
-  for (const suffix of ['', '-wal', '-shm', '-journal']) {
-    fs.rmSync(DB_FILE + suffix, { force: true })
-  }
+  await closePool()
+  await dropTestDb(dbName)
 })
 
 // === Auth guards ===
@@ -110,8 +108,8 @@ test('first agent is auto-promoted, non-admin gets 403 on every admin route', as
 
 test('dashboard returns platform stats with signup and WABA breakdowns', async () => {
   // Seed one active conversation.
-  const lead = upsertLead(plainAgent.id, '919888800001', 'Test Buyer')
-  addMessage(lead.id, 'buyer', 'Looking for a 2BHK in Baner')
+  const lead = await upsertLead(plainAgent.id, '919888800001', 'Test Buyer')
+  await addMessage(lead.id, 'buyer', 'Looking for a 2BHK in Baner')
 
   const res = await req('GET', '/api/admin/dashboard')
   assert.equal(res.status, 200)
@@ -286,7 +284,7 @@ test('WABA update validates status and id', async () => {
 })
 
 // setAdmin is exercised indirectly via is_admin edits; keep the export honest.
-test('setAdmin db helper toggles the flag', () => {
-  assert.equal(setAdmin(plainAgent.id, true).is_admin, 1)
-  assert.equal(setAdmin(plainAgent.id, false).is_admin, 0)
+test('setAdmin db helper toggles the flag', async () => {
+  assert.equal((await setAdmin(plainAgent.id, true)).is_admin, 1)
+  assert.equal((await setAdmin(plainAgent.id, false)).is_admin, 0)
 })

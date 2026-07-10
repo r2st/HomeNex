@@ -16,11 +16,15 @@ agent's number (`phone_number_id` is learned from the first inbound webhook).
 
 ## Architecture
 
-- **`server/`** — Node.js + Express, SQLite persistence (built-in `node:sqlite`, zero native deps).
+- **`server/`** — Node.js + Express, PostgreSQL persistence (`pg` with connection pooling;
+  versioned SQL migrations in `server/migrations/` run automatically on startup).
   - `POST /webhook` — real Meta WhatsApp Business webhook: verifies `X-Hub-Signature-256`,
     stores the inbound message, generates an AI reply via OpenRouter, sends it back over the
     WhatsApp Cloud API, then runs a structured BLTC extraction that scores the lead.
-  - Dashboard API: leads, conversations, live stats, activity, co-broking board — all read from SQLite.
+  - Dashboard API: leads, conversations, live stats, activity, co-broking board — all read from PostgreSQL.
+  - CRM schema: contacts, leads (pipelines/stages), properties, site visits, follow-ups,
+    commissions, message templates, audit logs. All money is stored in paise (integers);
+    every agent-owned table carries `agent_id` for multi-tenancy.
   - `POST /api/leads/:id/reply` — agent sends a real WhatsApp message from the dashboard.
   - `POST /api/leads/:id/ai` — take over a chat from the AI / hand it back.
   - Serves the built dashboard (`dist/`) so one process hosts everything.
@@ -30,7 +34,10 @@ agent's number (`phone_number_id` is learned from the first inbound webhook).
 ## Run
 
 ```bash
-# 1. Backend (needs Node 24+ for built-in SQLite)
+# 0. PostgreSQL (Docker)
+docker compose up -d   # postgres:16 on localhost:5432 (POSTGRES_PORT=5433 to override)
+
+# 1. Backend (Node 24+)
 cd server
 npm install
 cp .env.example .env   # fill in real tokens (see below)
@@ -48,6 +55,7 @@ npm run build && npm run server
 
 | Var | Purpose |
 | --- | --- |
+| `DATABASE_URL` | PostgreSQL connection string (defaults to the docker-compose database) |
 | `WHATSAPP_VERIFY_TOKEN` | Webhook verification handshake with Meta |
 | `WHATSAPP_APP_SECRET` | Verifies `X-Hub-Signature-256` on incoming webhooks |
 | `WHATSAPP_ACCESS_TOKEN` | Sends replies via the WhatsApp Cloud API |
@@ -75,6 +83,17 @@ curl -X POST localhost:8787/api/simulate \
   -d '{"from":"9198xxxxxx","name":"Test Buyer","text":"Looking for a 2BHK in Kharadi under 90 lakhs"}'
 ```
 
-This pushes a message through the identical pipeline (SQLite + OpenRouter), skipping only the
-outbound WhatsApp send. The lead appears in the dashboard immediately. Delete `server/homenex.db*`
-to reset all data.
+This pushes a message through the identical pipeline (PostgreSQL + OpenRouter), skipping only the
+outbound WhatsApp send. The lead appears in the dashboard immediately. To reset all data:
+`docker compose down -v && docker compose up -d`.
+
+### Database
+
+- Connection: `DATABASE_URL` (see `server/.env.example`); pooled via `pg`.
+- Migrations: plain SQL files in `server/migrations/`, applied in filename order at startup and
+  tracked in `schema_migrations`. Add a new `NNN_description.sql` file to change the schema.
+- Tests: `cd server && npm test` — needs a running PostgreSQL; each test file creates and drops
+  its own scratch database (`PGTEST_URL=postgres://homenex:homenex@localhost:5433` to point at a
+  non-default port).
+- Migrating old data: `node server/scripts/import-sqlite.js [path/to/homenex.db]` copies an
+  existing SQLite database into PostgreSQL (preserves ids, resets sequences).

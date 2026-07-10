@@ -10,14 +10,21 @@ import {
 } from './db.js'
 
 // Session secret: env override, else generated once and persisted so restarts keep sessions.
-const SECRET =
-  process.env.SESSION_SECRET ||
-  getMeta('session_secret') ||
-  (() => {
-    const s = crypto.randomBytes(32).toString('hex')
-    setMeta('session_secret', s)
-    return s
-  })()
+// Resolved lazily (and cached) because reading it from the meta table is async now.
+let secretPromise = null
+function getSecret() {
+  if (process.env.SESSION_SECRET) return Promise.resolve(process.env.SESSION_SECRET)
+  if (!secretPromise) {
+    secretPromise = (async () => {
+      const stored = await getMeta('session_secret')
+      if (stored) return stored
+      const s = crypto.randomBytes(32).toString('hex')
+      await setMeta('session_secret', s)
+      return s
+    })()
+  }
+  return secretPromise
+}
 
 export function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString('hex')
@@ -35,24 +42,25 @@ export function verifyPassword(password, stored) {
   }
 }
 
-const sign = (id) => crypto.createHmac('sha256', SECRET).update(String(id)).digest('hex')
+const sign = async (id) =>
+  crypto.createHmac('sha256', await getSecret()).update(String(id)).digest('hex')
 
-export const issueToken = (agentId) => `${agentId}.${sign(agentId)}`
+export const issueToken = async (agentId) => `${agentId}.${await sign(agentId)}`
 
-export function verifyToken(token) {
+export async function verifyToken(token) {
   if (!token) return null
   const [id, sig] = String(token).split('.')
   if (!id || !sig) return null
-  const expected = sign(id)
+  const expected = await sign(id)
   try {
     if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null
   } catch {
     return null
   }
-  return getAgent(Number(id)) || null
+  return (await getAgent(Number(id))) || null
 }
 
-export function signup({ name, phone, email, password, wa_phone_number }) {
+export async function signup({ name, phone, email, password, wa_phone_number }) {
   name = (name || '').trim()
   phone = (phone || '').trim()
   email = (email || '').trim().toLowerCase() // optional
@@ -71,28 +79,32 @@ export function signup({ name, phone, email, password, wa_phone_number }) {
       throw new Error('Your WhatsApp Business number must be different from your personal WhatsApp number')
     }
   }
-  if (findAgentByPhone(phone))
+  if (await findAgentByPhone(phone))
     throw new Error('An account with this WhatsApp number already exists — log in instead')
-  if (email && findAgentByEmail(email)) throw new Error('An account with this email already exists — log in instead')
-  const agent = createAgent(name, phone, email || null, hashPassword(password), waPhone)
-  return { token: issueToken(agent.id), agent }
+  if (email && (await findAgentByEmail(email)))
+    throw new Error('An account with this email already exists — log in instead')
+  const agent = await createAgent(name, phone, email || null, hashPassword(password), waPhone)
+  return { token: await issueToken(agent.id), agent }
 }
 
-export function login({ phone, email, password }) {
+export async function login({ phone, email, password }) {
   // Log in by WhatsApp number (email still accepted for older accounts).
-  const row = phone ? findAgentByPhone(phone) : findAgentByEmail((email || '').trim())
+  const row = phone ? await findAgentByPhone(phone) : await findAgentByEmail((email || '').trim())
   if (!row || !verifyPassword(password || '', row.password_hash)) {
     throw new Error('Wrong WhatsApp number or password')
   }
-  const agent = getAgent(row.id)
-  return { token: issueToken(agent.id), agent }
+  const agent = await getAgent(row.id)
+  return { token: await issueToken(agent.id), agent }
 }
 
 // Express middleware for the dashboard API.
 export function requireAuth(req, res, next) {
   const token = (req.get('authorization') || '').replace(/^Bearer\s+/i, '')
-  const agent = verifyToken(token)
-  if (!agent) return res.status(401).json({ error: 'unauthorized' })
-  req.agent = agent
-  next()
+  verifyToken(token)
+    .then((agent) => {
+      if (!agent) return res.status(401).json({ error: 'unauthorized' })
+      req.agent = agent
+      next()
+    })
+    .catch(next)
 }
