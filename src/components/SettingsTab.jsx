@@ -23,9 +23,43 @@ export default function SettingsTab({ agent, onAgentUpdate }) {
   const [error, setError] = useState(null)
   const [current, setCurrent] = useState(agent)
 
+  // Personal (login) number change — kept separate from the WABA form's state.
+  const [editingPhone, setEditingPhone] = useState(false)
+  const [newPhone, setNewPhone] = useState('')
+  const [phonePassword, setPhonePassword] = useState('')
+  const [phoneBusy, setPhoneBusy] = useState(false)
+  const [phoneMsg, setPhoneMsg] = useState(null)
+  const [phoneError, setPhoneError] = useState(null)
+
   useEffect(() => {
     api.me().then(setCurrent).catch(() => {})
   }, [])
+
+  const closePhoneForm = () => {
+    setEditingPhone(false)
+    setNewPhone('')
+    setPhonePassword('')
+    setPhoneError(null)
+  }
+
+  const submitPhone = async (e) => {
+    e.preventDefault()
+    if (phoneBusy || !newPhone || !phonePassword) return
+    setPhoneBusy(true)
+    setPhoneError(null)
+    setPhoneMsg(null)
+    try {
+      const updated = await api.changePhone({ phone: '+91' + newPhone, password: phonePassword })
+      setCurrent(updated)
+      if (onAgentUpdate) onAgentUpdate(updated)
+      setPhoneMsg(`Your WhatsApp number is now ${updated.phone}. Use it to log in next time.`)
+      closePhoneForm()
+    } catch (err) {
+      setPhoneError(err.message)
+    } finally {
+      setPhoneBusy(false)
+    }
+  }
 
   const handleSetWaCC = (v) => {
     const digits = v.replace(/\D/g, '').slice(0, 4)
@@ -63,11 +97,89 @@ export default function SettingsTab({ agent, onAgentUpdate }) {
       <h2 className="font-display text-[22px] font-semibold text-ink">Settings</h2>
 
       {/* Account info */}
-      <div className="bg-white border border-line rounded-2xl p-4 space-y-2">
+      <div className="bg-white border border-line rounded-2xl p-4 space-y-3">
         <h3 className="text-[13px] font-bold text-ink-soft">Account</h3>
         <div className="text-[14px] text-ink">{current?.name}</div>
-        <div className="text-[13px] text-ink-soft">{current?.phone}</div>
         {current?.email && <div className="text-[13px] text-ink-soft">{current.email}</div>}
+
+        <div className="border-t border-line pt-3 space-y-2">
+          <div className="text-[11px] font-bold text-ink-faint uppercase tracking-wide">
+            WhatsApp number (you log in with this)
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-[15px] font-semibold text-ink tracking-wide">{current?.phone}</span>
+            {!editingPhone && (
+              <button
+                onClick={() => {
+                  setPhoneMsg(null)
+                  setEditingPhone(true)
+                }}
+                className="text-[12px] font-bold text-brand hover:text-brand-deep px-2 py-1 rounded-lg active:scale-[0.98] transition"
+              >
+                Change
+              </button>
+            )}
+          </div>
+
+          {phoneMsg && !editingPhone && (
+            <p className="text-[12.5px] text-green-700 bg-green-50 rounded-xl px-3 py-2">{phoneMsg}</p>
+          )}
+
+          {editingPhone && (
+            <form onSubmit={submitPhone} className="space-y-3 pt-1">
+              <div className="flex items-stretch bg-white border border-line rounded-2xl overflow-hidden focus-within:border-brand/60">
+                <span className="w-[4.5rem] px-3 py-3 text-[14px] font-semibold text-ink-soft bg-cream border-r border-line tracking-wide">
+                  +91
+                </span>
+                <input
+                  type="tel"
+                  inputMode="numeric"
+                  autoFocus
+                  value={newPhone}
+                  onChange={(e) => setNewPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                  placeholder="New 10-digit mobile"
+                  aria-label="New WhatsApp number"
+                  className="flex-1 px-4 py-3 text-[14px] outline-none bg-white tracking-wide"
+                />
+              </div>
+
+              <input
+                type="password"
+                value={phonePassword}
+                onChange={(e) => setPhonePassword(e.target.value)}
+                placeholder="Confirm your password"
+                aria-label="Current password"
+                autoComplete="current-password"
+                className="w-full px-4 py-3 text-[14px] bg-white border border-line rounded-2xl outline-none focus:border-brand/60"
+              />
+
+              <p className="text-[11px] text-ink-faint leading-snug">
+                You'll use this new number to log in from now on.
+              </p>
+
+              {phoneError && (
+                <p className="text-[12.5px] text-hot bg-amber-wash rounded-xl px-3 py-2">{phoneError}</p>
+              )}
+
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={closePhoneForm}
+                  className="flex-1 border border-line text-ink-soft font-bold text-[13px] rounded-2xl py-3 active:scale-[0.98] transition hover:bg-cream"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={phoneBusy || newPhone.length !== 10 || !phonePassword}
+                  className="flex-1 bg-brand hover:bg-brand-deep disabled:opacity-50 text-white font-bold text-[13px] rounded-2xl py-3 active:scale-[0.98] transition"
+                >
+                  {phoneBusy ? 'Saving…' : 'Update number'}
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
       </div>
 
       {/* WABA Status */}

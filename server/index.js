@@ -75,7 +75,7 @@ import { emiReplyFor, parseEmiQuery, formatEmiMessage } from './emi.js'
 import { FESTIVALS, getFestival, personalizeGreeting } from './festivals.js'
 import { renderMicroPage } from './micropage.js'
 import { sendText, markRead, whatsappConfigured } from './whatsapp.js'
-import { signup, login, requireAuth } from './auth.js'
+import { signup, login, changePhone, requireAuth } from './auth.js'
 import { handleAgentCommand } from './agentCommands.js'
 import adminRouter from './adminRoutes.js'
 
@@ -283,6 +283,22 @@ app.use('/api', (req, res, next) => {
   if (req.path === '/health') return next()
   requireAuth(req, res, next)
 })
+
+// Agent changes their own WhatsApp (login) number. Requires the current password.
+const PHONE_ERROR_STATUS = { BAD_PASSWORD: 403, PHONE_TAKEN: 409, NOT_FOUND: 404 }
+app.put('/api/agent/phone', ah(async (req, res) => {
+  const { phone, password } = req.body ?? {}
+  const previous = req.agent.phone
+  try {
+    const agent = await changePhone(req.agent.id, { phone, password })
+    if (agent.phone !== previous) {
+      await logAudit(agent.id, 'agent', agent.id, 'phone_changed', { from: previous, to: agent.phone })
+    }
+    res.json(agent)
+  } catch (err) {
+    res.status(PHONE_ERROR_STATUS[err.code] ?? 400).json({ error: err.message })
+  }
+}))
 
 // --- Per-agent WhatsApp Business number configuration ---
 app.get('/api/agent/phone-config', ah(async (req, res) => {

@@ -4,9 +4,11 @@ import {
   findAgentByEmail,
   findAgentByPhone,
   getAgent,
+  getAgentPasswordHash,
   getMeta,
   normalizePhone,
   setMeta,
+  updateAgentPhone,
 } from './db.js'
 
 // Session secret: env override, else generated once and persisted so restarts keep sessions.
@@ -95,6 +97,20 @@ export async function login({ phone, email, password }) {
   }
   const agent = await getAgent(row.id)
   return { token: await issueToken(agent.id), agent }
+}
+
+// Change the logged-in agent's own WhatsApp number. That number is how they log in,
+// so the current password is required — a stolen session alone must not be enough to
+// move the account onto an attacker's number. The session token is an HMAC of the agent
+// id, so it stays valid afterwards and the agent is not logged out.
+export async function changePhone(agentId, { phone, password } = {}) {
+  const hash = await getAgentPasswordHash(agentId)
+  if (!hash || !verifyPassword(password || '', hash)) {
+    const err = new Error('Wrong password')
+    err.code = 'BAD_PASSWORD'
+    throw err
+  }
+  return updateAgentPhone(agentId, phone)
 }
 
 // Express middleware for the dashboard API.

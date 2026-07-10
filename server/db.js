@@ -96,6 +96,21 @@ export function normalizePhone(raw) {
   return d
 }
 
+// Strict form of normalizePhone for numbers that must be Indian mobiles — the agent's
+// own login number. Accepts what agents actually type ("9876543210", "098765 43210",
+// "+91 98765-43210", "919876543210") and returns canonical "+919876543210".
+// Returns null for anything that is not a 10-digit mobile starting 6-9.
+export function normalizeIndianMobile(raw) {
+  const s = String(raw ?? '').trim()
+  // Only digits and the separators people type — letters or punctuation mean it isn't a number.
+  // The digit-shape check below is what actually validates it.
+  if (!s || !/^[+\d\s().-]+$/.test(s)) return null
+  let d = s.replace(/\D/g, '')
+  if (d.length === 12 && d.startsWith('91')) d = d.slice(2) // country code
+  else if (d.length === 11 && d.startsWith('0')) d = d.slice(1) // STD trunk prefix
+  return /^[6-9]\d{9}$/.test(d) ? `+91${d}` : null
+}
+
 // Digits only, for loose comparison against Meta's display_phone_number (which has no "+").
 const phoneDigits = (raw) => String(raw || '').replace(/\D/g, '')
 
@@ -127,6 +142,12 @@ export async function findAgentByEmail(email) {
   if (!email) return null
   const { rows } = await q('SELECT * FROM agents WHERE email = $1', [email.toLowerCase()])
   return rows[0] || null
+}
+
+// getAgent() deliberately omits password_hash; fetch it explicitly when re-authenticating.
+export async function getAgentPasswordHash(agentId) {
+  const { rows } = await q('SELECT password_hash FROM agents WHERE id = $1', [agentId])
+  return rows[0]?.password_hash || null
 }
 
 export async function countAgents() {
@@ -795,6 +816,48 @@ export async function updateAgentProfile(agentId, { name, email, phone, is_admin
   if (!updates.length) return agent
   params.push(agentId)
   await q(`UPDATE agents SET ${updates.join(', ')} WHERE id = $${params.length}`, params)
+  return getAgent(agentId)
+}
+
+// Self-service change of an agent's own login number. Stricter than updateAgentProfile:
+// the personal number is the login identity, so it must be a real Indian mobile and
+// cannot collide with another agent or with this agent's own WA Business line.
+export async function updateAgentPhone(agentId, rawPhone) {
+  const phone = normalizeIndianMobile(rawPhone)
+  if (!phone) {
+    const err = new Error('Enter a valid Indian mobile number, e.g. +91 98765 43210')
+    err.code = 'INVALID_PHONE'
+    throw err
+  }
+  const agent = await getAgent(agentId)
+  if (!agent) {
+    const err = new Error('Agent not found')
+    err.code = 'NOT_FOUND'
+    throw err
+  }
+  if (agent.phone === phone) return agent // no-op, stay idempotent
+  if (agent.wa_phone_number === phone) {
+    const err = new Error('This is already your WhatsApp Business number — use a different personal number')
+    err.code = 'WA_PHONE_CLASH'
+    throw err
+  }
+  const clash = (await q('SELECT id FROM agents WHERE phone = $1 AND id != $2', [phone, agentId])).rows[0]
+  if (clash) {
+    const err = new Error('Another agent already uses this WhatsApp number')
+    err.code = 'PHONE_TAKEN'
+    throw err
+  }
+  try {
+    await q('UPDATE agents SET phone = $1 WHERE id = $2', [phone, agentId])
+  } catch (err) {
+    // Lost a race with a concurrent signup/change against the UNIQUE index on agents.phone.
+    if (err.code === '23505') {
+      const taken = new Error('Another agent already uses this WhatsApp number')
+      taken.code = 'PHONE_TAKEN'
+      throw taken
+    }
+    throw err
+  }
   return getAgent(agentId)
 }
 

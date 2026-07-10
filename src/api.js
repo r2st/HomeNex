@@ -135,6 +135,7 @@ export const api = {
   siteVisits: (filters) => get(`/api/site-visits${qs(filters)}`),
   createSiteVisit: (body) => post('/api/site-visits', body),
   updateSiteVisit: (id, body) => put(`/api/site-visits/${id}`, body),
+  changePhone: (body) => put('/api/agent/phone', body),
   phoneConfig: () => get('/api/agent/phone-config'),
   updatePhoneConfig: (body) =>
     fetch('/api/agent/phone-config', {
