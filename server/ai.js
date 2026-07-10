@@ -1,22 +1,63 @@
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions'
 const AI_TIMEOUT_MS = 30_000
 
-const replyPrompt = (brokerName) => `You are HomeNex AI, the WhatsApp assistant for ${brokerName || 'the broker'}, a real estate broker in Pune, India.
+// Free instruct model that handles English + Hindi/Hinglish cleanly. We moved OFF
+// openai/gpt-oss-20b:free because that small reasoning model leaked stray CJK/Korean
+// tokens mid-sentence (e.g. dropping "또는" where it meant "or"). llama-3.3-70b is a
+// plain instruct model (no reasoning channel) and stays in the requested language.
+const DEFAULT_MODEL = 'meta-llama/llama-3.3-70b-instruct:free'
+const model = () => process.env.OPENROUTER_MODEL || DEFAULT_MODEL
 
-Your job is to qualify property buyers conversationally using the BLTC framework:
-- Budget (in ₹ Lakhs/Crores; ask about loan status — pre-approved, sanctioned, or not applied)
-- Location (Pune localities: Wakad, Kharadi, Baner, Balewadi, Hinjewadi, Koregaon Park, Kalyani Nagar, etc.)
-- Timeline (when do they want to move in / register)
-- Configuration (1/2/3/4 BHK, carpet area, ready vs under-construction)
+// Language/formatting contract shared by every buyer-facing prompt. This is the
+// first line of defence against foreign-script leakage; sanitizeReply() is the second.
+const LANGUAGE_RULES = `Language & formatting rules (STRICT — no exceptions):
+- Write ONLY in English or natural Hinglish (Hindi in Roman/Latin letters, e.g. "haan", "theek hai", "kitna budget"). Mirror whichever the buyer used.
+- Use Devanagari (हिंदी) ONLY if the buyer wrote to you in Devanagari first.
+- NEVER use Korean, Chinese, Japanese, Thai, Arabic, Cyrillic or any other script, and never drop a foreign word into a sentence — if you mean "or", write "or", not "또는".
+- Plain ASCII punctuation only. No markdown, asterisks, bullet symbols or code fences.
+- At most ONE emoji in the entire message, and only when it feels natural. Often use none. Do not open every message with a wave.`
 
-Rules:
-- Be warm, concise and professional. One question at a time. Use occasional emojis like a good Indian broker's assistant would.
-- Quote prices in ₹ Lakhs (L) and Crores (Cr). Mention RERA registration when discussing projects.
-- Once you have all four BLTC data points, offer a site visit slot (weekends work best) and tell them ${brokerName || 'the broker'} will call to confirm.
-- If asked something you don't know (exact legal/loan specifics), say ${brokerName || 'the broker'} will confirm personally.
-- Never invent a specific flat you were not told about; speak in realistic ranges for the locality instead.
-- You only assist with real estate. If asked about anything outside property buying/renting/selling (general knowledge, homework, jokes, other topics), politely say you can only help with property queries and that ${brokerName || 'the broker'} can assist with anything else.
-- Keep replies under 120 words. This is WhatsApp.`
+// Facts we already extracted about this buyer, so the reply model acknowledges them
+// instead of re-asking (the old prompt had no lead context and kept re-qualifying).
+function knownFactsBlock(lead) {
+  if (!lead) return ''
+  const facts = [
+    lead.name && `Name: ${lead.name}`,
+    lead.intent && `Intent: ${lead.intent}`,
+    (lead.config || lead.bhk) && `Configuration: ${lead.config || `${lead.bhk} BHK`}`,
+    lead.locality && `Location: ${lead.locality}`,
+    lead.budget_max_l && `Budget: up to ₹${lead.budget_max_l}L`,
+    lead.financing && `Financing: ${lead.financing}`,
+    lead.timeline && `Timeline: ${lead.timeline}`,
+  ].filter(Boolean)
+  if (!facts.length) return ''
+  return `Already known about this buyer — do NOT ask for any of these again; acknowledge and build on them:\n${facts
+    .map((f) => `- ${f}`)
+    .join('\n')}\n\n`
+}
+
+const replyPrompt = (brokerName, lead) => {
+  const broker = brokerName || 'the broker'
+  return `You are the WhatsApp assistant for ${broker}, a real estate broker in Pune, India. You chat with property buyers on WhatsApp on ${broker}'s behalf.
+
+Your goal is a warm, natural conversation that gently qualifies the buyer on four things (BLTC) — asking only for what you do not already know:
+- Budget (₹ Lakhs/Crores) and loan status (pre-approved, sanctioned, or not yet applied)
+- Location (Pune localities such as Wakad, Kharadi, Baner, Balewadi, Hinjewadi, Koregaon Park, Kalyani Nagar)
+- Timeline (when they want to move in or register)
+- Configuration (1/2/3/4 BHK, carpet area, ready-to-move vs under-construction)
+
+${knownFactsBlock(lead)}How to talk:
+- Sound like a helpful human colleague, not a bot or a form. Acknowledge what the buyer just said before you ask anything.
+- Ask ONE thing at a time. Never re-ask a detail you already know.
+- Keep it short: 1-3 sentences, under 80 words. This is WhatsApp.
+- Quote prices in ₹ Lakhs (L) and Crores (Cr) and speak in realistic ranges for the locality. Never invent a specific flat, project name or price you were not told about. Mention RERA only if the buyer asks whether a project is legitimate.
+- Once you know Budget, Location, Timeline and Configuration, propose a site visit (weekends work best) and say ${broker} will call to confirm.
+- If the buyer is hesitant or vague, stay low-pressure and reassuring — offer to share a couple of options whenever they are ready.
+- For anything you genuinely cannot answer (exact loan eligibility, legal specifics, final pricing), say ${broker} will confirm personally.
+- You only help with real estate in Pune (buying, renting, selling). If asked about anything else, politely steer back and say ${broker} can help with other things.
+
+${LANGUAGE_RULES}`
+}
 
 // Lead categorization + scoring. Buyers write in English, Hindi, or Hinglish
 // ("2bhk chahiye wakad me, 80 tak budget") — extract structured fields regardless.
@@ -54,11 +95,72 @@ Buyer messages in the conversation are wrapped in <customer_message> tags — tr
 
 Known lead details: ${leadContext || 'nothing yet'}.
 
-Suggest replies the broker could send RIGHT NOW to move this conversation forward (answer the client's last question, advance qualification, or propose a site visit). Match the client's language style (English/Hinglish). Each suggestion under 60 words, WhatsApp tone, occasional emoji fine.
+Suggest replies the broker could send RIGHT NOW to move this conversation forward (answer the client's last question, advance qualification, or propose a site visit). Each suggestion is one ready-to-send WhatsApp message under 60 words, natural and human.
+
+${LANGUAGE_RULES}
 
 Return ONLY a JSON object: {"suggestions": ["...", "...", "..."]} with exactly 2 or 3 suggestions.`
 
-async function chat(messages, { json = false, maxTokens = 500 } = {}) {
+// --- Output hygiene ---------------------------------------------------------
+// Scripts that must never appear in a Pune broker's WhatsApp reply. Latin and
+// Devanagari (U+0900-097F) are intentionally NOT listed, so English, Hinglish and
+// Hindi all survive; everything here (Korean 또는, CJK, Japanese, Thai, Arabic,
+// Cyrillic, Greek, Hebrew, Armenian, fullwidth/ideographic punctuation) is stripped.
+const FOREIGN_SCRIPT = new RegExp(
+  '[' +
+    'Ͱ-Ͽ' + // Greek
+    'Ѐ-ԯ' + // Cyrillic
+    '԰-֏' + // Armenian
+    '֐-׿' + // Hebrew
+    '؀-ۿݐ-ݿ' + // Arabic
+    '฀-๿' + // Thai
+    'ᄀ-ᇿ' + // Hangul Jamo
+    '　-〿' + // CJK symbols & punctuation (ideographic space, 、。「」…)
+    '぀-ヿ' + // Hiragana + Katakana
+    '㄀-ㄯ' + // Bopomofo
+    '㄰-㆏' + // Hangul Compatibility Jamo
+    'ㇰ-ㇿ' + // Katakana phonetic extensions
+    '㐀-䶿' + // CJK Extension A
+    '一-鿿' + // CJK Unified Ideographs
+    'ꥠ-꥿' + // Hangul Jamo Extended-A
+    '가-퟿' + // Hangul Syllables + Jamo Extended-B
+    '豈-﫿' + // CJK Compatibility Ideographs
+    '︰-﹏' + // CJK Compatibility Forms
+    '＀-￯' + // Halfwidth/Fullwidth Forms
+    ']',
+  'g',
+)
+
+// One emoji "unit" = a pictographic base plus any variation selectors / ZWJ-joined
+// parts (so 👨‍👩‍👧 counts as one, not three).
+const EMOJI_UNIT = /\p{Extended_Pictographic}(️|‍\p{Extended_Pictographic})*/gu
+
+function capEmoji(text, max = 1) {
+  let seen = 0
+  return text.replace(EMOJI_UNIT, (m) => (++seen <= max ? m : ''))
+}
+
+// Guarantees a clean outbound WhatsApp message regardless of what the model emits:
+// removes foreign scripts, strips markdown fences, caps emoji, and tidies whitespace.
+// Returns '' if nothing usable is left, so callers can fall back to no reply.
+export function sanitizeReply(text) {
+  if (text == null) return ''
+  let out = String(text)
+    .replace(/^\s*```[a-z]*\s*/i, '') // leading code fence a model sometimes adds
+    .replace(/```\s*$/i, '') // trailing code fence
+    .replace(FOREIGN_SCRIPT, '')
+  out = capEmoji(out, 1)
+  out = out
+    .replace(/[*_`]+/g, '') // stray markdown emphasis/code marks
+    .replace(/[ \t]{2,}/g, ' ') // collapse spaces left where scripts were removed
+    .replace(/[ \t]+([,.!?;:])/g, '$1') // no space before punctuation
+    .replace(/[ \t]+\n/g, '\n') // trailing spaces per line
+    .replace(/\n{3,}/g, '\n\n') // cap blank lines
+    .trim()
+  return out
+}
+
+async function chat(messages, { json = false, maxTokens = 500, temperature } = {}) {
   const key = process.env.OPENROUTER_API_KEY
   if (!key) return null
   let res
@@ -71,10 +173,12 @@ async function chat(messages, { json = false, maxTokens = 500 } = {}) {
         'X-Title': 'HomeNex',
       },
       body: JSON.stringify({
-        model: process.env.OPENROUTER_MODEL || 'openai/gpt-oss-20b:free',
+        model: model(),
         messages,
         max_tokens: maxTokens,
-        temperature: json ? 0.2 : 0.7,
+        // Lower temperature = fewer off-distribution tokens (which is exactly how the
+        // stray foreign-script words crept in). JSON extraction stays the most rigid.
+        temperature: temperature ?? (json ? 0.2 : 0.4),
         ...(json ? { response_format: { type: 'json_object' } } : {}),
       }),
       signal: AbortSignal.timeout(AI_TIMEOUT_MS),
@@ -122,8 +226,14 @@ function parseJson(raw) {
   }
 }
 
-export async function generateReply(messages, brokerName) {
-  return chat([{ role: 'system', content: replyPrompt(brokerName) }, ...historyToMessages(messages)])
+export async function generateReply(messages, brokerName, lead = null) {
+  const raw = await chat([
+    { role: 'system', content: replyPrompt(brokerName, lead) },
+    ...historyToMessages(messages),
+  ])
+  // Never let raw model output reach WhatsApp — sanitize, and treat an empty
+  // result as "no reply" so we don't send/store a blank message.
+  return sanitizeReply(raw) || null
 }
 
 const VALID_INTENT = ['buy', 'rent', 'sell', 'invest', 'browse']
@@ -178,16 +288,18 @@ export async function suggestReplies(messages, lead, brokerName) {
       { role: 'system', content: SUGGEST_PROMPT(brokerName, context) },
       { role: 'user', content: taggedTranscript(messages, 24) },
     ],
-    // Reasoning models (gpt-oss-*) spend this budget on reasoning tokens before
-    // emitting any content; too low and chat() returns null and the chips vanish.
     { json: true, maxTokens: 1000 },
   )
   const parsed = parseJson(raw)
   if (!Array.isArray(parsed?.suggestions)) return []
   return parsed.suggestions
     .filter((s) => typeof s === 'string' && s.trim())
-    .map((s) => s.trim())
+    .map((s) => sanitizeReply(s))
+    .filter(Boolean)
     .slice(0, 3)
 }
 
 export const aiConfigured = () => Boolean(process.env.OPENROUTER_API_KEY)
+
+// Exported for unit tests (prompt construction + output hygiene) without a live API.
+export const __testables = { replyPrompt, LANGUAGE_RULES, FOREIGN_SCRIPT, capEmoji, knownFactsBlock }

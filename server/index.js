@@ -169,7 +169,7 @@ async function handleInbound({ agentId = null, brokerName, waId, name, text, sou
   if (lead.ai_enabled) {
     // EMI questions get an instant, deterministic calculation — no AI round-trip,
     // and it works even when the AI provider is down.
-    reply = emiReplyFor(text) || (await generateReply(await getMessages(lead.id), brokerName))
+    reply = emiReplyFor(text) || (await generateReply(await getMessages(lead.id), brokerName, lead))
     if (reply) {
       let waMsgId = null
       if (send) {
