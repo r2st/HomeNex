@@ -32,15 +32,13 @@ import db, {
   bulkAddContacts,
   deleteContact,
   normalizePhone,
-  listAllAgents,
-  updateWabaStatus,
-  adminStats,
   countAgents,
 } from './db.js'
 import { generateReply, extractLead, aiConfigured } from './ai.js'
 import { sendText, markRead, whatsappConfigured } from './whatsapp.js'
 import { signup, login, requireAuth } from './auth.js'
 import { handleAgentCommand } from './agentCommands.js'
+import adminRouter from './adminRoutes.js'
 
 const { PORT = 8787, WHATSAPP_VERIFY_TOKEN = 'homenex-verify', WHATSAPP_APP_SECRET } = process.env
 
@@ -361,67 +359,8 @@ app.post('/api/network', (req, res) => {
   res.json(addNetworkPost(p))
 })
 
-// --- Admin API (requires admin privileges) ---
-function requireAdmin(req, res, next) {
-  if (!req.agent || req.agent.is_admin !== 1) {
-    return res.status(403).json({ error: 'Admin access required' })
-  }
-  next()
-}
-
-// Auto-promote first agent to admin if no admins exist.
-// (Called lazily on first admin-route hit.)
-function ensureAdminExists() {
-  const hasAdmin = db.prepare('SELECT 1 FROM agents WHERE is_admin = 1 LIMIT 1').get()
-  if (!hasAdmin) {
-    const first = db.prepare('SELECT id FROM agents ORDER BY id LIMIT 1').get()
-    if (first) {
-      db.prepare('UPDATE agents SET is_admin = 1 WHERE id = ?').run(first.id)
-      console.log(`Auto-promoted agent #${first.id} to admin (first agent)`)
-    }
-  }
-}
-
-app.get('/api/admin/dashboard', (req, res) => {
-  ensureAdminExists()
-  if (req.agent.is_admin !== 1) {
-    // Re-check after auto-promote
-    const fresh = getAgent(req.agent.id)
-    if (fresh.is_admin !== 1) return res.status(403).json({ error: 'Admin access required' })
-    req.agent = fresh
-  }
-  res.json(adminStats())
-})
-
-app.get('/api/admin/agents', (req, res) => {
-  ensureAdminExists()
-  if (req.agent.is_admin !== 1) {
-    const fresh = getAgent(req.agent.id)
-    if (fresh.is_admin !== 1) return res.status(403).json({ error: 'Admin access required' })
-  }
-  res.json(listAllAgents())
-})
-
-app.put('/api/admin/agents/:id/waba', (req, res) => {
-  ensureAdminExists()
-  if (req.agent.is_admin !== 1) {
-    const fresh = getAgent(req.agent.id)
-    if (fresh.is_admin !== 1) return res.status(403).json({ error: 'Admin access required' })
-  }
-  const { status, meta_waba_id, wa_phone_number_id, wa_phone_number } = req.body ?? {}
-  if (!status) return res.status(400).json({ error: 'status is required' })
-  try {
-    const updated = updateWabaStatus(Number(req.params.id), {
-      status,
-      metaWabaId: meta_waba_id,
-      waPhoneNumberId: wa_phone_number_id,
-      waPhoneNumber: wa_phone_number,
-    })
-    res.json(updated)
-  } catch (err) {
-    res.status(400).json({ error: err.message })
-  }
-})
+// --- Admin API (requires admin privileges; see adminRoutes.js) ---
+app.use('/api/admin', adminRouter)
 
 // Dev/test endpoint: pushes a message through the SAME real pipeline (DB + AI),
 // without an outbound WhatsApp send. Useful before the Meta webhook is wired up.
@@ -449,10 +388,15 @@ app.get('/api/health', (_req, res) =>
   }),
 )
 
+// Serve the built admin site at /admin (built with `npm run build:admin`).
+const adminDist = path.join(__dirname, '..', 'admin', 'dist')
+app.use('/admin', express.static(adminDist))
+app.get(/^\/admin(\/.*)?$/, (_req, res) => res.sendFile(path.join(adminDist, 'index.html')))
+
 // Serve the built dashboard so one process hosts everything in production.
 const dist = path.join(__dirname, '..', 'dist')
 app.use(express.static(dist))
-app.get(/^\/(?!api|webhook).*/, (_req, res) => res.sendFile(path.join(dist, 'index.html')))
+app.get(/^\/(?!api|webhook|admin).*/, (_req, res) => res.sendFile(path.join(dist, 'index.html')))
 
 // Start listening only when run directly (`node index.js`), not when imported by tests.
 if (process.env.NODE_ENV !== 'test') {

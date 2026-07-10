@@ -7,7 +7,9 @@
     "dev": "vite --port ${PORT:-5173}",
     "build": "vite build",
     "preview": "vite preview",
-    "server": "node server/index.js"
+    "server": "node server/index.js",
+    "dev:admin": "vite --config admin/vite.config.js --port ${ADMIN_PORT:-5174}",
+    "build:admin": "vite build --config admin/vite.config.js"
   },
   "dependencies": {
     "react": "^18.3.1",

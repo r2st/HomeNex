@@ -61,8 +61,8 @@ export const api = {
       headers: { 'content-type': 'application/json', ...authHeaders() },
       body: JSON.stringify(body),
     }).then(j),
-  // Admin APIs
-  adminAgents: () => get('/api/admin/agents'),
+  // Admin APIs (list endpoint returns { agents, total, page, ... } — unwrap for the panel)
+  adminAgents: () => get('/api/admin/agents').then((r) => (Array.isArray(r) ? r : r.agents)),
   adminDashboard: () => get('/api/admin/dashboard'),
   adminUpdateWaba: (agentId, body) =>
     fetch(`/api/admin/agents/${agentId}/waba`, {

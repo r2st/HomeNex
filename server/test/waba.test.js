@@ -215,8 +215,10 @@ test('non-admin agent gets 403 on admin routes', async () => {
 test('admin can list all agents', async () => {
   const res = await req('GET', '/api/admin/agents')
   assert.equal(res.status, 200)
-  const data = await res.json()
+  const body = await res.json()
+  const data = body.agents
   assert.ok(Array.isArray(data))
+  assert.ok(body.total >= 2)
   assert.ok(data.length >= 2)
   // Each agent should have waba fields
   const a = data.find((x) => x.id === agentA.id)

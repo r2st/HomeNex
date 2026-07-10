@@ -650,12 +650,122 @@ export function adminStats() {
   const one = (sql) => Object.values(db.prepare(sql).get())[0]
   return {
     totalAgents: one('SELECT COUNT(*) FROM agents'),
+    newAgents7d: one("SELECT COUNT(*) FROM agents WHERE created_at >= datetime('now', '-7 days')"),
+    newAgents30d: one("SELECT COUNT(*) FROM agents WHERE created_at >= datetime('now', '-30 days')"),
+    noneWaba: one("SELECT COUNT(*) FROM agents WHERE waba_status = 'none' OR waba_status IS NULL"),
     pendingWaba: one("SELECT COUNT(*) FROM agents WHERE waba_status = 'pending'"),
     registeredWaba: one("SELECT COUNT(*) FROM agents WHERE waba_status = 'registered'"),
     activeWaba: one("SELECT COUNT(*) FROM agents WHERE waba_status = 'active'"),
     totalLeads: one('SELECT COUNT(*) FROM leads'),
     totalContacts: one('SELECT COUNT(*) FROM contacts'),
+    // A conversation is "active" when the lead exchanged at least one message in the last 24h.
+    activeConversations: one(
+      "SELECT COUNT(DISTINCT lead_id) FROM messages WHERE created_at >= datetime('now', '-1 day')",
+    ),
   }
+}
+
+// Paginated, searchable agent listing for the admin site.
+// search matches name/email/phone (substring); status filters on waba_status.
+export function listAgentsAdmin({ search = '', status = '', page = 1, pageSize = 20 } = {}) {
+  const where = []
+  const params = {}
+  if (search) {
+    where.push('(a.name LIKE @q OR a.email LIKE @q OR a.phone LIKE @q OR a.wa_phone_number LIKE @q)')
+    params.q = `%${search}%`
+  }
+  if (status) {
+    where.push("COALESCE(a.waba_status, 'none') = @status")
+    params.status = status
+  }
+  const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : ''
+  const total = db.prepare(`SELECT COUNT(*) AS n FROM agents a ${whereSql}`).get(params).n
+  const size = Math.min(Math.max(1, Number(pageSize) || 20), 100)
+  const p = Math.max(1, Number(page) || 1)
+  const agents = db
+    .prepare(
+      `SELECT a.id, a.name, a.phone, a.email, a.wa_phone_number, a.wa_phone_number_id,
+              a.waba_status, a.waba_registered_at, a.meta_waba_id, a.is_admin, a.created_at,
+              (SELECT MAX(created_at) FROM activity WHERE agent_id = a.id) AS last_active,
+              (SELECT COUNT(*) FROM leads l WHERE l.agent_id = a.id) AS lead_count
+       FROM agents a ${whereSql}
+       ORDER BY a.created_at DESC, a.id DESC
+       LIMIT @limit OFFSET @offset`,
+    )
+    .all({ ...params, limit: size, offset: (p - 1) * size })
+  return { agents, total, page: p, pageSize: size, totalPages: Math.max(1, Math.ceil(total / size)) }
+}
+
+// Full agent profile for the admin detail view: counts + recent activity.
+export function getAgentDetail(id) {
+  const agent = getAgent(id)
+  if (!agent) return null
+  const one = (sql, ...args) => Object.values(db.prepare(sql).get(...args))[0]
+  return {
+    ...agent,
+    lead_count: one('SELECT COUNT(*) FROM leads WHERE agent_id = ?', id),
+    contact_count: one('SELECT COUNT(*) FROM contacts WHERE agent_id = ?', id),
+    message_count: one(
+      'SELECT COUNT(*) FROM messages WHERE lead_id IN (SELECT id FROM leads WHERE agent_id = ?)',
+      id,
+    ),
+    last_active: one('SELECT MAX(created_at) FROM activity WHERE agent_id = ?', id),
+    recent_activity: db
+      .prepare('SELECT * FROM activity WHERE agent_id = ? ORDER BY id DESC LIMIT 15')
+      .all(id),
+  }
+}
+
+// Admin edit of an agent's profile. Only provided fields are changed.
+export function updateAgentProfile(agentId, { name, email, phone, is_admin } = {}) {
+  const agent = getAgent(agentId)
+  if (!agent) {
+    const err = new Error('Agent not found')
+    err.code = 'NOT_FOUND'
+    throw err
+  }
+  const updates = []
+  const params = []
+  if (name !== undefined) {
+    const n = String(name || '').trim()
+    if (!n) throw new Error('Name cannot be empty')
+    updates.push('name = ?')
+    params.push(n)
+  }
+  if (email !== undefined) {
+    const e = String(email || '').trim().toLowerCase() || null
+    if (e && !/^\S+@\S+\.\S+$/.test(e)) throw new Error('Enter a valid email address')
+    if (e) {
+      const clash = db.prepare('SELECT id FROM agents WHERE email = ? AND id != ?').get(e, agentId)
+      if (clash) {
+        const err = new Error('Another agent already uses this email')
+        err.code = 'EMAIL_TAKEN'
+        throw err
+      }
+    }
+    updates.push('email = ?')
+    params.push(e)
+  }
+  if (phone !== undefined) {
+    const pn = normalizePhone(phone)
+    if (pn.replace(/\D/g, '').length < 10) throw new Error('Enter a valid phone number')
+    const clash = db.prepare('SELECT id FROM agents WHERE phone = ? AND id != ?').get(pn, agentId)
+    if (clash) {
+      const err = new Error('Another agent already uses this phone number')
+      err.code = 'PHONE_TAKEN'
+      throw err
+    }
+    updates.push('phone = ?')
+    params.push(pn)
+  }
+  if (is_admin !== undefined) {
+    updates.push('is_admin = ?')
+    params.push(is_admin ? 1 : 0)
+  }
+  if (!updates.length) return agent
+  params.push(agentId)
+  db.prepare(`UPDATE agents SET ${updates.join(', ')} WHERE id = ?`).run(...params)
+  return getAgent(agentId)
 }
 
 // Make an agent an admin (or revoke).
