@@ -17,6 +17,16 @@
         "server/index.js"
       ],
       "port": 8787
+    },
+    {
+      "name": "homenex-preview",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "DATABASE_URL=postgres://homenex:homenex@localhost:5433/homenex_preview",
+        "node",
+        "server/index.js"
+      ],
+      "port": 8787
     }
   ]
 }

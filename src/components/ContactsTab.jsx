@@ -110,6 +110,94 @@ function ContactDetail({ contactId, onClose, onOpenLead }) {
 
 // Contacts are captured automatically from WhatsApp conversations — this tab is
 // search + review, not data entry.
+// Contact groups / segments with one-click auto-grouping and a limiter-gated blast.
+function GroupsPanel() {
+  const [open, setOpen] = useState(false)
+  const [groups, setGroups] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [flash, setFlash] = useState(null)
+  const load = () => api.groups().then(setGroups).catch(() => setGroups([]))
+
+  const toggle = () => {
+    const next = !open
+    setOpen(next)
+    if (next && groups === null) load()
+  }
+
+  const auto = async (by) => {
+    setBusy(true)
+    try {
+      await api.autoGroup(by)
+      await load()
+      setFlash(`Grouped by ${by}`)
+    } catch (e) {
+      setFlash(e.message)
+    } finally {
+      setBusy(false)
+      setTimeout(() => setFlash(null), 2500)
+    }
+  }
+
+  const blast = async (g) => {
+    const message = window.prompt(`Message to send to "${g.name}" (${g.member_count} contacts):`)
+    if (!message || !message.trim()) return
+    try {
+      const r = await api.sendToGroup(g.id, message.trim())
+      setFlash(`Sent ${r.sent}, skipped ${r.skipped} (rate-limited/opted-out)`)
+    } catch (e) {
+      setFlash(e.message)
+    }
+    setTimeout(() => setFlash(null), 3500)
+  }
+
+  const remove = async (g) => {
+    if (!window.confirm(`Delete group "${g.name}"?`)) return
+    await api.deleteGroup(g.id).catch(() => {})
+    load()
+  }
+
+  return (
+    <section className="mt-4 bg-card rounded-2xl border border-line shadow-card overflow-hidden">
+      <button onClick={toggle} className="w-full flex items-center justify-between px-4 py-3 active:scale-[0.99] transition">
+        <span className="text-[10.5px] font-bold tracking-[0.18em] text-brand">GROUPS & SEGMENTS</span>
+        <span className="text-ink-faint text-[13px]">{open ? '▲' : '▼'}</span>
+      </button>
+      {open && (
+        <div className="px-4 pb-4">
+          <p className="text-[11.5px] text-ink-soft mb-2">Auto-group your contacts in one tap:</p>
+          <div className="flex gap-2 flex-wrap">
+            {[['locality', '📍 Locality'], ['intent', '🎯 Intent'], ['temp', '🌡 Temperature']].map(([by, label]) => (
+              <button
+                key={by}
+                disabled={busy}
+                onClick={() => auto(by)}
+                className="text-[12px] font-bold text-brand-deep bg-brand-wash rounded-full px-3 py-1.5 active:scale-95 transition disabled:opacity-50"
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {flash && <p className="text-[11.5px] text-ink-soft mt-2">{flash}</p>}
+          <div className="mt-3 space-y-1.5">
+            {(groups || []).map((g) => (
+              <div key={g.id} className="flex items-center gap-2.5 py-1.5">
+                <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: g.color }} />
+                <span className="text-[13px] font-bold text-ink truncate flex-1">{g.name}</span>
+                <span className="text-[11px] text-ink-faint tabular-nums">{g.member_count}</span>
+                <button onClick={() => blast(g)} className="text-[11.5px] font-bold text-brand active:scale-95 transition">Send</button>
+                <button onClick={() => remove(g)} className="text-ink-faint text-[14px] leading-none active:scale-90 transition">×</button>
+              </div>
+            ))}
+            {groups && groups.length === 0 && (
+              <p className="text-[12px] text-ink-faint">No groups yet — auto-group above to start.</p>
+            )}
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
 export default function ContactsTab({ onOpenLead }) {
   const [q, setQ] = useState('')
   const [selectedId, setSelectedId] = useState(null)
@@ -129,6 +217,8 @@ export default function ContactsTab({ onOpenLead }) {
           Can't reach the HomeNex server: {error.message}
         </p>
       )}
+
+      <GroupsPanel />
 
       <input
         value={q}

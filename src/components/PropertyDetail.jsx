@@ -233,7 +233,56 @@ function MicroPageCard({ propertyId }) {
   )
 }
 
-export default function PropertyDetail({ propertyId, onClose, onChanged }) {
+// View analytics: totals, a 14-day sparkline-ish bar row, and who's actually
+// looking — a lead re-opening the page is the strongest buying signal HomeNex has.
+function AnalyticsCard({ propertyId, onOpenLead }) {
+  const [a, setA] = useState(null)
+  useEffect(() => {
+    api.propertyAnalytics(propertyId).then(setA).catch(() => {})
+  }, [propertyId])
+  if (!a || a.total === 0) return null
+  const days = a.daily.slice(-14)
+  const max = Math.max(1, ...days.map((d) => d.views))
+  return (
+    <section className="bg-card rounded-2xl border border-line shadow-card p-4">
+      <p className="text-[10.5px] font-bold tracking-[0.18em] text-brand mb-3">VIEW ANALYTICS</p>
+      <div className="grid grid-cols-3 gap-2 mb-3">
+        {[['Total', a.total], ['Last 24h', a.last_24h], ['Viewers', a.distinct_leads]].map(([label, v]) => (
+          <div key={label} className="bg-cream rounded-xl px-3 py-2 text-center">
+            <p className="font-display text-[20px] font-bold text-ink leading-none">{v}</p>
+            <p className="text-[10px] font-semibold text-ink-soft mt-1">{label}</p>
+          </div>
+        ))}
+      </div>
+      {days.length > 0 && (
+        <div className="flex items-end gap-1 h-12 mb-1">
+          {days.map((d) => (
+            <div key={d.day} title={`${d.day}: ${d.views}`} className="flex-1 bg-brand/70 rounded-t" style={{ height: `${Math.max(6, (d.views / max) * 100)}%` }} />
+          ))}
+        </div>
+      )}
+      {a.viewers.length > 0 && (
+        <div className="mt-3 space-y-1.5">
+          <p className="text-[10.5px] font-bold tracking-[0.18em] text-ink-soft">WHO'S LOOKING</p>
+          {a.viewers.slice(0, 5).map((v) => (
+            <button
+              key={v.lead_id}
+              onClick={() => onOpenLead?.(v.lead_id)}
+              className="w-full flex items-center justify-between text-left active:scale-[0.99] transition"
+            >
+              <span className="text-[12.5px] font-bold text-ink truncate">{v.lead_name || v.wa_id}</span>
+              <span className={`text-[11px] font-bold tabular-nums shrink-0 ${v.views >= 3 ? 'text-hot' : 'text-ink-soft'}`}>
+                👁 {v.views}{v.views >= 3 ? ' 🔥' : ''}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
+
+export default function PropertyDetail({ propertyId, onClose, onChanged, onOpenLead }) {
   const [refreshKey, setRefreshKey] = useState(0)
   const { data: property } = usePoll(() => api.property(propertyId), 30000, [propertyId, refreshKey])
   const [editing, setEditing] = useState(false)
@@ -339,6 +388,7 @@ export default function PropertyDetail({ propertyId, onClose, onChanged }) {
             </section>
 
             <MicroPageCard propertyId={property.id} />
+            <AnalyticsCard propertyId={property.id} onOpenLead={onOpenLead} />
 
             <button
               onClick={() => setSending(true)}

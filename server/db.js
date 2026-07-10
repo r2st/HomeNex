@@ -2,6 +2,8 @@ import pg from 'pg'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { decayLead } from './scoring.js'
+import { worklistItem, rankWorklist, worklistCounts } from './worklist.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -1400,11 +1402,11 @@ export async function ensurePropertySlug(id, agentId) {
 }
 
 // Record one public page view — the engagement signal agents see on the property card.
-export async function recordPropertyView(propertyId, referrer = null) {
-  await q('INSERT INTO property_page_views (property_id, referrer) VALUES ($1, $2)', [
-    propertyId,
-    referrer ? String(referrer).slice(0, 500) : null,
-  ])
+export async function recordPropertyView(propertyId, referrer = null, leadId = null) {
+  await q(
+    'INSERT INTO property_page_views (property_id, referrer, lead_id) VALUES ($1, $2, $3)',
+    [propertyId, referrer ? String(referrer).slice(0, 500) : null, leadId],
+  )
   await q('UPDATE properties SET page_views = page_views + 1 WHERE id = $1', [propertyId])
 }
 
@@ -1762,6 +1764,487 @@ export async function listAuditLogs(agentId, limit = 100) {
   return (
     await q('SELECT * FROM audit_logs WHERE agent_id = $1 ORDER BY id DESC LIMIT $2', [agentId, limit])
   ).rows
+}
+
+// --- Lead score decay (recency + engagement velocity; see scoring.js) ---
+
+// Raw engagement signals for one lead: last inbound, attributed micro-page views,
+// and site-visit times. Feeds decayLead().
+export async function leadEngagementSignals(leadId) {
+  const { rows } = await q(
+    `SELECT
+       (SELECT MAX(created_at) FROM messages WHERE lead_id = $1 AND role = 'buyer') AS last_buyer_at,
+       ARRAY(SELECT viewed_at FROM property_page_views WHERE lead_id = $1 ORDER BY viewed_at DESC LIMIT 50) AS page_views,
+       ARRAY(SELECT scheduled_at FROM site_visits WHERE lead_id = $1) AS site_visits`,
+    [leadId],
+  )
+  const r = rows[0] || {}
+  return { lastBuyerAt: r.last_buyer_at, pageViews: r.page_views || [], siteVisits: r.site_visits || [] }
+}
+
+// Compute the decayed score for a lead without persisting (used by lead detail /
+// briefing so those surfaces are always fresh).
+export async function computeLeadDecay(lead, now = Date.now()) {
+  const sig = await leadEngagementSignals(lead.id)
+  return decayLead(lead, sig, now)
+}
+
+// Recompute and PERSIST a lead's engagement/effective score + temperature.
+export async function recomputeLeadScore(leadId, now = Date.now()) {
+  const lead = await getLead(leadId)
+  if (!lead) return null
+  const d = decayLead(lead, await leadEngagementSignals(leadId), now)
+  await q(
+    `UPDATE leads SET engagement_score = $2, effective_score = $3, effective_temp = $4,
+       score_factors = $5, last_decay_at = now() WHERE id = $1`,
+    [leadId, d.engagementScore, d.effectiveScore, d.temperature, JSON.stringify(d.factors)],
+  )
+  return d
+}
+
+// Recompute every non-closed lead for an agent (the twice-daily decay job, and
+// called on-demand when the worklist is opened so its ranking is honest).
+export async function recomputeAgentScores(agentId, now = Date.now()) {
+  const { rows } = await q(
+    'SELECT id FROM leads WHERE agent_id = $1 AND closed_at IS NULL',
+    [agentId],
+  )
+  for (const { id } of rows) await recomputeLeadScore(id, now)
+  return rows.length
+}
+
+// --- Property view analytics (surfaces property_page_views, which was written by
+// every micro-page hit and read by nothing) ---
+
+export async function leadPageViews(leadId) {
+  return (
+    await q(
+      'SELECT property_id, viewed_at, referrer FROM property_page_views WHERE lead_id = $1 ORDER BY viewed_at',
+      [leadId],
+    )
+  ).rows
+}
+
+export async function propertyViewAnalytics(propertyId, agentId) {
+  const owned = (await q('SELECT id, title FROM properties WHERE id = $1 AND agent_id = $2', [propertyId, agentId])).rows[0]
+  if (!owned) return null
+  const totals = (
+    await q(
+      `SELECT COUNT(*)::int AS total,
+              COUNT(*) FILTER (WHERE viewed_at >= now() - interval '24 hours')::int AS last_24h,
+              COUNT(*) FILTER (WHERE viewed_at >= now() - interval '7 days')::int AS last_7d,
+              COUNT(DISTINCT lead_id) FILTER (WHERE lead_id IS NOT NULL)::int AS distinct_leads
+       FROM property_page_views WHERE property_id = $1`,
+      [propertyId],
+    )
+  ).rows[0]
+  const daily = (
+    await q(
+      `SELECT to_char(viewed_at::date, 'YYYY-MM-DD') AS day, COUNT(*)::int AS views
+       FROM property_page_views WHERE property_id = $1 AND viewed_at >= now() - interval '30 days'
+       GROUP BY day ORDER BY day`,
+      [propertyId],
+    )
+  ).rows
+  // Who's looking, and how often — a lead viewing 3+ times is the strongest signal.
+  const viewers = (
+    await q(
+      `SELECT v.lead_id, l.name AS lead_name, l.wa_id, l.effective_temp,
+              COUNT(*)::int AS views, MAX(v.viewed_at) AS last_viewed
+       FROM property_page_views v
+       JOIN leads l ON l.id = v.lead_id
+       WHERE v.property_id = $1 AND l.agent_id = $2
+       GROUP BY v.lead_id, l.name, l.wa_id, l.effective_temp
+       ORDER BY views DESC, last_viewed DESC`,
+      [propertyId, agentId],
+    )
+  ).rows
+  return { property_id: propertyId, title: owned.title, ...totals, daily, viewers }
+}
+
+// --- Notification queue ---
+
+export async function createNotification(agentId, { type, title, body = null, entity_type = null, entity_id = null, dedupe_key = null }) {
+  const { rows } = await q(
+    `INSERT INTO notifications (agent_id, type, title, body, entity_type, entity_id, dedupe_key)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (agent_id, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING
+     RETURNING *`,
+    [agentId, type, title, body, entity_type, entity_id, dedupe_key],
+  )
+  return rows[0] || null // null = deduped (already notified for this reason)
+}
+
+export async function listNotifications(agentId, { unreadOnly = false, limit = 50 } = {}) {
+  const where = ['agent_id = $1']
+  if (unreadOnly) where.push('read_at IS NULL')
+  return (
+    await q(
+      `SELECT * FROM notifications WHERE ${where.join(' AND ')} ORDER BY created_at DESC LIMIT $2`,
+      [agentId, limit],
+    )
+  ).rows
+}
+
+export async function unreadNotificationCount(agentId) {
+  return (
+    await q('SELECT COUNT(*)::int AS n FROM notifications WHERE agent_id = $1 AND read_at IS NULL', [agentId])
+  ).rows[0].n
+}
+
+export async function markNotificationRead(id, agentId) {
+  const { rows } = await q(
+    'UPDATE notifications SET read_at = now() WHERE id = $1 AND agent_id = $2 AND read_at IS NULL RETURNING *',
+    [id, agentId],
+  )
+  return rows[0] || null
+}
+
+export async function markAllNotificationsRead(agentId) {
+  return (await q('UPDATE notifications SET read_at = now() WHERE agent_id = $1 AND read_at IS NULL', [agentId])).rowCount
+}
+
+// --- Send log + rate-limiter data (see sendLimiter.js) ---
+
+export async function recordSend(agentId, { contact_id = null, phone, kind = 'marketing' }) {
+  await q(
+    'INSERT INTO message_sends (agent_id, contact_id, phone, kind) VALUES ($1, $2, $3, $4)',
+    [agentId, contact_id, phone, kind],
+  )
+}
+
+// Rolling 24h send count for the number (the daily-cap denominator).
+export async function sendsToday(agentId) {
+  return (
+    await q(
+      `SELECT COUNT(*)::int AS n FROM message_sends WHERE agent_id = $1 AND sent_at >= now() - interval '24 hours'`,
+      [agentId],
+    )
+  ).rows[0].n
+}
+
+// Per-contact history: last send time and count this calendar month.
+export async function contactSendStats(agentId, contactId, phone) {
+  const { rows } = await q(
+    `SELECT MAX(sent_at) AS last_sent_at,
+            COUNT(*) FILTER (WHERE sent_at >= date_trunc('month', now()))::int AS month_count
+     FROM message_sends
+     WHERE agent_id = $1 AND ($2::int IS NOT NULL AND contact_id = $2 OR phone = $3)`,
+    [agentId, contactId ?? null, phone],
+  )
+  return { lastSentAt: rows[0]?.last_sent_at || null, monthCount: rows[0]?.month_count || 0 }
+}
+
+// Stamp the warmup anchor the first time a number sends in bulk; return the agent.
+export async function ensureBulkSendStarted(agentId) {
+  const { rows } = await q(
+    `UPDATE agents SET bulk_send_started_at = COALESCE(bulk_send_started_at, now())
+     WHERE id = $1 RETURNING bulk_send_started_at`,
+    [agentId],
+  )
+  return rows[0]?.bulk_send_started_at || null
+}
+
+// --- Prioritised daily worklist / next-best-action feed (see worklist.js) ---
+
+export async function worklist(agentId, now = new Date()) {
+  const items = []
+
+  // 1. Service window closing within ~4h (highest priority; hard deadline).
+  for (const l of (
+    await q(
+      `SELECT id, name, wa_id, last_inbound_at
+       FROM leads WHERE agent_id = $1 AND closed_at IS NULL
+         AND last_inbound_at IS NOT NULL
+         AND last_inbound_at <= now() - interval '20 hours'
+         AND last_inbound_at > now() - interval '24 hours'`,
+      [agentId],
+    )
+  ).rows) {
+    const hoursLeft = 24 - (Date.now() - new Date(l.last_inbound_at).getTime()) / 3600_000
+    items.push(worklistItem('service_window_closing', {
+      lead_id: l.id,
+      title: l.name || l.wa_id,
+      reason: `Free-reply window closes in ~${Math.max(1, Math.round(hoursLeft))}h — reply now or send a template.`,
+      recencyAt: l.last_inbound_at,
+    }))
+  }
+
+  // 2. Site visit within 48h, not yet confirmed.
+  for (const v of (
+    await q(
+      `SELECT v.id, v.scheduled_at, l.id AS lead_id, l.name, l.wa_id, p.title
+       FROM site_visits v JOIN leads l ON l.id = v.lead_id
+       LEFT JOIN properties p ON p.id = v.property_id
+       WHERE v.agent_id = $1 AND v.status = 'scheduled'
+         AND v.scheduled_at BETWEEN now() AND now() + interval '48 hours'`,
+      [agentId],
+    )
+  ).rows) {
+    items.push(worklistItem('site_visit_soon', {
+      lead_id: v.lead_id, entity_type: 'site_visit', entity_id: v.id,
+      title: v.name || v.wa_id,
+      reason: `Site visit ${v.title ? `for ${v.title} ` : ''}coming up — confirm attendance, no-shows kill deals.`,
+      recencyAt: v.scheduled_at,
+    }))
+  }
+
+  // 3. Hot lead (post-decay) whose last message is from the buyer — waiting on you.
+  for (const l of (
+    await q(
+      `SELECT l.id, l.name, l.wa_id, l.effective_score, lm.created_at AS last_at
+       FROM leads l
+       JOIN LATERAL (SELECT role, created_at FROM messages m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) lm ON lm.role = 'buyer'
+       WHERE l.agent_id = $1 AND l.closed_at IS NULL AND l.effective_temp = 'Hot'`,
+      [agentId],
+    )
+  ).rows) {
+    items.push(worklistItem('hot_lead_waiting', {
+      lead_id: l.id, title: l.name || l.wa_id,
+      reason: `Hot lead (score ${l.effective_score}) is waiting on your reply.`,
+      recencyAt: l.last_at,
+    }))
+  }
+
+  // 4. Overdue follow-ups.
+  for (const f of (
+    await q(
+      `SELECT f.id, f.due_at, f.note, l.id AS lead_id, l.name, l.wa_id
+       FROM followups f JOIN leads l ON l.id = f.lead_id
+       WHERE f.agent_id = $1 AND f.completed_at IS NULL AND f.due_at < now()`,
+      [agentId],
+    )
+  ).rows) {
+    items.push(worklistItem('overdue_followup', {
+      lead_id: f.lead_id, entity_type: 'followup', entity_id: f.id,
+      title: f.name || f.wa_id,
+      reason: f.note ? `Overdue follow-up: ${f.note}` : 'Follow-up is overdue.',
+      recencyAt: f.due_at,
+    }))
+  }
+
+  // 5. Micro-page re-opened: 2+ attributed views in the last 24h.
+  for (const l of (
+    await q(
+      `SELECT l.id, l.name, l.wa_id, COUNT(*)::int AS views, MAX(v.viewed_at) AS last_viewed
+       FROM property_page_views v JOIN leads l ON l.id = v.lead_id
+       WHERE l.agent_id = $1 AND l.closed_at IS NULL AND v.viewed_at >= now() - interval '24 hours'
+       GROUP BY l.id, l.name, l.wa_id HAVING COUNT(*) >= 2`,
+      [agentId],
+    )
+  ).rows) {
+    items.push(worklistItem('micro_page_reopened', {
+      lead_id: l.id, title: l.name || l.wa_id,
+      reason: `Re-opened a property page ${l.views}× in the last day — call while it's fresh.`,
+      recencyAt: l.last_viewed,
+    }))
+  }
+
+  // 6. Site visit completed 3+ days ago with no agent message since (deal dying).
+  for (const l of (
+    await q(
+      `SELECT DISTINCT ON (l.id) l.id, l.name, l.wa_id, v.scheduled_at
+       FROM site_visits v JOIN leads l ON l.id = v.lead_id
+       WHERE v.agent_id = $1 AND v.status = 'completed' AND l.closed_at IS NULL
+         AND v.scheduled_at < now() - interval '3 days'
+         AND NOT EXISTS (
+           SELECT 1 FROM messages m WHERE m.lead_id = l.id AND m.role IN ('agent','ai')
+             AND m.created_at > v.scheduled_at)
+       ORDER BY l.id, v.scheduled_at DESC`,
+      [agentId],
+    )
+  ).rows) {
+    items.push(worklistItem('site_visit_no_followup', {
+      lead_id: l.id, title: l.name || l.wa_id,
+      reason: 'Visited but you’ve gone quiet since — follow up before the deal cools.',
+      recencyAt: l.scheduled_at,
+    }))
+  }
+
+  // 7. Commission overdue.
+  for (const c of (
+    await q(
+      `SELECT c.id, c.expected_payout_date, l.id AS lead_id, l.name, l.wa_id
+       FROM commissions c JOIN leads l ON l.id = c.lead_id
+       WHERE c.agent_id = $1 AND (c.status = 'overdue'
+         OR (c.status = 'expected' AND c.expected_payout_date IS NOT NULL AND c.expected_payout_date < now()::date))`,
+      [agentId],
+    )
+  ).rows) {
+    items.push(worklistItem('commission_overdue', {
+      lead_id: c.lead_id, entity_type: 'commission', entity_id: c.id,
+      title: c.name || c.wa_id,
+      reason: 'Brokerage is overdue — chase the payout.',
+      recencyAt: c.expected_payout_date,
+    }))
+  }
+
+  // 8. Stale lead: active pipeline, no message either way in 14 days, not Hot.
+  const staleExclude = new Set(items.filter((i) => i.type === 'service_window_closing' || i.type === 'hot_lead_waiting').map((i) => i.lead_id))
+  for (const l of (
+    await q(
+      `SELECT l.id, l.name, l.wa_id, l.stage,
+              (SELECT MAX(created_at) FROM messages m WHERE m.lead_id = l.id) AS last_msg_at
+       FROM leads l
+       WHERE l.agent_id = $1 AND l.closed_at IS NULL
+         AND COALESCE(l.stage, 'New') NOT IN ('Registered/Closed','Closed','Lost')
+         AND COALESCE(l.effective_temp, l.temp) IS DISTINCT FROM 'Hot'
+         AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.lead_id = l.id AND m.created_at >= now() - interval '14 days')`,
+      [agentId],
+    )
+  ).rows) {
+    if (staleExclude.has(l.id)) continue
+    items.push(worklistItem('stale_lead', {
+      lead_id: l.id, title: l.name || l.wa_id,
+      reason: 'No contact in 2+ weeks — resurface with a new property or a check-in.',
+      recencyAt: l.last_msg_at,
+    }))
+  }
+
+  const ranked = rankWorklist(items)
+  return { items: ranked, counts: worklistCounts(ranked) }
+}
+
+// --- Contact groups / segments ---
+
+// Dynamic-segment resolver: contacts of the agent whose linked leads match the
+// criteria. Contacts join leads by phone (contacts.phone without '+' == leads.wa_id).
+function segmentWhere(criteria = {}, params) {
+  const conds = []
+  if (criteria.locality) {
+    params.push(criteria.locality.toLowerCase())
+    conds.push(`EXISTS (SELECT 1 FROM leads l WHERE replace(c.phone,'+','') = l.wa_id AND l.agent_id = c.agent_id
+      AND (lower(l.locality) = $${params.length} OR l.preferred_localities::text ILIKE '%'||$${params.length}||'%'))`)
+  }
+  if (criteria.intent) {
+    params.push(criteria.intent)
+    conds.push(`EXISTS (SELECT 1 FROM leads l WHERE replace(c.phone,'+','') = l.wa_id AND l.agent_id = c.agent_id AND l.intent = $${params.length})`)
+  }
+  if (criteria.temp) {
+    params.push(criteria.temp)
+    conds.push(`EXISTS (SELECT 1 FROM leads l WHERE replace(c.phone,'+','') = l.wa_id AND l.agent_id = c.agent_id AND COALESCE(l.effective_temp, l.temp) = $${params.length})`)
+  }
+  if (criteria.budget_min_paise != null) {
+    params.push(criteria.budget_min_paise)
+    conds.push(`EXISTS (SELECT 1 FROM leads l WHERE replace(c.phone,'+','') = l.wa_id AND l.agent_id = c.agent_id AND l.budget_max >= $${params.length})`)
+  }
+  if (criteria.budget_max_paise != null) {
+    params.push(criteria.budget_max_paise)
+    conds.push(`EXISTS (SELECT 1 FROM leads l WHERE replace(c.phone,'+','') = l.wa_id AND l.agent_id = c.agent_id AND l.budget_min <= $${params.length})`)
+  }
+  return conds
+}
+
+export async function resolveSegment(agentId, criteria = {}) {
+  const params = [agentId]
+  const conds = ['c.agent_id = $1', "c.opt_in_status != 'opted_out'", ...segmentWhere(criteria, params)]
+  return (
+    await q(`SELECT c.* FROM contacts c WHERE ${conds.join(' AND ')} ORDER BY c.name`, params)
+  ).rows
+}
+
+export async function createGroup(agentId, { name, color = '#2563eb', kind = 'static', criteria = {} }) {
+  if (!name || !String(name).trim()) throw new Error('name is required')
+  const { rows } = await q(
+    `INSERT INTO contact_groups (agent_id, name, color, kind, criteria)
+     VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+    [agentId, String(name).trim(), color, kind, JSON.stringify(criteria || {})],
+  )
+  return rows[0]
+}
+
+export async function listGroups(agentId) {
+  return (
+    await q(
+      `SELECT g.*, (SELECT COUNT(*)::int FROM contact_group_members m WHERE m.group_id = g.id) AS member_count
+       FROM contact_groups g WHERE g.agent_id = $1 ORDER BY g.name`,
+      [agentId],
+    )
+  ).rows
+}
+
+export async function getGroup(id, agentId) {
+  return (await q('SELECT * FROM contact_groups WHERE id = $1 AND agent_id = $2', [id, agentId])).rows[0] || null
+}
+
+export async function updateGroup(id, agentId, fields) {
+  const { sets, params } = buildSet({ name: 'text', color: 'text', criteria: 'jsonb' }, fields)
+  if (!sets.length) return getGroup(id, agentId)
+  const { rows } = await q(
+    `UPDATE contact_groups SET ${sets.join(', ')}, updated_at = now()
+     WHERE id = $${params.length + 1} AND agent_id = $${params.length + 2} RETURNING *`,
+    [...params, id, agentId],
+  )
+  return rows[0] || null
+}
+
+export async function deleteGroup(id, agentId) {
+  return (await q('DELETE FROM contact_groups WHERE id = $1 AND agent_id = $2', [id, agentId])).rowCount > 0
+}
+
+// Resolve a group's members: explicit rows for static groups, the live segment for
+// dynamic ones (so a query-backed group never goes stale).
+export async function groupMembers(id, agentId) {
+  const group = await getGroup(id, agentId)
+  if (!group) return null
+  if (group.kind === 'dynamic') return resolveSegment(agentId, group.criteria)
+  return (
+    await q(
+      `SELECT c.* FROM contact_group_members m JOIN contacts c ON c.id = m.contact_id
+       WHERE m.group_id = $1 AND c.agent_id = $2 ORDER BY c.name`,
+      [id, agentId],
+    )
+  ).rows
+}
+
+export async function addGroupMembers(id, agentId, contactIds) {
+  const group = await getGroup(id, agentId)
+  if (!group || group.kind !== 'static') return null
+  let added = 0
+  for (const cid of contactIds) {
+    // Only insert contacts the agent actually owns; ignore duplicates.
+    const r = await q(
+      `INSERT INTO contact_group_members (group_id, contact_id)
+       SELECT $1, $2 WHERE EXISTS (SELECT 1 FROM contacts WHERE id = $2 AND agent_id = $3)
+       ON CONFLICT DO NOTHING`,
+      [id, cid, agentId],
+    )
+    added += r.rowCount
+  }
+  return added
+}
+
+export async function removeGroupMember(id, agentId, contactId) {
+  const group = await getGroup(id, agentId)
+  if (!group) return false
+  return (
+    await q('DELETE FROM contact_group_members WHERE group_id = $1 AND contact_id = $2', [id, contactId])
+  ).rowCount > 0
+}
+
+// One-click auto-grouping: scan the agent's leads, create a static group per
+// distinct value (locality / intent / temperature), and populate it with the
+// matching contacts. Idempotent — re-running tops up membership, never duplicates.
+export async function autoGroupContacts(agentId, by) {
+  const dimensions = {
+    locality: { label: 'Locality', values: `SELECT DISTINCT l.locality AS v FROM leads l WHERE l.agent_id = $1 AND l.locality IS NOT NULL AND l.locality <> ''` },
+    intent: { label: 'Intent', values: `SELECT DISTINCT l.intent AS v FROM leads l WHERE l.agent_id = $1 AND l.intent IS NOT NULL` },
+    temp: { label: 'Temp', values: `SELECT DISTINCT COALESCE(l.effective_temp, l.temp) AS v FROM leads l WHERE l.agent_id = $1 AND COALESCE(l.effective_temp, l.temp) IS NOT NULL` },
+  }
+  const dim = dimensions[by]
+  if (!dim) throw new Error('unknown grouping dimension')
+  const values = (await q(dim.values, [agentId])).rows.map((r) => r.v).filter(Boolean)
+  const groups = []
+  for (const value of values) {
+    const name = `${dim.label}: ${value}`
+    let group = (await q('SELECT * FROM contact_groups WHERE agent_id = $1 AND name = $2', [agentId, name])).rows[0]
+    if (!group) group = await createGroup(agentId, { name })
+    const criteria = by === 'locality' ? { locality: value } : by === 'intent' ? { intent: value } : { temp: value }
+    const contacts = await resolveSegment(agentId, criteria)
+    if (contacts.length) await addGroupMembers(group.id, agentId, contacts.map((c) => c.id))
+    groups.push({ ...group, member_count: contacts.length })
+  }
+  return groups
 }
 
 export { pool, q as query }

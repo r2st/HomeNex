@@ -10,6 +10,14 @@ const DOT = {
   msg: 'bg-ink-faint',
 }
 
+// Worklist priority → pill styling + a short human label.
+const PRIORITY_STYLE = {
+  critical: { pill: 'text-white bg-hot', label: 'NOW' },
+  high: { pill: 'text-hot bg-amber-wash', label: 'HIGH' },
+  medium: { pill: 'text-brand bg-brand/10', label: 'SOON' },
+  low: { pill: 'text-ink-soft bg-ink/5', label: 'LATER' },
+}
+
 function greeting() {
   const h = new Date().getHours()
   if (h < 12) return 'Good morning'
@@ -32,9 +40,20 @@ function SectionHeader({ children, badge }) {
 export default function DashboardTab({ agent, onGoTo, onOpenConversation, onOpenLead, onSignOut }) {
   const { data: d, error } = usePoll(api.dashboard, 6000)
   const { data: stats } = usePoll(api.stats, 10000)
+  const { data: work } = usePoll(api.worklist, 15000)
+  const { data: notif } = usePoll(() => api.notifications(), 20000)
 
   const complete = async (id) => {
     await api.updateFollowup(id, { completed: true })
+  }
+
+  const openWorklistItem = (item) => {
+    if (item.action === 'reply_now' || item.action === 'reach_out') onOpenConversation(item.lead_id)
+    else onOpenLead(item.lead_id)
+  }
+
+  const dismissNotification = async (id) => {
+    await api.markNotificationRead(id).catch(() => {})
   }
 
   const kpis = d && [
@@ -94,6 +113,61 @@ export default function DashboardTab({ agent, onGoTo, onOpenConversation, onOpen
             </div>
           ))}
         </div>
+      )}
+
+      {notif && notif.notifications.some((n) => !n.read_at) && (
+        <section className="mt-6 rise rise-1">
+          <SectionHeader badge={notif.unread}>ALERTS</SectionHeader>
+          <div className="mt-3 space-y-2">
+            {notif.notifications.filter((n) => !n.read_at).slice(0, 4).map((n) => (
+              <div key={n.id} className="flex items-start gap-3 bg-card rounded-2xl border border-line shadow-card px-4 py-3">
+                <div className="min-w-0 flex-1">
+                  <p className="text-[13px] font-bold text-ink truncate">{n.title}</p>
+                  {n.body && <p className="text-[12px] text-ink-soft leading-snug mt-0.5">{n.body}</p>}
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  {n.entity_type === 'lead' && n.entity_id && (
+                    <button onClick={() => onOpenLead(n.entity_id)} className="text-[12px] font-bold text-brand active:scale-95 transition">
+                      Open
+                    </button>
+                  )}
+                  <button onClick={() => dismissNotification(n.id)} title="Dismiss" className="text-ink-faint text-[15px] leading-none active:scale-90 transition">
+                    ×
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {work && work.items.length > 0 && (
+        <section className="mt-7 rise rise-2">
+          <SectionHeader badge={work.counts.total}>YOUR DAY — WHAT TO DO NEXT</SectionHeader>
+          <div className="space-y-2.5 mt-3">
+            {work.items.slice(0, 8).map((item, i) => {
+              const style = PRIORITY_STYLE[item.priority] || PRIORITY_STYLE.low
+              return (
+                <button
+                  key={`${item.type}-${item.entity_id}-${i}`}
+                  onClick={() => openWorklistItem(item)}
+                  className="w-full text-left bg-card rounded-2xl border border-line shadow-card px-4 py-3.5 active:scale-[0.99] transition"
+                >
+                  <div className="flex items-start gap-3">
+                    <span className={`shrink-0 mt-0.5 text-[9.5px] font-bold tracking-wide rounded-full px-2 py-1 ${style.pill}`}>
+                      {style.label}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="font-bold text-[14px] text-ink truncate">{item.title}</p>
+                      <p className="text-[12.5px] text-ink-soft leading-snug mt-0.5">{item.reason}</p>
+                    </div>
+                    <span className="shrink-0 text-brand text-[15px] font-bold mt-0.5">→</span>
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        </section>
       )}
 
       {d && d.unanswered.length > 0 && (

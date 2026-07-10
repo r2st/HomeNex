@@ -159,6 +159,23 @@ export const api = {
   adminSetAdmin: (agentId, isAdmin) => put(`/api/admin/agents/${agentId}/admin`, { is_admin: isAdmin }),
   adminSetActive: (agentId, isActive) => put(`/api/admin/agents/${agentId}/active`, { is_active: isActive }),
   adminUpdateWaba: (agentId, body) => put(`/api/admin/agents/${agentId}/waba`, body),
+  // Decision layer: worklist, briefing, notifications, analytics, groups.
+  worklist: () => get('/api/worklist'),
+  briefing: (leadId) => get(`/api/leads/${leadId}/briefing`),
+  notifications: (unread) => get(`/api/notifications${qs({ unread: unread ? 1 : undefined })}`),
+  markNotificationRead: (id) => put(`/api/notifications/${id}/read`, {}),
+  markAllNotificationsRead: () => post('/api/notifications/read-all', {}),
+  propertyAnalytics: (id) => get(`/api/properties/${id}/analytics`),
+  groups: () => get('/api/groups'),
+  createGroup: (body) => post('/api/groups', body),
+  updateGroup: (id, body) => put(`/api/groups/${id}`, body),
+  deleteGroup: (id) => del(`/api/groups/${id}`),
+  groupMembers: (id) => get(`/api/groups/${id}/members`),
+  addGroupMembers: (id, contactIds) => post(`/api/groups/${id}/members`, { contact_ids: contactIds }),
+  removeGroupMember: (id, contactId) => del(`/api/groups/${id}/members/${contactId}`),
+  autoGroup: (by) => post('/api/groups/auto', { by }),
+  previewSegment: (criteria) => post('/api/segments/preview', { criteria }),
+  sendToGroup: (id, message) => post(`/api/groups/${id}/send`, { message }),
 }
 
 // Poll an endpoint so the dashboard stays live as real messages arrive.

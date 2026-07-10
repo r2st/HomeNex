@@ -103,7 +103,7 @@ export default function App() {
         )}
         {tab === 'leads' && <LeadsTab onOpenConversation={openConversation} />}
         {tab === 'inbox' && <InboxTab leadId={inboxLeadId} onSelectLead={setInboxLeadId} />}
-        {tab === 'properties' && <PropertiesTab />}
+        {tab === 'properties' && <PropertiesTab onOpenLead={setDetailLeadId} />}
         {tab === 'more' && (
           <MoreTab agent={agent} onAgentUpdate={setAgent} onOpenConversation={openConversation} />
         )}

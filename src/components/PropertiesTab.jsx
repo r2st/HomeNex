@@ -22,7 +22,7 @@ const PRICE_BANDS = [
 
 const STATUS_ICON = { available: '🟢', token: '🟡', sold: '⚪', rented: '⚪' }
 
-export default function PropertiesTab() {
+export default function PropertiesTab({ onOpenLead }) {
   const [filters, setFilters] = useState({ type: '', bhk: '', status: '', band: '', q: '' })
   const [adding, setAdding] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -168,7 +168,7 @@ export default function PropertiesTab() {
       )}
 
       {selectedId && (
-        <PropertyDetail propertyId={selectedId} onClose={() => setSelectedId(null)} onChanged={refresh} />
+        <PropertyDetail propertyId={selectedId} onClose={() => setSelectedId(null)} onChanged={refresh} onOpenLead={onOpenLead} />
       )}
     </div>
   )

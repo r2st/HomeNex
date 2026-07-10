@@ -415,6 +415,53 @@ function SiteVisitsSection({ lead, refresh }) {
   )
 }
 
+// "Before you call" — rule-based talking points, the decayed score, and how long
+// it's been. Server-computed (no LLM), so it's instant and always fresh.
+const TONE_STYLE = {
+  urgent: 'border-l-hot bg-amber-wash',
+  hot: 'border-l-hot bg-amber-wash',
+  warm: 'border-l-brand bg-brand-wash',
+  info: 'border-l-ink-faint bg-cream',
+}
+function BriefingPanel({ leadId, refreshKey }) {
+  const [b, setB] = useState(null)
+  useEffect(() => {
+    let alive = true
+    api.briefing(leadId).then((d) => alive && setB(d)).catch(() => {})
+    return () => { alive = false }
+  }, [leadId, refreshKey])
+  if (!b || !b.talking_points?.length) return null
+  return (
+    <section className="bg-card rounded-2xl border border-line shadow-card p-4">
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-[10.5px] font-bold tracking-[0.18em] text-ink-soft">📞 BEFORE YOU CALL</p>
+        <div className="flex items-center gap-2 text-[11px] font-bold">
+          {b.temperature && (
+            <span className={`rounded-full px-2 py-0.5 uppercase ${b.temperature === 'Hot' ? 'text-hot bg-amber-wash' : b.temperature === 'Warm' ? 'text-brand-deep bg-brand-wash' : 'text-ink-faint bg-cream'}`}>
+              {b.temperature} {b.score != null ? b.score : ''}
+            </span>
+          )}
+          {b.days_since_last_contact != null && (
+            <span className="text-ink-faint">{b.days_since_last_contact === 0 ? 'today' : `${b.days_since_last_contact}d ago`}</span>
+          )}
+        </div>
+      </div>
+      <ul className="space-y-2">
+        {b.talking_points.map((p, i) => (
+          <li key={i} className={`text-[12.5px] text-ink leading-snug border-l-2 pl-3 py-1 rounded-r ${TONE_STYLE[p.tone] || TONE_STYLE.info}`}>
+            {p.text}
+          </li>
+        ))}
+      </ul>
+      {b.missing_bltc?.length > 0 && (
+        <p className="text-[11.5px] text-ink-soft mt-3">
+          <strong className="text-ink">Still to learn:</strong> {b.missing_bltc.join(' · ')}
+        </p>
+      )}
+    </section>
+  )
+}
+
 export default function LeadDetail({ leadId, onClose, onOpenConversation, onChanged }) {
   const [refreshKey, setRefreshKey] = useState(0)
   const refresh = () => setRefreshKey((k) => k + 1)
@@ -499,6 +546,8 @@ export default function LeadDetail({ leadId, onClose, onOpenConversation, onChan
             </button>
           </section>
         )}
+
+        {!unassigned && <BriefingPanel leadId={lead.id} refreshKey={refreshKey} />}
 
         {!unassigned && <CrmEditor lead={lead} onSaved={refresh} />}
 

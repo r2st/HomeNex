@@ -70,12 +70,38 @@ import {
   claimDueFestiveSchedules,
   finishFestiveSchedule,
   festiveRecipients,
+  computeLeadDecay,
+  recomputeAgentScores,
+  leadPageViews,
+  worklist,
+  propertyViewAnalytics,
+  listNotifications,
+  unreadNotificationCount,
+  markNotificationRead,
+  markAllNotificationsRead,
+  recordSend,
+  sendsToday,
+  contactSendStats,
+  ensureBulkSendStarted,
+  createGroup,
+  listGroups,
+  getGroup,
+  updateGroup,
+  deleteGroup,
+  groupMembers,
+  addGroupMembers,
+  removeGroupMember,
+  autoGroupContacts,
+  resolveSegment,
 } from './db.js'
 import { paiseToDisplay } from './money.js'
 import { generateReply, extractLead, suggestReplies, aiConfigured } from './ai.js'
 import { emiReplyFor, parseEmiQuery, formatEmiMessage } from './emi.js'
 import { FESTIVALS, getFestival, personalizeGreeting } from './festivals.js'
 import { renderMicroPage } from './micropage.js'
+import { buildBriefing } from './briefing.js'
+import { evaluateSend, warmupDailyCap, SEND_BLOCK_REASONS } from './sendLimiter.js'
+import { runDueJobs } from './scheduler.js'
 import { sendText, markRead, whatsappConfigured } from './whatsapp.js'
 import { signup, login, changePhone, changePassword, requireAuth } from './auth.js'
 import { handleAgentCommand } from './agentCommands.js'
@@ -399,14 +425,34 @@ app.get('/api/leads', ah(async (req, res) =>
 app.get('/api/leads/:id', ah(async (req, res) => {
   const lead = await getAssignableLead(req.params.id, req.agent.id)
   if (!lead) return res.status(404).json({ error: 'not found' })
+  const decay = await computeLeadDecay(lead)
   res.json({
     ...lead,
+    // Fresh decayed scoring, computed live so the label is never "was hot once".
+    effective_score: decay.effectiveScore,
+    effective_temp: decay.temperature,
+    engagement_score: decay.engagementScore,
+    score_factors: decay.factors,
     service_window: serviceWindow(lead),
     messages: await getMessages(lead.id),
     followups: await listFollowups(req.agent.id, { leadId: lead.id }),
     site_visits: await listSiteVisits(req.agent.id, { leadId: lead.id }),
     contact: lead.contact_id ? await getContactDetail(lead.contact_id, req.agent.id).then((c) => c && { ...c, leads: undefined }) : null,
   })
+}))
+
+// Pre-contact briefing: "Before you call" — rule-based talking points (instant,
+// free, no LLM) over data HomeNex already stores. Makes the score auditable.
+app.get('/api/leads/:id/briefing', ah(async (req, res) => {
+  const lead = await getLeadForAgent(req.params.id, req.agent.id)
+  if (!lead) return res.status(404).json({ error: 'not found' })
+  const [messages, siteVisits, decay] = await Promise.all([
+    getMessages(lead.id),
+    listSiteVisits(req.agent.id, { leadId: lead.id }),
+    computeLeadDecay(lead),
+  ])
+  const pageViews = await leadPageViews(lead.id)
+  res.json(buildBriefing({ lead, messages, siteVisits, pageViews, serviceWindow: serviceWindow(lead), decay }))
 }))
 
 // AI-suggested replies for the agent's composer. Tap-to-insert only — the agent
@@ -701,7 +747,13 @@ app.post('/api/properties/:id/send-to-chat', ah(async (req, res) => {
   if (!property) return res.status(404).json({ error: 'property not found' })
   const lead = await getLeadForAgent(lead_id, req.agent.id)
   if (!lead) return res.status(404).json({ error: 'lead not found' })
-  const text = formatPropertyMessage(property)
+  // Attach a lead-tracked micro-page link so a page open becomes a per-lead
+  // engagement signal (the ?l=<leadId> ref is read by the public /p route).
+  const withSlug = await ensurePropertySlug(property.id, req.agent.id)
+  let text = formatPropertyMessage(property)
+  if (withSlug?.micro_page_slug) {
+    text += `\n\n🔗 ${req.protocol}://${req.get('host')}/p/${withSlug.micro_page_slug}?l=${lead.id}`
+  }
   try {
     const waMsgId = await sendText(lead.wa_id, text, req.agent.wa_phone_number_id)
     const msg = await addMessage(lead.id, 'agent', text, waMsgId)
@@ -816,24 +868,59 @@ app.get('/api/templates/festive', ah(async (req, res) =>
 ))
 
 // Deliver one festive greeting blast to an agent's contacts (all non-opted-out).
-async function deliverFestiveGreeting(agent, message) {
-  const recipients = await festiveRecipients(agent.id)
+// Shared bulk sender. Every recipient is gated by the send limiter (sendLimiter.js)
+// before a message goes out — per-contact frequency caps, a warmup-ramped daily cap,
+// opt-out enforcement and a quiet-hours window — because a WhatsApp number blasted
+// at all its contacts at once is exactly what Meta's quality rating punishes.
+// `personalize` optionally rewrites the body per contact (festive greetings do).
+async function sendToRecipients(agent, recipients, message, kind, { personalize = null, enforceWindow = true } = {}) {
+  const startedAt = await ensureBulkSendStarted(agent.id) // stamp warmup anchor on first bulk send
+  const dailyCap = warmupDailyCap(startedAt)
+  let sentCount = await sendsToday(agent.id)
   let sent = 0
   let failed = 0
+  let skipped = 0
+  const skips = {}
   for (const contact of recipients) {
+    const stats = await contactSendStats(agent.id, contact.id ?? null, contact.phone)
+    const verdict = evaluateSend({
+      optInStatus: contact.opt_in_status,
+      lastSentToContactAt: stats.lastSentAt,
+      contactSendsThisMonth: stats.monthCount,
+      sendsToday: sentCount,
+      dailyCap,
+      tz: agent.timezone,
+      quietStart: agent.quiet_hours_start,
+      quietEnd: agent.quiet_hours_end,
+      enforceWindow,
+    })
+    if (!verdict.canSend) {
+      skipped++
+      skips[verdict.reason] = (skips[verdict.reason] || 0) + 1
+      // A cap/window block applies to everyone left too — stop early to save calls.
+      if (verdict.reason === 'daily_cap_reached' || verdict.reason === 'outside_send_window') break
+      continue
+    }
+    const body = personalize ? personalize(contact) : message
     try {
-      await sendText(
-        contact.phone.replace('+', ''),
-        personalizeGreeting(message, { name: contact.name, agent: agent.name }),
-        agent.wa_phone_number_id,
-      )
+      await sendText(contact.phone.replace('+', ''), body, agent.wa_phone_number_id)
+      await recordSend(agent.id, { contact_id: contact.id ?? null, phone: contact.phone, kind })
       sent++
+      sentCount++
     } catch (err) {
       failed++
       if (err.code === 'WA_NOT_CONFIGURED') throw err // no point retrying the rest
     }
   }
-  return { sent, failed, recipients: recipients.length }
+  return { sent, failed, skipped, skips, recipients: recipients.length }
+}
+
+async function deliverFestiveGreeting(agent, message, { enforceWindow = false } = {}) {
+  const recipients = await festiveRecipients(agent.id)
+  return sendToRecipients(agent, recipients, message, 'festive', {
+    enforceWindow,
+    personalize: (contact) => personalizeGreeting(message, { name: contact.name, agent: agent.name }),
+  })
 }
 
 // Send now, or schedule for later (send_at in the future).
@@ -875,6 +962,114 @@ app.delete('/api/templates/festive/:id', ah(async (req, res) => {
 // --- Home dashboard: everything the agent needs to act on right now ---
 app.get('/api/dashboard', ah(async (req, res) => res.json(await dashboard(req.agent.id))))
 
+// --- Prioritised daily worklist: who to act on today, ranked. Rule-based, so it's
+// fast, deterministic and explainable. Scores are recomputed (with decay) first so
+// the ranking is honest — a lead that went quiet has already cooled down.
+app.get('/api/worklist', ah(async (req, res) => {
+  await recomputeAgentScores(req.agent.id)
+  res.json(await worklist(req.agent.id))
+}))
+
+// --- Notification queue (written by the scheduler, read by the Today tab) ---
+app.get('/api/notifications', ah(async (req, res) => {
+  const [items, unread] = await Promise.all([
+    listNotifications(req.agent.id, { unreadOnly: req.query.unread === '1' }),
+    unreadNotificationCount(req.agent.id),
+  ])
+  res.json({ notifications: items, unread })
+}))
+
+app.post('/api/notifications/read-all', ah(async (req, res) =>
+  res.json({ marked: await markAllNotificationsRead(req.agent.id) }),
+))
+
+app.put('/api/notifications/:id/read', ah(async (req, res) => {
+  const n = await markNotificationRead(req.params.id, req.agent.id)
+  if (!n) return res.status(404).json({ error: 'not found or already read' })
+  res.json(n)
+}))
+
+// --- Property view analytics: surfaces property_page_views (written on every
+// micro-page hit, previously read by nothing) — totals, trend, and who's looking.
+app.get('/api/properties/:id/analytics', ah(async (req, res) => {
+  const analytics = await propertyViewAnalytics(req.params.id, req.agent.id)
+  if (!analytics) return res.status(404).json({ error: 'not found' })
+  res.json(analytics)
+}))
+
+// --- Contact groups / segments + gated bulk send ---
+app.get('/api/groups', ah(async (req, res) => res.json(await listGroups(req.agent.id))))
+
+app.post('/api/groups', ah(async (req, res) => {
+  try {
+    const group = await createGroup(req.agent.id, pick(req.body ?? {}, ['name', 'color', 'kind', 'criteria']))
+    res.json(group)
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'a group with that name exists' })
+    res.status(400).json({ error: err.message })
+  }
+}))
+
+app.get('/api/groups/:id/members', ah(async (req, res) => {
+  const members = await groupMembers(req.params.id, req.agent.id)
+  if (members === null) return res.status(404).json({ error: 'not found' })
+  res.json(members)
+}))
+
+app.put('/api/groups/:id', ah(async (req, res) => {
+  const group = await updateGroup(req.params.id, req.agent.id, pick(req.body ?? {}, ['name', 'color', 'criteria']))
+  if (!group) return res.status(404).json({ error: 'not found' })
+  res.json(group)
+}))
+
+app.delete('/api/groups/:id', ah(async (req, res) => {
+  if (!(await deleteGroup(req.params.id, req.agent.id))) return res.status(404).json({ error: 'not found' })
+  res.json({ ok: true })
+}))
+
+app.post('/api/groups/:id/members', ah(async (req, res) => {
+  const ids = Array.isArray(req.body?.contact_ids) ? req.body.contact_ids : []
+  const added = await addGroupMembers(req.params.id, req.agent.id, ids)
+  if (added === null) return res.status(400).json({ error: 'not found or not a static group' })
+  res.json({ added })
+}))
+
+app.delete('/api/groups/:id/members/:contactId', ah(async (req, res) => {
+  if (!(await removeGroupMember(req.params.id, req.agent.id, req.params.contactId)))
+    return res.status(404).json({ error: 'not found' })
+  res.json({ ok: true })
+}))
+
+// One-click auto-grouping by locality / intent / temperature.
+app.post('/api/groups/auto', ah(async (req, res) => {
+  try {
+    res.json(await autoGroupContacts(req.agent.id, req.body?.by))
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+}))
+
+// Preview a dynamic segment without saving it.
+app.post('/api/segments/preview', ah(async (req, res) =>
+  res.json(await resolveSegment(req.agent.id, req.body?.criteria || {})),
+))
+
+// Targeted bulk send to a group, every recipient gated by the send limiter — one
+// relevant template instead of a blast, which is what keeps the quality rating green.
+app.post('/api/groups/:id/send', ah(async (req, res) => {
+  const message = (req.body?.message || '').trim()
+  if (!message) return res.status(400).json({ error: 'message is required' })
+  const recipients = await groupMembers(req.params.id, req.agent.id)
+  if (recipients === null) return res.status(404).json({ error: 'group not found' })
+  try {
+    const result = await sendToRecipients(req.agent, recipients, message, 'marketing', { enforceWindow: false })
+    await logActivity(req.agent.id, null, 'agent', `Group blast to ${result.sent}/${recipients.length} (${result.skipped} skipped by limiter)`)
+    res.json(result)
+  } catch (err) {
+    res.status(err.code === 'WA_NOT_CONFIGURED' ? 503 : 502).json({ error: err.message })
+  }
+}))
+
 // --- Admin API (requires admin privileges; see adminRoutes.js) ---
 app.use('/api/admin', adminRouter)
 
@@ -911,7 +1106,15 @@ app.get('/p/:slug', ah(async (req, res) => {
   if (!property) {
     return res.status(404).send('<!doctype html><meta charset="utf-8"><title>Not found</title><p style="font-family:sans-serif;text-align:center;margin-top:20vh">🏠 This property page is no longer available.</p>')
   }
-  recordPropertyView(property.id, req.get('referer') || null).catch((err) =>
+  // ?l=<leadId> attributes the view to a lead (set on the tracked share link). Only
+  // honour it when that lead belongs to this property's owner — no cross-tenant leak.
+  let leadId = Number(req.query.l)
+  if (!Number.isInteger(leadId) || leadId <= 0) leadId = null
+  else {
+    const owner = await getLeadForAgent(leadId, property.agent_id)
+    if (!owner) leadId = null
+  }
+  recordPropertyView(property.id, req.get('referer') || null, leadId).catch((err) =>
     console.error('page view tracking failed', err),
   )
   res.type('html').send(renderMicroPage(property))
@@ -944,7 +1147,8 @@ export async function deliverDueFestiveSchedules() {
     try {
       const agent = await getAgent(schedule.agent_id)
       const fest = getFestival(schedule.festival_key)
-      const result = await deliverFestiveGreeting(agent, schedule.message)
+      // A scheduled delivery is automated — enforce the quiet-hours/night window.
+      const result = await deliverFestiveGreeting(agent, schedule.message, { enforceWindow: true })
       await finishFestiveSchedule(schedule.id, { sentCount: result.sent })
       await logActivity(agent.id, null, 'agent', `${fest?.name || schedule.festival_key} greeting delivered to ${result.sent} contacts`)
     } catch (err) {
@@ -957,7 +1161,13 @@ export async function deliverDueFestiveSchedules() {
 
 // Start listening only when run directly (`node index.js`), not when imported by tests.
 if (process.env.NODE_ENV !== 'test') {
-  setInterval(() => deliverDueFestiveSchedules().catch((err) => console.error('festive scheduler error', err)), 60_000)
+  // One tick a minute drives every background job: festive delivery plus the
+  // scheduler's due jobs (service-window watch, hot-lead detection, stale-lead
+  // follow-ups, score decay, site-visit reminders, commission sweep).
+  setInterval(() => {
+    deliverDueFestiveSchedules().catch((err) => console.error('festive scheduler error', err))
+    runDueJobs().catch((err) => console.error('scheduler error', err))
+  }, 60_000)
   app.listen(PORT, () => {
     console.log(`HomeNex server on :${PORT}`)
     if (!whatsappConfigured()) console.log('⚠ WhatsApp credentials missing — dashboard works, sends disabled')
