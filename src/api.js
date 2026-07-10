@@ -136,6 +136,9 @@ export const api = {
   createSiteVisit: (body) => post('/api/site-visits', body),
   updateSiteVisit: (id, body) => put(`/api/site-visits/${id}`, body),
   changePhone: (body) => put('/api/agent/phone', body),
+  changePassword: (body) => put('/api/agent/password', body),
+  updateProfile: (body) => put('/api/agent/profile', body),
+  updatePreferences: (body) => put('/api/agent/preferences', body),
   phoneConfig: () => get('/api/agent/phone-config'),
   updatePhoneConfig: (body) =>
     fetch('/api/agent/phone-config', {
@@ -150,14 +153,12 @@ export const api = {
       body: JSON.stringify(body),
     }).then(j),
   // Admin APIs (list endpoint returns { agents, total, page, ... } — unwrap for the panel)
-  adminAgents: () => get('/api/admin/agents').then((r) => (Array.isArray(r) ? r : r.agents)),
+  adminAgents: (filters) => get(`/api/admin/agents${qs(filters)}`).then((r) => (Array.isArray(r) ? r : r.agents)),
   adminDashboard: () => get('/api/admin/dashboard'),
-  adminUpdateWaba: (agentId, body) =>
-    fetch(`/api/admin/agents/${agentId}/waba`, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json', ...authHeaders() },
-      body: JSON.stringify(body),
-    }).then(j),
+  adminAuditLogs: (limit) => get(`/api/admin/audit-logs${qs({ limit })}`),
+  adminSetAdmin: (agentId, isAdmin) => put(`/api/admin/agents/${agentId}/admin`, { is_admin: isAdmin }),
+  adminSetActive: (agentId, isActive) => put(`/api/admin/agents/${agentId}/active`, { is_active: isActive }),
+  adminUpdateWaba: (agentId, body) => put(`/api/admin/agents/${agentId}/waba`, body),
 }
 
 // Poll an endpoint so the dashboard stays live as real messages arrive.

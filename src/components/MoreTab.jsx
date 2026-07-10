@@ -148,7 +148,7 @@ const MENU = [
   { id: 'contacts', icon: '👥', label: 'Contacts', sub: 'Auto-captured from WhatsApp' },
   { id: 'festive', icon: '🪔', label: 'Festive greetings', sub: 'Diwali, Holi, Eid & more — schedule wishes' },
   { id: 'insights', icon: '📊', label: 'Insights', sub: 'Performance and market network' },
-  { id: 'settings', icon: '⚙️', label: 'Settings', sub: 'WhatsApp Business number, account' },
+  { id: 'settings', icon: '⚙️', label: 'Settings', sub: 'Profile, password, preferences, WhatsApp Business' },
 ]
 
 // The "More" tab: follow-ups, site visits, contacts, insights, and settings.
@@ -228,8 +228,8 @@ export default function MoreTab({ agent, onAgentUpdate, onOpenConversation }) {
             <div className="flex items-center gap-3">
               <span className="text-[22px]">🛡️</span>
               <div className="min-w-0 flex-1">
-                <p className="font-bold text-[14.5px] text-ink">Admin panel</p>
-                <p className="text-[12px] text-ink-soft mt-0.5">Agents, WABA registrations</p>
+                <p className="font-bold text-[14.5px] text-ink">Team &amp; admin</p>
+                <p className="text-[12px] text-ink-soft mt-0.5">Agents, admin access, WABA registrations</p>
               </div>
               <span className="text-ink-faint text-lg">→</span>
             </div>

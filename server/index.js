@@ -15,6 +15,8 @@ import {
   findAgentByPhone,
   findAgentByPhoneNumberId,
   updateAgentPhoneConfig,
+  updateAgentProfileSelf,
+  updateAgentPreferences,
   setAgentWaPhone,
   addMessage,
   getMessages,
@@ -75,7 +77,7 @@ import { emiReplyFor, parseEmiQuery, formatEmiMessage } from './emi.js'
 import { FESTIVALS, getFestival, personalizeGreeting } from './festivals.js'
 import { renderMicroPage } from './micropage.js'
 import { sendText, markRead, whatsappConfigured } from './whatsapp.js'
-import { signup, login, changePhone, requireAuth } from './auth.js'
+import { signup, login, changePhone, changePassword, requireAuth } from './auth.js'
 import { handleAgentCommand } from './agentCommands.js'
 import adminRouter from './adminRoutes.js'
 
@@ -272,7 +274,8 @@ app.post('/api/auth/login', ah(async (req, res) => {
   try {
     res.json(await login(req.body ?? {}))
   } catch (err) {
-    res.status(401).json({ error: err.message })
+    // 403, not 401: the credentials were right, the account is suspended.
+    res.status(err.code === 'DEACTIVATED' ? 403 : 401).json({ error: err.message })
   }
 }))
 
@@ -297,6 +300,55 @@ app.put('/api/agent/phone', ah(async (req, res) => {
     res.json(agent)
   } catch (err) {
     res.status(PHONE_ERROR_STATUS[err.code] ?? 400).json({ error: err.message })
+  }
+}))
+
+// Agent changes their own password. Requires the current password.
+const PASSWORD_ERROR_STATUS = { BAD_PASSWORD: 403, WEAK_PASSWORD: 400, SAME_PASSWORD: 400, NOT_FOUND: 404 }
+app.put('/api/agent/password', ah(async (req, res) => {
+  const { current_password, new_password } = req.body ?? {}
+  try {
+    const agent = await changePassword(req.agent.id, { current_password, new_password })
+    await logAudit(agent.id, 'agent', agent.id, 'password_changed', {})
+    res.json(agent)
+  } catch (err) {
+    res.status(PASSWORD_ERROR_STATUS[err.code] ?? 400).json({ error: err.message })
+  }
+}))
+
+// Agent edits their own profile. Phone lives on PUT /api/agent/phone (password-gated).
+const PROFILE_FIELDS = ['name', 'email', 'business_name', 'city', 'bio', 'rera_id', 'avatar_url']
+const PROFILE_ERROR_STATUS = { EMAIL_TAKEN: 409, NOT_FOUND: 404 }
+app.put('/api/agent/profile', ah(async (req, res) => {
+  const fields = pick(req.body ?? {}, PROFILE_FIELDS)
+  try {
+    const agent = await updateAgentProfileSelf(req.agent.id, fields)
+    // The photo is a data: URI — log which fields moved, never their contents.
+    await logAudit(agent.id, 'agent', agent.id, 'profile_updated', { fields: Object.keys(fields) })
+    res.json(agent)
+  } catch (err) {
+    res.status(PROFILE_ERROR_STATUS[err.code] ?? 400).json({ error: err.message })
+  }
+}))
+
+// Locale and notification preferences.
+const PREFERENCE_FIELDS = [
+  'timezone',
+  'language',
+  'notify_new_lead',
+  'notify_followup_due',
+  'notify_daily_digest',
+  'quiet_hours_start',
+  'quiet_hours_end',
+]
+app.put('/api/agent/preferences', ah(async (req, res) => {
+  const fields = pick(req.body ?? {}, PREFERENCE_FIELDS)
+  try {
+    const agent = await updateAgentPreferences(req.agent.id, fields)
+    await logAudit(agent.id, 'agent', agent.id, 'preferences_updated', fields)
+    res.json(agent)
+  } catch (err) {
+    res.status(err.code === 'NOT_FOUND' ? 404 : 400).json({ error: err.message })
   }
 }))
 

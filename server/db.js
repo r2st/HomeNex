@@ -115,7 +115,10 @@ export function normalizeIndianMobile(raw) {
 const phoneDigits = (raw) => String(raw || '').replace(/\D/g, '')
 
 const AGENT_COLS =
-  'id, name, phone, email, wa_phone_number_id, wa_phone_number, waba_status, waba_registered_at, meta_waba_id, is_admin, created_at'
+  'id, name, phone, email, business_name, city, bio, rera_id, avatar_url, ' +
+  'timezone, language, notify_new_lead, notify_followup_due, notify_daily_digest, ' +
+  'quiet_hours_start, quiet_hours_end, is_active, deactivated_at, ' +
+  'wa_phone_number_id, wa_phone_number, waba_status, waba_registered_at, meta_waba_id, is_admin, created_at'
 
 export async function createAgent(name, phone, email, passwordHash, waPhoneNumber = null) {
   const pn = waPhoneNumber ? normalizePhone(waPhoneNumber) : null
@@ -198,15 +201,22 @@ export async function setAgentWaPhone(agentId, waPhoneNumber) {
 // Find the agent who owns a specific Meta phone_number_id. Used for inbound webhook routing:
 // when a message arrives on a specific WhatsApp Business line, route it to the agent who owns it.
 // Only returns agents whose WABA status is 'active' — pending/registered numbers aren't live yet.
+// Deactivated agents are never matched: their line must stop capturing leads.
 export async function findAgentByPhoneNumberId(phoneNumberId) {
   if (!phoneNumberId) return null
   // First try active WABA agents (the main production path).
   const active = (
-    await q(`SELECT * FROM agents WHERE wa_phone_number_id = $1 AND waba_status = 'active'`, [phoneNumberId])
+    await q(
+      `SELECT * FROM agents WHERE wa_phone_number_id = $1 AND waba_status = 'active' AND is_active = 1`,
+      [phoneNumberId],
+    )
   ).rows[0]
   if (active) return active
   // Fallback: agents who manually configured phone_number_id (pre-WABA flow, backward compat).
-  return (await q('SELECT * FROM agents WHERE wa_phone_number_id = $1', [phoneNumberId])).rows[0] || null
+  return (
+    (await q('SELECT * FROM agents WHERE wa_phone_number_id = $1 AND is_active = 1', [phoneNumberId])).rows[0] ||
+    null
+  )
 }
 
 // --- Contacts: the agent's known clients on the shared WhatsApp number ---
@@ -645,14 +655,16 @@ export async function listAllAgents() {
   ).rows
 }
 
-// Auto-promote the first agent to admin if no admins exist (lazy, on first admin-route hit).
+// Auto-promote the first agent to admin if no admin can log in (lazy, on first
+// admin-route hit). "Can log in" means active: an install whose only admin was
+// deactivated would otherwise have no way back into the admin screens.
 export async function ensureAdminExists() {
-  const hasAdmin = (await q('SELECT 1 FROM agents WHERE is_admin = 1 LIMIT 1')).rows[0]
+  const hasAdmin = (await q('SELECT 1 FROM agents WHERE is_admin = 1 AND is_active = 1 LIMIT 1')).rows[0]
   if (!hasAdmin) {
-    const first = (await q('SELECT id FROM agents ORDER BY id LIMIT 1')).rows[0]
+    const first = (await q('SELECT id FROM agents WHERE is_active = 1 ORDER BY id LIMIT 1')).rows[0]
     if (first) {
       await q('UPDATE agents SET is_admin = 1 WHERE id = $1', [first.id])
-      console.log(`Auto-promoted agent #${first.id} to admin (first agent)`)
+      console.log(`Auto-promoted agent #${first.id} to admin (first active agent)`)
     }
   }
 }
@@ -718,7 +730,7 @@ totalAgents: await one('SELECT COUNT(*) FROM agents'),
 
 // Paginated, searchable agent listing for the admin site.
 // search matches name/email/phone (substring); status filters on waba_status.
-export async function listAgentsAdmin({ search = '', status = '', page = 1, pageSize = 20 } = {}) {
+export async function listAgentsAdmin({ search = '', status = '', active = '', page = 1, pageSize = 20 } = {}) {
   const where = []
   const params = []
   if (search) {
@@ -730,12 +742,18 @@ export async function listAgentsAdmin({ search = '', status = '', page = 1, page
     params.push(status)
     where.push(`a.waba_status = $${params.length}`)
   }
+  if (active === '1' || active === '0' || active === 0 || active === 1) {
+    params.push(Number(active))
+    where.push(`a.is_active = $${params.length}`)
+  }
   const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : ''
   const total = (await q(`SELECT COUNT(*) AS n FROM agents a ${whereSql}`, params)).rows[0].n
   const size = Math.min(Math.max(1, Number(pageSize) || 20), 100)
   const p = Math.max(1, Number(page) || 1)
   const { rows: agents } = await q(
-    `SELECT a.id, a.name, a.phone, a.email, a.wa_phone_number, a.wa_phone_number_id,
+    `SELECT a.id, a.name, a.phone, a.email, a.business_name, a.city, a.avatar_url,
+            a.is_active, a.deactivated_at,
+            a.wa_phone_number, a.wa_phone_number_id,
             a.waba_status, a.waba_registered_at, a.meta_waba_id, a.is_admin, a.created_at,
             (SELECT MAX(created_at) FROM activity WHERE agent_id = a.id) AS last_active,
             (SELECT COUNT(*) FROM leads l WHERE l.agent_id = a.id) AS lead_count
@@ -861,16 +879,237 @@ export async function updateAgentPhone(agentId, rawPhone) {
   return getAgent(agentId)
 }
 
-// Make an agent an admin (or revoke).
+// Make an agent an admin (or revoke). Unguarded — for tests and bootstrapping.
+// Admin-facing changes go through setAgentAdmin(), which keeps one admin alive.
 export async function setAdmin(agentId, isAdmin) {
   await q('UPDATE agents SET is_admin = $1 WHERE id = $2', [isAdmin ? 1 : 0, agentId])
   return getAgent(agentId)
 }
 
-// Dashboard stats. Day boundaries use Asia/Kolkata — HomeNex targets Indian agents.
+// --- Agent self-service profile, preferences and password ---
+
+const fail = (message, code = 'INVALID') => {
+  const err = new Error(message)
+  err.code = code
+  throw err
+}
+
+// Languages HomeNex ships UI copy and AI prompts for.
+export const LANGUAGES = ['en', 'hi', 'mr', 'ta', 'te', 'kn', 'gu', 'bn', 'pa', 'ml', 'or']
+
+// A timezone is valid if the ICU database the runtime ships knows it.
+export function isValidTimezone(tz) {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz })
+    return true
+  } catch {
+    return false
+  }
+}
+
+// A profile photo is either an https URL or an inline data: image the browser
+// produced by downscaling the file the agent picked. The cap keeps a base64
+// payload roughly under 220 KB of source image, which is ample for a 256px avatar.
+const AVATAR_MAX_CHARS = 300_000
+export function normalizeAvatar(raw) {
+  const v = String(raw ?? '').trim()
+  if (!v) return null
+  if (v.length > AVATAR_MAX_CHARS) fail('Profile photo is too large — pick an image under 200 KB')
+  if (/^https:\/\/[^\s"'<>]+$/i.test(v)) return v
+  if (/^data:image\/(png|jpeg|jpg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(v)) return v
+  fail('Profile photo must be an https URL or an uploaded PNG, JPEG or WebP image')
+}
+
+// Free-text profile fields: trimmed, length-capped, and stored as NULL when blank.
+const PROFILE_TEXT = {
+  business_name: { max: 120, label: 'Business name' },
+  city: { max: 80, label: 'City' },
+  bio: { max: 500, label: 'About you' },
+  rera_id: { max: 64, label: 'RERA registration ID' },
+}
+
+// The agent edits their own profile. The phone number is deliberately absent —
+// it is the login identity and changes through updateAgentPhone() with a password.
+export async function updateAgentProfileSelf(agentId, fields = {}) {
+  const agent = await getAgent(agentId)
+  if (!agent) fail('Agent not found', 'NOT_FOUND')
+
+  const updates = []
+  const params = []
+  const set = (col, value) => {
+    params.push(value)
+    updates.push(`${col} = $${params.length}`)
+  }
+
+  if (fields.name !== undefined) {
+    const name = String(fields.name ?? '').trim()
+    if (!name) fail('Name cannot be empty')
+    if (name.length > 80) fail('Name is too long (max 80 characters)')
+    set('name', name)
+  }
+
+  if (fields.email !== undefined) {
+    const email = String(fields.email ?? '').trim().toLowerCase() || null
+    if (email && !/^\S+@\S+\.\S+$/.test(email)) fail('Enter a valid email address')
+    if (email) {
+      const clash = (await q('SELECT id FROM agents WHERE email = $1 AND id != $2', [email, agentId])).rows[0]
+      if (clash) fail('Another agent already uses this email', 'EMAIL_TAKEN')
+    }
+    set('email', email)
+  }
+
+  for (const [col, { max, label }] of Object.entries(PROFILE_TEXT)) {
+    if (fields[col] === undefined) continue
+    const value = String(fields[col] ?? '').trim() || null
+    if (value && value.length > max) fail(`${label} is too long (max ${max} characters)`)
+    set(col, value)
+  }
+
+  if (fields.avatar_url !== undefined) set('avatar_url', normalizeAvatar(fields.avatar_url))
+
+  if (!updates.length) return agent
+  params.push(agentId)
+  await q(`UPDATE agents SET ${updates.join(', ')} WHERE id = $${params.length}`, params)
+  return getAgent(agentId)
+}
+
+const NOTIFY_FLAGS = ['notify_new_lead', 'notify_followup_due', 'notify_daily_digest']
+
+// Locale and notification preferences. Quiet hours are a pair: both ends move
+// together, so a caller that sends only one end is merged against what is stored.
+export async function updateAgentPreferences(agentId, fields = {}) {
+  const agent = await getAgent(agentId)
+  if (!agent) fail('Agent not found', 'NOT_FOUND')
+
+  const updates = []
+  const params = []
+  const set = (col, value) => {
+    params.push(value)
+    updates.push(`${col} = $${params.length}`)
+  }
+
+  if (fields.timezone !== undefined) {
+    const tz = String(fields.timezone ?? '').trim()
+    if (!tz || !isValidTimezone(tz)) fail('Unknown timezone')
+    set('timezone', tz)
+  }
+
+  if (fields.language !== undefined) {
+    const lang = String(fields.language ?? '').trim().toLowerCase()
+    if (!LANGUAGES.includes(lang)) fail(`Unsupported language: ${fields.language}`)
+    set('language', lang)
+  }
+
+  for (const flag of NOTIFY_FLAGS) {
+    if (fields[flag] === undefined) continue
+    set(flag, fields[flag] ? 1 : 0)
+  }
+
+  if (fields.quiet_hours_start !== undefined || fields.quiet_hours_end !== undefined) {
+    const hour = (value, label) => {
+      if (value === null || value === undefined || value === '') return null
+      const n = Number(value)
+      if (!Number.isInteger(n) || n < 0 || n > 23) fail(`${label} must be a whole hour between 0 and 23`)
+      return n
+    }
+    const start = fields.quiet_hours_start !== undefined
+      ? hour(fields.quiet_hours_start, 'Quiet hours start')
+      : agent.quiet_hours_start
+    const end = fields.quiet_hours_end !== undefined
+      ? hour(fields.quiet_hours_end, 'Quiet hours end')
+      : agent.quiet_hours_end
+
+    if ((start === null) !== (end === null)) fail('Set both a start and an end for quiet hours')
+    if (start !== null && start === end) fail('Quiet hours cannot start and end at the same hour')
+    set('quiet_hours_start', start)
+    set('quiet_hours_end', end)
+  }
+
+  if (!updates.length) return agent
+  params.push(agentId)
+  await q(`UPDATE agents SET ${updates.join(', ')} WHERE id = $${params.length}`, params)
+  return getAgent(agentId)
+}
+
+export async function updateAgentPassword(agentId, passwordHash) {
+  const { rowCount } = await q('UPDATE agents SET password_hash = $1 WHERE id = $2', [passwordHash, agentId])
+  if (!rowCount) fail('Agent not found', 'NOT_FOUND')
+  return getAgent(agentId)
+}
+
+// --- Admin: team management ---
+
+// Admins who can still log in. Guards below use this to keep at least one.
+export async function countActiveAdmins() {
+  return (await q('SELECT COUNT(*) AS n FROM agents WHERE is_admin = 1 AND is_active = 1')).rows[0].n
+}
+
+// Grant or revoke admin. An admin cannot revoke their own access (ask another
+// admin) and the last remaining admin can never be revoked — either would leave
+// the install with no way back into the admin screens.
+export async function setAgentAdmin(actorId, targetId, isAdmin) {
+  const target = await getAgent(targetId)
+  if (!target) fail('Agent not found', 'NOT_FOUND')
+  const next = isAdmin ? 1 : 0
+  if (target.is_admin === next) return target
+  if (!next) {
+    if (Number(actorId) === Number(targetId))
+      fail('You cannot remove your own admin access — ask another admin to do it', 'SELF_DEMOTE')
+    // Only an *active* admin counts toward the invariant, so demoting an already
+    // deactivated admin is always safe.
+    if (target.is_active === 1 && (await countActiveAdmins()) <= 1)
+      fail('At least one admin must remain', 'LAST_ADMIN')
+  }
+  if (next && target.is_active === 0)
+    fail('Reactivate this agent before making them an admin', 'AGENT_INACTIVE')
+  await q('UPDATE agents SET is_admin = $1 WHERE id = $2', [next, targetId])
+  return getAgent(targetId)
+}
+
+// Suspend or restore an agent. Deactivation revokes their sessions (verifyToken
+// rejects them) and blocks login, but keeps every lead, contact and message.
+export async function setAgentActive(actorId, targetId, isActive) {
+  const target = await getAgent(targetId)
+  if (!target) fail('Agent not found', 'NOT_FOUND')
+  const next = isActive ? 1 : 0
+  if (target.is_active === next) return target
+  if (!next) {
+    if (Number(actorId) === Number(targetId))
+      fail('You cannot deactivate your own account', 'SELF_DEACTIVATE')
+    if (target.is_admin === 1 && (await countActiveAdmins()) <= 1)
+      fail('At least one active admin must remain', 'LAST_ADMIN')
+  }
+  await q(
+    `UPDATE agents SET is_active = $1, deactivated_at = ${next ? 'NULL' : 'now()'} WHERE id = $2`,
+    [next, targetId],
+  )
+  return getAgent(targetId)
+}
+
+// Platform-wide audit trail for the admin screens (per-agent view is listAuditLogs).
+export async function listAllAuditLogs(limit = 100) {
+  const size = Math.min(Math.max(1, Number(limit) || 100), 500)
+  return (
+    await q(
+      `SELECT al.*, a.name AS agent_name
+       FROM audit_logs al LEFT JOIN agents a ON a.id = al.agent_id
+       ORDER BY al.id DESC LIMIT $1`,
+      [size],
+    )
+  ).rows
+}
+
+// Day boundaries ("new today", "due today") follow the agent's own timezone
+// preference, defaulting to Asia/Kolkata — HomeNex targets Indian agents.
 const TZ = process.env.APP_TIMEZONE || 'Asia/Kolkata'
 
+export async function agentTimezone(agentId) {
+  const tz = (await q('SELECT timezone FROM agents WHERE id = $1', [agentId])).rows[0]?.timezone
+  return tz && isValidTimezone(tz) ? tz : TZ
+}
+
 export async function stats(agentId) {
+  const TZ = await agentTimezone(agentId)
   const one = async (sql, params) => Object.values((await q(sql, params)).rows[0])[0]
   // Messages are scoped to the agent's leads.
   const myMessages = 'lead_id IN (SELECT id FROM leads WHERE agent_id = $1)'
@@ -1265,7 +1504,7 @@ export async function listSiteVisits(agentId, { leadId = null, status = '', toda
     where.push(`v.status = $${params.length}`)
   }
   if (today) {
-    params.push(TZ)
+    params.push(await agentTimezone(agentId))
     where.push(`(v.scheduled_at AT TIME ZONE $${params.length})::date = (now() AT TIME ZONE $${params.length})::date`)
   }
   const { rows } = await q(
@@ -1325,7 +1564,7 @@ export async function listFollowups(agentId, { pendingOnly = false, leadId = nul
   }
   if (today) {
     // "Today" includes anything overdue — an agent must see slipped follow-ups too.
-    params.push(TZ)
+    params.push(await agentTimezone(agentId))
     where.push(`(f.due_at AT TIME ZONE $${params.length})::date <= (now() AT TIME ZONE $${params.length})::date`)
   }
   const { rows } = await q(

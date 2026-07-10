@@ -8,8 +8,12 @@ import {
   getMeta,
   normalizePhone,
   setMeta,
+  updateAgentPassword,
   updateAgentPhone,
 } from './db.js'
+
+export const MIN_PASSWORD_LENGTH = 6
+const DEACTIVATED_MESSAGE = 'This account has been deactivated. Contact your admin.'
 
 // Session secret: env override, else generated once and persisted so restarts keep sessions.
 // Resolved lazily (and cached) because reading it from the meta table is async now.
@@ -59,7 +63,12 @@ export async function verifyToken(token) {
   } catch {
     return null
   }
-  return (await getAgent(Number(id))) || null
+  const agent = await getAgent(Number(id))
+  // A deactivated agent's existing sessions stop working immediately: the token is
+  // an HMAC of the agent id with no server-side session to revoke, so this check
+  // is what makes deactivation take effect for anyone already logged in.
+  if (!agent || agent.is_active !== 1) return null
+  return agent
 }
 
 export async function signup({ name, phone, email, password, wa_phone_number }) {
@@ -72,7 +81,8 @@ export async function signup({ name, phone, email, password, wa_phone_number }) 
   const digits = normalizePhone(phone).replace(/\D/g, '')
   if (digits.length < 10) throw new Error('Enter a valid WhatsApp number')
   if (email && !/^\S+@\S+\.\S+$/.test(email)) throw new Error('Enter a valid email address')
-  if (password.length < 6) throw new Error('Password must be at least 6 characters')
+  if (password.length < MIN_PASSWORD_LENGTH)
+    throw new Error(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`)
   // WABA number must differ from the agent's personal WhatsApp number.
   if (waPhone) {
     const normalizedWa = normalizePhone(waPhone)
@@ -95,6 +105,13 @@ export async function login({ phone, email, password }) {
   if (!row || !verifyPassword(password || '', row.password_hash)) {
     throw new Error('Wrong WhatsApp number or password')
   }
+  // Checked after the password so a deactivated account can't be discovered by
+  // anyone who doesn't already hold its credentials.
+  if (row.is_active !== 1) {
+    const err = new Error(DEACTIVATED_MESSAGE)
+    err.code = 'DEACTIVATED'
+    throw err
+  }
   const agent = await getAgent(row.id)
   return { token: await issueToken(agent.id), agent }
 }
@@ -111,6 +128,31 @@ export async function changePhone(agentId, { phone, password } = {}) {
     throw err
   }
   return updateAgentPhone(agentId, phone)
+}
+
+// Change the logged-in agent's own password. The current password is required —
+// a stolen session alone must not be enough to lock the real agent out.
+// The session token is an HMAC of the agent id, so it survives the change and the
+// agent stays logged in here; sessions on other devices also keep working.
+export async function changePassword(agentId, { current_password, new_password } = {}) {
+  const hash = await getAgentPasswordHash(agentId)
+  if (!hash || !verifyPassword(current_password || '', hash)) {
+    const err = new Error('Wrong password')
+    err.code = 'BAD_PASSWORD'
+    throw err
+  }
+  const next = String(new_password ?? '')
+  if (next.length < MIN_PASSWORD_LENGTH) {
+    const err = new Error(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`)
+    err.code = 'WEAK_PASSWORD'
+    throw err
+  }
+  if (verifyPassword(next, hash)) {
+    const err = new Error('New password must be different from your current password')
+    err.code = 'SAME_PASSWORD'
+    throw err
+  }
+  return updateAgentPassword(agentId, hashPassword(next))
 }
 
 // Express middleware for the dashboard API.

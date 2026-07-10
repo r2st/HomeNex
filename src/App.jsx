@@ -107,7 +107,9 @@ export default function App() {
         {tab === 'more' && (
           <MoreTab agent={agent} onAgentUpdate={setAgent} onOpenConversation={openConversation} />
         )}
-        {tab === 'admin' && agent?.is_admin === 1 && <AdminPanel onBack={() => setTab('more')} />}
+        {tab === 'admin' && agent?.is_admin === 1 && (
+          <AdminPanel agent={agent} onBack={() => setTab('more')} />
+        )}
       </main>
 
       {detailLeadId && (
