@@ -55,6 +55,21 @@ export const api = {
       headers: { 'content-type': 'application/json', ...authHeaders() },
       body: JSON.stringify(body),
     }).then(j),
+  updateWaPhone: (body) =>
+    fetch('/api/agent/wa-phone', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(body),
+    }).then(j),
+  // Admin APIs
+  adminAgents: () => get('/api/admin/agents'),
+  adminDashboard: () => get('/api/admin/dashboard'),
+  adminUpdateWaba: (agentId, body) =>
+    fetch(`/api/admin/agents/${agentId}/waba`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(body),
+    }).then(j),
 }
 
 // Poll an endpoint so the dashboard stays live as real messages arrive.

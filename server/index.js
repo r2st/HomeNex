@@ -3,7 +3,7 @@ import express from 'express'
 import crypto from 'node:crypto'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import {
+import db, {
   upsertLead,
   upsertUnassignedLead,
   assignLead,
@@ -31,6 +31,11 @@ import {
   addContact,
   bulkAddContacts,
   deleteContact,
+  normalizePhone,
+  listAllAgents,
+  updateWabaStatus,
+  adminStats,
+  countAgents,
 } from './db.js'
 import { generateReply, extractLead, aiConfigured } from './ai.js'
 import { sendText, markRead, whatsappConfigured } from './whatsapp.js'
@@ -154,7 +159,10 @@ app.post('/webhook', (req, res) => {
           // Per-agent line: if this number belongs to a specific agent, route directly
           // to them. The sender is auto-remembered as a contact for future reference.
           if (lineOwner) {
-            try { addContact(lineOwner.id, msg.from, waProfileName || msg.from) } catch { /* already exists */ }
+            try {
+              addContact(lineOwner.id, msg.from, waProfileName || msg.from)
+              logActivity(lineOwner.id, null, 'lead', `Auto-added client: ${waProfileName || msg.from} (${msg.from})`)
+            } catch { /* already exists */ }
             await handleInbound({
               agentId: lineOwner.id,
               brokerName: lineOwner.name,
@@ -235,6 +243,30 @@ app.put('/api/agent/phone-config', (req, res) => {
     res.json(agent)
   } catch (err) {
     res.status(err.code === 'PHONE_ID_TAKEN' ? 409 : 400).json({ error: err.message })
+  }
+})
+
+// Agent sets/updates their WA Business phone number (for WABA registration).
+app.put('/api/agent/wa-phone', (req, res) => {
+  const { wa_phone_number } = req.body ?? {}
+  if (!wa_phone_number) return res.status(400).json({ error: 'wa_phone_number is required' })
+  try {
+    const norm = normalizePhone(wa_phone_number)
+    if (norm.replace(/\D/g, '').length < 10) return res.status(400).json({ error: 'Enter a valid phone number' })
+    // Must differ from personal number
+    if (norm === req.agent.phone) {
+      return res.status(400).json({ error: 'Your WhatsApp Business number must be different from your personal WhatsApp number' })
+    }
+    const current = getAgent(req.agent.id)
+    const isNew = !current.wa_phone_number
+    db.prepare('UPDATE agents SET wa_phone_number = ?, waba_status = CASE WHEN waba_status = ? THEN ? ELSE waba_status END WHERE id = ?')
+      .run(norm, 'none', 'pending', req.agent.id)
+    if (isNew) {
+      db.prepare("UPDATE agents SET waba_status = 'pending' WHERE id = ?").run(req.agent.id)
+    }
+    res.json(getAgent(req.agent.id))
+  } catch (err) {
+    res.status(400).json({ error: err.message })
   }
 })
 
@@ -327,6 +359,68 @@ app.post('/api/network', (req, res) => {
   if (!p.type || !p.broker || !p.text) return res.status(400).json({ error: 'type, broker, text required' })
   if (!['INVENTORY', 'REQUIREMENT'].includes(p.type)) return res.status(400).json({ error: 'bad type' })
   res.json(addNetworkPost(p))
+})
+
+// --- Admin API (requires admin privileges) ---
+function requireAdmin(req, res, next) {
+  if (!req.agent || req.agent.is_admin !== 1) {
+    return res.status(403).json({ error: 'Admin access required' })
+  }
+  next()
+}
+
+// Auto-promote first agent to admin if no admins exist.
+// (Called lazily on first admin-route hit.)
+function ensureAdminExists() {
+  const hasAdmin = db.prepare('SELECT 1 FROM agents WHERE is_admin = 1 LIMIT 1').get()
+  if (!hasAdmin) {
+    const first = db.prepare('SELECT id FROM agents ORDER BY id LIMIT 1').get()
+    if (first) {
+      db.prepare('UPDATE agents SET is_admin = 1 WHERE id = ?').run(first.id)
+      console.log(`Auto-promoted agent #${first.id} to admin (first agent)`)
+    }
+  }
+}
+
+app.get('/api/admin/dashboard', (req, res) => {
+  ensureAdminExists()
+  if (req.agent.is_admin !== 1) {
+    // Re-check after auto-promote
+    const fresh = getAgent(req.agent.id)
+    if (fresh.is_admin !== 1) return res.status(403).json({ error: 'Admin access required' })
+    req.agent = fresh
+  }
+  res.json(adminStats())
+})
+
+app.get('/api/admin/agents', (req, res) => {
+  ensureAdminExists()
+  if (req.agent.is_admin !== 1) {
+    const fresh = getAgent(req.agent.id)
+    if (fresh.is_admin !== 1) return res.status(403).json({ error: 'Admin access required' })
+  }
+  res.json(listAllAgents())
+})
+
+app.put('/api/admin/agents/:id/waba', (req, res) => {
+  ensureAdminExists()
+  if (req.agent.is_admin !== 1) {
+    const fresh = getAgent(req.agent.id)
+    if (fresh.is_admin !== 1) return res.status(403).json({ error: 'Admin access required' })
+  }
+  const { status, meta_waba_id, wa_phone_number_id, wa_phone_number } = req.body ?? {}
+  if (!status) return res.status(400).json({ error: 'status is required' })
+  try {
+    const updated = updateWabaStatus(Number(req.params.id), {
+      status,
+      metaWabaId: meta_waba_id,
+      waPhoneNumberId: wa_phone_number_id,
+      waPhoneNumber: wa_phone_number,
+    })
+    res.json(updated)
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
 })
 
 // Dev/test endpoint: pushes a message through the SAME real pipeline (DB + AI),

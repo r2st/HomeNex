@@ -4,6 +4,8 @@ import LeadsTab from './components/LeadsTab.jsx'
 import InboxTab from './components/InboxTab.jsx'
 import ClientsTab from './components/ClientsTab.jsx'
 import InsightsTab from './components/InsightsTab.jsx'
+import SettingsTab from './components/SettingsTab.jsx'
+import AdminPanel from './components/AdminPanel.jsx'
 import BottomNav from './components/BottomNav.jsx'
 import AuthScreen from './components/AuthScreen.jsx'
 import { api, getToken, setToken } from './api.js'
@@ -22,6 +24,13 @@ export default function App() {
     const onLogout = () => setAgent(null)
     window.addEventListener('homenex-logout', onLogout)
     return () => window.removeEventListener('homenex-logout', onLogout)
+  }, [])
+
+  // Listen for internal navigation events (e.g. settings -> admin)
+  useEffect(() => {
+    const onNav = (e) => setTab(e.detail)
+    window.addEventListener('homenex-navigate', onNav)
+    return () => window.removeEventListener('homenex-navigate', onNav)
   }, [])
 
   const signOut = () => {
@@ -62,9 +71,11 @@ export default function App() {
         {tab === 'inbox' && <InboxTab leadId={inboxLeadId} onSelectLead={setInboxLeadId} />}
         {tab === 'clients' && <ClientsTab />}
         {tab === 'insights' && <InsightsTab />}
+        {tab === 'settings' && <SettingsTab agent={agent} onAgentUpdate={setAgent} />}
+        {tab === 'admin' && agent?.is_admin === 1 && <AdminPanel onBack={() => setTab('settings')} />}
       </main>
 
-      <BottomNav tab={tab} setTab={setTab} />
+      {tab !== 'admin' && <BottomNav tab={tab} setTab={setTab} />}
     </div>
   )
 }

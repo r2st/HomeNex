@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 
 // Isolate a throwaway DB and keep AI/WhatsApp inert before importing anything.
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const DB_FILE = `test-agentcmd-${process.pid}.db`
+const DB_FILE = `/tmp/test-agentcmd-${process.pid}.db`
 process.env.NODE_ENV = 'test'
 process.env.DB_FILE = DB_FILE
 delete process.env.OPENROUTER_API_KEY
@@ -29,8 +29,8 @@ before(() => {
 })
 
 after(() => {
-  for (const suffix of ['', '-wal', '-shm']) {
-    fs.rmSync(path.join(__dirname, '..', DB_FILE + suffix), { force: true })
+  for (const suffix of ['', '-wal', '-shm', '-journal']) {
+    fs.rmSync(DB_FILE + suffix, { force: true })
   }
 })
 

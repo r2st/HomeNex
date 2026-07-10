@@ -52,20 +52,29 @@ export function verifyToken(token) {
   return getAgent(Number(id)) || null
 }
 
-export function signup({ name, phone, email, password }) {
+export function signup({ name, phone, email, password, wa_phone_number }) {
   name = (name || '').trim()
   phone = (phone || '').trim()
   email = (email || '').trim().toLowerCase() // optional
+  const waPhone = (wa_phone_number || '').trim() || null // optional WABA number
   if (!name || !phone || !password) throw new Error('Name, WhatsApp number and password are required')
   // A valid WhatsApp number is at least 10 digits (Indian mobile) once normalized.
   const digits = normalizePhone(phone).replace(/\D/g, '')
   if (digits.length < 10) throw new Error('Enter a valid WhatsApp number')
   if (email && !/^\S+@\S+\.\S+$/.test(email)) throw new Error('Enter a valid email address')
   if (password.length < 6) throw new Error('Password must be at least 6 characters')
+  // WABA number must differ from the agent's personal WhatsApp number.
+  if (waPhone) {
+    const normalizedWa = normalizePhone(waPhone)
+    const normalizedPersonal = normalizePhone(phone)
+    if (normalizedWa === normalizedPersonal) {
+      throw new Error('Your WhatsApp Business number must be different from your personal WhatsApp number')
+    }
+  }
   if (findAgentByPhone(phone))
     throw new Error('An account with this WhatsApp number already exists — log in instead')
   if (email && findAgentByEmail(email)) throw new Error('An account with this email already exists — log in instead')
-  const agent = createAgent(name, phone, email || null, hashPassword(password))
+  const agent = createAgent(name, phone, email || null, hashPassword(password), waPhone)
   return { token: issueToken(agent.id), agent }
 }
 

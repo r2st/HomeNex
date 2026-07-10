@@ -3,7 +3,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const db = new DatabaseSync(path.join(__dirname, process.env.DB_FILE || 'homenex.db'))
+const dbFile = process.env.DB_FILE || 'homenex.db'
+const db = new DatabaseSync(path.isAbsolute(dbFile) ? dbFile : path.join(__dirname, dbFile))
 db.exec('PRAGMA journal_mode = WAL')
 
 db.exec(`
@@ -64,6 +65,10 @@ CREATE TABLE IF NOT EXISTS agents (
   password_hash TEXT NOT NULL,
   wa_phone_number_id TEXT,           -- Meta phone_number_id for the agent's own WhatsApp Business line
   wa_phone_number TEXT,              -- display phone number for the agent's WA Business line, E.164
+  waba_status TEXT DEFAULT 'none',   -- none | pending | registered | active
+  waba_registered_at TEXT,           -- datetime when WABA registration completed
+  meta_waba_id TEXT,                 -- Meta WABA (WhatsApp Business Account) ID
+  is_admin INTEGER DEFAULT 0,        -- 1 = admin user
   created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -190,6 +195,28 @@ CREATE TABLE IF NOT EXISTS network_posts (
   }
 }
 
+// Migration: add WABA registration fields to agents.
+{
+  const cols = db.prepare('PRAGMA table_info(agents)').all()
+  const colNames = cols.map((c) => c.name)
+  if (!colNames.includes('waba_status')) {
+    db.exec("ALTER TABLE agents ADD COLUMN waba_status TEXT DEFAULT 'none'")
+    console.log('migrated agents: added waba_status column')
+  }
+  if (!colNames.includes('waba_registered_at')) {
+    db.exec('ALTER TABLE agents ADD COLUMN waba_registered_at TEXT')
+    console.log('migrated agents: added waba_registered_at column')
+  }
+  if (!colNames.includes('meta_waba_id')) {
+    db.exec('ALTER TABLE agents ADD COLUMN meta_waba_id TEXT')
+    console.log('migrated agents: added meta_waba_id column')
+  }
+  if (!colNames.includes('is_admin')) {
+    db.exec('ALTER TABLE agents ADD COLUMN is_admin INTEGER DEFAULT 0')
+    console.log('migrated agents: added is_admin column')
+  }
+}
+
 // Canonical storage form for a WhatsApp number: leading "+" and digits only.
 // A bare 10-digit Indian number is assumed to be +91.
 export function normalizePhone(raw) {
@@ -206,16 +233,18 @@ export function normalizePhone(raw) {
 // Digits only, for loose comparison against Meta's display_phone_number (which has no "+").
 const phoneDigits = (raw) => String(raw || '').replace(/\D/g, '')
 
-export function createAgent(name, phone, email, passwordHash) {
+export function createAgent(name, phone, email, passwordHash, waPhoneNumber = null) {
+  const pn = waPhoneNumber ? normalizePhone(waPhoneNumber) : null
+  if (pn && pn.replace(/\D/g, '').length < 10) throw new Error('Enter a valid WhatsApp Business number')
   const info = db
-    .prepare('INSERT INTO agents (name, phone, email, password_hash) VALUES (?, ?, ?, ?)')
-    .run(name, normalizePhone(phone), email ? email.toLowerCase() : null, passwordHash)
+    .prepare('INSERT INTO agents (name, phone, email, password_hash, wa_phone_number, waba_status) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(name, normalizePhone(phone), email ? email.toLowerCase() : null, passwordHash, pn, pn ? 'pending' : 'none')
   return getAgent(info.lastInsertRowid)
 }
 
 export function getAgent(id) {
   return db
-    .prepare('SELECT id, name, phone, email, wa_phone_number_id, wa_phone_number, created_at FROM agents WHERE id = ?')
+    .prepare('SELECT id, name, phone, email, wa_phone_number_id, wa_phone_number, waba_status, waba_registered_at, meta_waba_id, is_admin, created_at FROM agents WHERE id = ?')
     .get(id)
 }
 
@@ -256,8 +285,13 @@ export function updateAgentPhoneConfig(agentId, waPhoneNumber, waPhoneNumberId) 
 
 // Find the agent who owns a specific Meta phone_number_id. Used for inbound webhook routing:
 // when a message arrives on a specific WhatsApp Business line, route it to the agent who owns it.
+// Only returns agents whose WABA status is 'active' — pending/registered numbers aren't live yet.
 export function findAgentByPhoneNumberId(phoneNumberId) {
   if (!phoneNumberId) return null
+  // First try active WABA agents (the main production path).
+  const active = db.prepare("SELECT * FROM agents WHERE wa_phone_number_id = ? AND waba_status = 'active'").get(phoneNumberId)
+  if (active) return active
+  // Fallback: agents who manually configured phone_number_id (pre-WABA flow, backward compat).
   return db.prepare('SELECT * FROM agents WHERE wa_phone_number_id = ?').get(phoneNumberId) || null
 }
 
@@ -556,6 +590,78 @@ export function computeMatches(agentId) {
     }
   }
   return matches.sort((a, b) => b.matchPct - a.matchPct)
+}
+
+// --- Admin / WABA management ---
+
+// List all agents with their WABA status (for admin panel).
+export function listAllAgents() {
+  return db
+    .prepare(
+      `SELECT id, name, phone, email, wa_phone_number, wa_phone_number_id,
+              waba_status, waba_registered_at, meta_waba_id, is_admin, created_at
+       FROM agents ORDER BY created_at DESC`,
+    )
+    .all()
+}
+
+// Update an agent's WABA registration status (admin action).
+// status must be one of: none, pending, registered, active.
+export function updateWabaStatus(agentId, { status, metaWabaId, waPhoneNumberId, waPhoneNumber }) {
+  const valid = ['none', 'pending', 'registered', 'active']
+  if (!valid.includes(status)) throw new Error(`Invalid WABA status: ${status}`)
+
+  const agent = getAgent(agentId)
+  if (!agent) throw new Error('Agent not found')
+
+  const updates = ['waba_status = ?']
+  const params = [status]
+
+  // Set registered_at when transitioning to 'registered' or 'active'
+  if ((status === 'registered' || status === 'active') && !agent.waba_registered_at) {
+    updates.push("waba_registered_at = datetime('now')")
+  }
+  // Clear registered_at when going back to 'none' or 'pending'
+  if (status === 'none' || status === 'pending') {
+    updates.push('waba_registered_at = NULL')
+  }
+
+  if (metaWabaId !== undefined) {
+    updates.push('meta_waba_id = ?')
+    params.push(metaWabaId || null)
+  }
+  if (waPhoneNumberId !== undefined) {
+    updates.push('wa_phone_number_id = ?')
+    params.push(waPhoneNumberId || null)
+  }
+  if (waPhoneNumber !== undefined) {
+    const pn = waPhoneNumber ? normalizePhone(waPhoneNumber) : null
+    updates.push('wa_phone_number = ?')
+    params.push(pn)
+  }
+
+  params.push(agentId)
+  db.prepare(`UPDATE agents SET ${updates.join(', ')} WHERE id = ?`).run(...params)
+  return getAgent(agentId)
+}
+
+// Admin dashboard stats.
+export function adminStats() {
+  const one = (sql) => Object.values(db.prepare(sql).get())[0]
+  return {
+    totalAgents: one('SELECT COUNT(*) FROM agents'),
+    pendingWaba: one("SELECT COUNT(*) FROM agents WHERE waba_status = 'pending'"),
+    registeredWaba: one("SELECT COUNT(*) FROM agents WHERE waba_status = 'registered'"),
+    activeWaba: one("SELECT COUNT(*) FROM agents WHERE waba_status = 'active'"),
+    totalLeads: one('SELECT COUNT(*) FROM leads'),
+    totalContacts: one('SELECT COUNT(*) FROM contacts'),
+  }
+}
+
+// Make an agent an admin (or revoke).
+export function setAdmin(agentId, isAdmin) {
+  db.prepare('UPDATE agents SET is_admin = ? WHERE id = ?').run(isAdmin ? 1 : 0, agentId)
+  return getAgent(agentId)
 }
 
 export function stats(agentId) {
