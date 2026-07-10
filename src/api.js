@@ -28,26 +28,55 @@ const post = (url, body) =>
     headers: { 'content-type': 'application/json', ...authHeaders() },
     body: JSON.stringify(body),
   }).then(j)
+const put = (url, body) =>
+  fetch(url, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(body),
+  }).then(j)
 const del = (url) => fetch(url, { method: 'DELETE', headers: authHeaders() }).then(j)
+
+const qs = (params) => {
+  const s = new URLSearchParams(
+    Object.entries(params || {}).filter(([, v]) => v !== undefined && v !== null && v !== ''),
+  ).toString()
+  return s ? `?${s}` : ''
+}
 
 export const api = {
   signup: (body) => post('/api/auth/signup', body),
   login: (body) => post('/api/auth/login', body),
   me: () => get('/api/auth/me'),
   health: () => get('/api/health'),
-  leads: () => get('/api/leads'),
+  leads: (filters) => get(`/api/leads${qs(filters)}`),
   lead: (id) => get(`/api/leads/${id}`),
+  updateLead: (id, body) => put(`/api/leads/${id}`, body),
+  moveLeadStage: (id, stage, lost_reason) => put(`/api/leads/${id}/stage`, { stage, lost_reason }),
+  pipelineStages: (type) => get(`/api/pipeline-stages${qs({ type })}`),
   stats: () => get('/api/stats'),
   activity: () => get('/api/activity'),
+  dashboard: () => get('/api/dashboard'),
   network: () => get('/api/network'),
   postNetwork: (body) => post('/api/network', body),
   reply: (id, text) => post(`/api/leads/${id}/reply`, { text }),
   setAi: (id, enabled) => post(`/api/leads/${id}/ai`, { enabled }),
   assignLead: (id) => post(`/api/leads/${id}/assign`, {}),
-  contacts: () => get('/api/contacts'),
-  addContact: (body) => post('/api/contacts', body),
-  bulkContacts: (contacts) => post('/api/contacts/bulk', { contacts }),
+  contacts: (search) => get(`/api/contacts${qs({ q: search })}`),
+  contact: (id) => get(`/api/contacts/${id}`),
+  updateContact: (id, body) => put(`/api/contacts/${id}`, body),
   deleteContact: (id) => del(`/api/contacts/${id}`),
+  properties: (filters) => get(`/api/properties${qs(filters)}`),
+  property: (id) => get(`/api/properties/${id}`),
+  createProperty: (body) => post('/api/properties', body),
+  updateProperty: (id, body) => put(`/api/properties/${id}`, body),
+  deleteProperty: (id) => del(`/api/properties/${id}`),
+  sendPropertyToChat: (id, leadId) => post(`/api/properties/${id}/send-to-chat`, { lead_id: leadId }),
+  followups: (filters) => get(`/api/followups${qs(filters)}`),
+  createFollowup: (body) => post('/api/followups', body),
+  updateFollowup: (id, body) => put(`/api/followups/${id}`, body),
+  siteVisits: (filters) => get(`/api/site-visits${qs(filters)}`),
+  createSiteVisit: (body) => post('/api/site-visits', body),
+  updateSiteVisit: (id, body) => put(`/api/site-visits/${id}`, body),
   phoneConfig: () => get('/api/agent/phone-config'),
   updatePhoneConfig: (body) =>
     fetch('/api/agent/phone-config', {
@@ -93,23 +122,42 @@ export function usePoll(fn, intervalMs = 5000, deps = []) {
   return { data, error }
 }
 
-// SQLite stores UTC "YYYY-MM-DD HH:MM:SS"; render as local, compact.
-export function fmtTime(sqliteUtc) {
-  if (!sqliteUtc) return ''
-  const d = new Date(sqliteUtc.replace(' ', 'T') + 'Z')
+// Timestamps arrive as ISO strings from PostgreSQL ("2026-07-09T16:15:00.000Z");
+// legacy SQLite-style "YYYY-MM-DD HH:MM:SS" (UTC) is still handled for safety.
+export function parseTs(ts) {
+  if (!ts) return null
+  if (ts instanceof Date) return ts
+  const s = String(ts)
+  return new Date(s.includes('T') ? s : s.replace(' ', 'T') + 'Z')
+}
+
+export function fmtTime(ts) {
+  const d = parseTs(ts)
+  if (!d) return ''
   const now = new Date()
   const sameDay = d.toDateString() === now.toDateString()
   if (sameDay) return d.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' })
   return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })
 }
 
-export function fmtAgo(sqliteUtc) {
-  if (!sqliteUtc) return ''
-  const s = (Date.now() - new Date(sqliteUtc.replace(' ', 'T') + 'Z').getTime()) / 1000
+export function fmtAgo(ts) {
+  const d = parseTs(ts)
+  if (!d) return ''
+  const s = (Date.now() - d.getTime()) / 1000
   if (s < 60) return 'just now'
   if (s < 3600) return `${Math.floor(s / 60)}m ago`
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`
   return `${Math.floor(s / 86400)}d ago`
+}
+
+// Compact waiting-time label for the unanswered queue: "12m", "3h", "2d".
+export function fmtWait(ts) {
+  const d = parseTs(ts)
+  if (!d) return ''
+  const s = Math.max(0, (Date.now() - d.getTime()) / 1000)
+  if (s < 3600) return `${Math.max(1, Math.floor(s / 60))}m`
+  if (s < 86400) return `${Math.floor(s / 3600)}h`
+  return `${Math.floor(s / 86400)}d`
 }
 
 export function fmtBudget(minL, maxL) {

@@ -209,7 +209,18 @@ export async function getContactByPhone(phone) {
 }
 
 // List an agent's clients, annotated with whether that number has ever messaged.
-export async function listContacts(agentId) {
+// q searches name/phone (substring); source filters on how the contact was captured.
+export async function listContacts(agentId, { search = '', source = '' } = {}) {
+  const where = ['c.agent_id = $1']
+  const params = [agentId]
+  if (search) {
+    params.push(`%${search}%`)
+    where.push(`(c.name ILIKE $${params.length} OR c.phone LIKE $${params.length})`)
+  }
+  if (source) {
+    params.push(source)
+    where.push(`c.source = $${params.length}`)
+  }
   const { rows } = await q(
     `SELECT c.*,
        (SELECT COUNT(*) FROM messages m
@@ -218,11 +229,24 @@ export async function listContacts(agentId) {
        (SELECT MAX(l.updated_at) FROM leads l
           WHERE l.wa_id = replace(c.phone, '+', '')) AS last_at
      FROM contacts c
-     WHERE c.agent_id = $1
-     ORDER BY c.created_at DESC`,
-    [agentId],
+     WHERE ${where.join(' AND ')}
+     ORDER BY c.last_message_at DESC NULLS LAST, c.created_at DESC`,
+    params,
   )
   return rows
+}
+
+// Contact detail: the contact row plus every lead linked to it (or matching its number).
+export async function getContactDetail(id, agentId) {
+  const contact = await getContact(id, agentId)
+  if (!contact) return null
+  const { rows: leads } = await q(
+    `SELECT * FROM leads
+     WHERE agent_id = $1 AND (contact_id = $2 OR wa_id = replace($3, '+', ''))
+     ORDER BY updated_at DESC`,
+    [agentId, id, contact.phone],
+  )
+  return { ...contact, leads }
 }
 
 // Add one client. Throws on a phone already claimed (by any agent — UNIQUE(phone)).
@@ -302,6 +326,10 @@ export async function recordContactMessage(phone) {
 }
 
 export async function deleteContact(id, agentId) {
+  const contact = await getContact(id, agentId)
+  if (!contact) return false
+  // Leads keep their conversation history; they just lose the contact link.
+  await q('UPDATE leads SET contact_id = NULL WHERE contact_id = $1', [id])
   const res = await q('DELETE FROM contacts WHERE id = $1 AND agent_id = $2', [id, agentId])
   return res.rowCount > 0
 }
@@ -346,6 +374,19 @@ export async function upsertUnassignedLead(waId, name) {
     [waId, name || null, waId],
   )
   return rows[0]
+}
+
+// Link an agent-owned lead to its CRM contact and give it a pipeline position.
+// Idempotent: never overwrites an existing link, pipeline type, or stage.
+export async function attachLeadContact(leadId, contactId) {
+  await q(
+    `UPDATE leads SET
+       contact_id = COALESCE(contact_id, $2),
+       pipeline_type = COALESCE(pipeline_type, 'buy_primary'),
+       stage = COALESCE(stage, 'New')
+     WHERE id = $1`,
+    [leadId, contactId],
+  )
 }
 
 // Claim an unassigned lead. Only succeeds while the lead is still in the pool.
@@ -451,7 +492,19 @@ export async function logActivity(agentId, leadId, kind, text) {
 
 // The agent's own leads plus the shared unassigned pool. `unassigned` flags pool rows;
 // `contact_name` is the client name from the agent's contacts, when the sender is known.
-export async function listLeads(agentId) {
+export async function listLeads(agentId, { pipelineType = '', stage = '' } = {}) {
+  const where = ['(l.agent_id = $1 OR l.agent_id IS NULL)']
+  const params = [agentId]
+  // Pipeline filters only apply to the agent's own leads; a lead that predates the CRM
+  // columns counts as buy_primary/New (the defaults attachLeadContact would give it).
+  if (pipelineType) {
+    params.push(pipelineType)
+    where.push(`COALESCE(l.pipeline_type, 'buy_primary') = $${params.length}`)
+  }
+  if (stage) {
+    params.push(stage)
+    where.push(`COALESCE(l.stage, 'New') = $${params.length}`)
+  }
   const { rows } = await q(
     `SELECT l.*,
        (l.agent_id IS NULL)::int AS unassigned,
@@ -461,9 +514,9 @@ export async function listLeads(agentId) {
        (SELECT role FROM messages m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) AS last_role,
        (SELECT created_at FROM messages m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) AS last_at
      FROM leads l
-     WHERE l.agent_id = $1 OR l.agent_id IS NULL
+     WHERE ${where.join(' AND ')}
      ORDER BY l.updated_at DESC`,
-    [agentId],
+    params,
   )
   return rows
 }
@@ -811,6 +864,11 @@ const LEAD_CRM_FIELDS = {
   closed_at: 'timestamptz',
 }
 
+// Rename a lead (e.g. replace a bare phone number with the buyer's real name).
+export async function updateLeadName(leadId, name) {
+  await q('UPDATE leads SET name = $2, updated_at = now() WHERE id = $1', [leadId, name])
+}
+
 // Update the CRM/pipeline fields of a lead the agent owns.
 export async function updateLeadCrm(leadId, agentId, fields) {
   const { sets, params } = buildSet(LEAD_CRM_FIELDS, fields)
@@ -819,6 +877,40 @@ export async function updateLeadCrm(leadId, agentId, fields) {
     `UPDATE leads SET ${sets.join(', ')}, updated_at = now()
      WHERE id = $${params.length + 1} AND agent_id = $${params.length + 2} RETURNING *`,
     [...params, leadId, agentId],
+  )
+  return rows[0]
+}
+
+// Stages that end a lead's journey — moving into one stamps closed_at.
+const TERMINAL_STAGES = new Set(['Registered/Closed', 'Closed', 'Lost'])
+
+// Move a lead to another pipeline stage. Validates the stage against the lead's
+// pipeline type (defaulting a pre-CRM lead to buy_primary) and requires a lost
+// reason when moving to Lost. Returns the updated lead.
+export async function setLeadStage(leadId, agentId, { stage, lost_reason } = {}) {
+  const lead = await getLeadForAgent(leadId, agentId)
+  if (!lead) return null
+  const pipelineType = lead.pipeline_type || 'buy_primary'
+  const stages = await listPipelineStages(pipelineType)
+  if (!stages.some((s) => s.stage_name === stage)) {
+    const err = new Error(`"${stage}" is not a stage of the ${pipelineType} pipeline`)
+    err.code = 'BAD_STAGE'
+    throw err
+  }
+  if (stage === 'Lost' && !(lost_reason && String(lost_reason).trim())) {
+    const err = new Error('A lost reason is required when moving a lead to Lost')
+    err.code = 'LOST_REASON_REQUIRED'
+    throw err
+  }
+  const { rows } = await q(
+    `UPDATE leads SET
+       pipeline_type = COALESCE(pipeline_type, $3),
+       stage = $4,
+       lost_reason = CASE WHEN $4 = 'Lost' THEN $5 ELSE NULL END,
+       closed_at = CASE WHEN $6 THEN COALESCE(closed_at, now()) ELSE NULL END,
+       updated_at = now()
+     WHERE id = $1 AND agent_id = $2 RETURNING *`,
+    [leadId, agentId, pipelineType, stage, lost_reason ? String(lost_reason).trim() : null, TERMINAL_STAGES.has(stage)],
   )
   return rows[0]
 }
@@ -877,16 +969,34 @@ export async function createProperty(agentId, p) {
   return rows[0]
 }
 
-export async function listProperties(agentId, { status } = {}) {
-  if (status) {
-    return (
-      await q('SELECT * FROM properties WHERE agent_id = $1 AND status = $2 ORDER BY updated_at DESC', [
-        agentId,
-        status,
-      ])
-    ).rows
+// Inventory listing with the dashboard's filter set. Prices are paise.
+export async function listProperties(
+  agentId,
+  { status = '', propertyType = '', bhk = '', locality = '', city = '', minPrice = null, maxPrice = null, search = '' } = {},
+) {
+  const where = ['agent_id = $1']
+  const params = [agentId]
+  const add = (sql, value) => {
+    params.push(value)
+    where.push(sql.replace('?', `$${params.length}`))
   }
-  return (await q('SELECT * FROM properties WHERE agent_id = $1 ORDER BY updated_at DESC', [agentId])).rows
+  if (status) add('status = ?', status)
+  if (propertyType) add('property_type = ?', propertyType)
+  if (bhk) add('bhk = ?', bhk)
+  if (locality) add('locality ILIKE ?', `%${locality}%`)
+  if (city) add('city ILIKE ?', `%${city}%`)
+  if (minPrice != null) add('price_paise >= ?', minPrice)
+  if (maxPrice != null) add('price_paise <= ?', maxPrice)
+  if (search) {
+    params.push(`%${search}%`)
+    const n = `$${params.length}`
+    where.push(`(title ILIKE ${n} OR locality ILIKE ${n} OR builder_name ILIKE ${n})`)
+  }
+  const { rows } = await q(
+    `SELECT * FROM properties WHERE ${where.join(' AND ')} ORDER BY updated_at DESC`,
+    params,
+  )
+  return rows
 }
 
 export async function getProperty(id, agentId) {
@@ -929,16 +1039,31 @@ export async function createSiteVisit(agentId, v) {
   return rows[0]
 }
 
-export async function listSiteVisits(agentId, { leadId } = {}) {
+export async function listSiteVisits(agentId, { leadId = null, status = '', today = false } = {}) {
+  const where = ['v.agent_id = $1']
+  const params = [agentId]
   if (leadId) {
-    return (
-      await q('SELECT * FROM site_visits WHERE agent_id = $1 AND lead_id = $2 ORDER BY scheduled_at', [
-        agentId,
-        leadId,
-      ])
-    ).rows
+    params.push(leadId)
+    where.push(`v.lead_id = $${params.length}`)
   }
-  return (await q('SELECT * FROM site_visits WHERE agent_id = $1 ORDER BY scheduled_at', [agentId])).rows
+  if (status) {
+    params.push(status)
+    where.push(`v.status = $${params.length}`)
+  }
+  if (today) {
+    params.push(TZ)
+    where.push(`(v.scheduled_at AT TIME ZONE $${params.length})::date = (now() AT TIME ZONE $${params.length})::date`)
+  }
+  const { rows } = await q(
+    `SELECT v.*, l.name AS lead_name, l.wa_id AS lead_wa_id, p.title AS property_title, p.locality AS property_locality
+     FROM site_visits v
+     JOIN leads l ON l.id = v.lead_id
+     LEFT JOIN properties p ON p.id = v.property_id
+     WHERE ${where.join(' AND ')}
+     ORDER BY v.scheduled_at`,
+    params,
+  )
+  return rows
 }
 
 export async function updateSiteVisit(id, agentId, fields) {
@@ -976,9 +1101,49 @@ export async function createFollowup(agentId, f) {
   return rows[0]
 }
 
-export async function listFollowups(agentId, { pendingOnly = false } = {}) {
-  const where = pendingOnly ? 'AND completed_at IS NULL' : ''
-  return (await q(`SELECT * FROM followups WHERE agent_id = $1 ${where} ORDER BY due_at`, [agentId])).rows
+export async function listFollowups(agentId, { pendingOnly = false, leadId = null, today = false } = {}) {
+  const where = ['f.agent_id = $1']
+  const params = [agentId]
+  if (pendingOnly) where.push('f.completed_at IS NULL')
+  if (leadId) {
+    params.push(leadId)
+    where.push(`f.lead_id = $${params.length}`)
+  }
+  if (today) {
+    // "Today" includes anything overdue — an agent must see slipped follow-ups too.
+    params.push(TZ)
+    where.push(`(f.due_at AT TIME ZONE $${params.length})::date <= (now() AT TIME ZONE $${params.length})::date`)
+  }
+  const { rows } = await q(
+    `SELECT f.*, l.name AS lead_name, l.wa_id AS lead_wa_id,
+       (f.completed_at IS NULL AND f.due_at < now())::int AS overdue
+     FROM followups f
+     JOIN leads l ON l.id = f.lead_id
+     WHERE ${where.join(' AND ')}
+     ORDER BY f.completed_at NULLS FIRST, f.due_at`,
+    params,
+  )
+  return rows
+}
+
+// General edit: reschedule, change the note, or set/clear completion.
+// fields.completed (boolean) maps to stamping/clearing completed_at.
+export async function updateFollowup(id, agentId, fields) {
+  if ('completed' in fields) {
+    await q(
+      `UPDATE followups SET completed_at = CASE WHEN $3 THEN COALESCE(completed_at, now()) ELSE NULL END
+       WHERE id = $1 AND agent_id = $2`,
+      [id, agentId, Boolean(fields.completed)],
+    )
+  }
+  const { sets, params } = buildSet({ due_at: 'timestamptz', note: 'text', type: 'text' }, fields)
+  if (sets.length) {
+    await q(
+      `UPDATE followups SET ${sets.join(', ')} WHERE id = $${params.length + 1} AND agent_id = $${params.length + 2}`,
+      [...params, id, agentId],
+    )
+  }
+  return (await q('SELECT * FROM followups WHERE id = $1 AND agent_id = $2', [id, agentId])).rows[0]
 }
 
 export async function completeFollowup(id, agentId) {
@@ -1093,6 +1258,42 @@ export async function updateMessageTemplate(id, agentId, fields) {
     [...params, id, agentId],
   )
   return rows[0]
+}
+
+// --- CRM: agent dashboard (the Home tab) ---
+
+export async function dashboard(agentId) {
+  // Unanswered: open leads whose most recent message is from the buyer,
+  // oldest wait first. The client renders the age timer from last_at.
+  const unanswered = (
+    await q(
+      `SELECT l.id, l.name, l.wa_id, l.temp, l.score, l.stage, l.pipeline_type,
+              lm.text AS last_msg, lm.created_at AS last_at
+       FROM leads l
+       JOIN LATERAL (
+         SELECT role, text, created_at FROM messages m
+         WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1
+       ) lm ON lm.role = 'buyer'
+       WHERE l.agent_id = $1 AND l.closed_at IS NULL
+       ORDER BY lm.created_at`,
+      [agentId],
+    )
+  ).rows
+  const hotLeads = (
+    await q(
+      `SELECT id, name, wa_id, score, stage, pipeline_type, ai_summary, next_step, updated_at
+       FROM leads WHERE agent_id = $1 AND temp = 'Hot' AND closed_at IS NULL
+       ORDER BY score DESC NULLS LAST, updated_at DESC LIMIT 10`,
+      [agentId],
+    )
+  ).rows
+  return {
+    unanswered,
+    followupsToday: await listFollowups(agentId, { pendingOnly: true, today: true }),
+    siteVisitsToday: await listSiteVisits(agentId, { today: true }),
+    hotLeads,
+    activity: await listActivity(agentId, 20),
+  }
 }
 
 // --- CRM: audit log ---

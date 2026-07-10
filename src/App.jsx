@@ -1,18 +1,19 @@
 import { useEffect, useState } from 'react'
-import TodayTab from './components/TodayTab.jsx'
+import DashboardTab from './components/DashboardTab.jsx'
 import LeadsTab from './components/LeadsTab.jsx'
+import LeadDetail from './components/LeadDetail.jsx'
 import InboxTab from './components/InboxTab.jsx'
-import ClientsTab from './components/ClientsTab.jsx'
-import InsightsTab from './components/InsightsTab.jsx'
-import SettingsTab from './components/SettingsTab.jsx'
+import PropertiesTab from './components/PropertiesTab.jsx'
+import MoreTab from './components/MoreTab.jsx'
 import AdminPanel from './components/AdminPanel.jsx'
 import BottomNav from './components/BottomNav.jsx'
 import AuthScreen from './components/AuthScreen.jsx'
 import { api, getToken, setToken } from './api.js'
 
 export default function App() {
-  const [tab, setTab] = useState('today')
+  const [tab, setTab] = useState('home')
   const [inboxLeadId, setInboxLeadId] = useState(null)
+  const [detailLeadId, setDetailLeadId] = useState(null) // lead panel opened from Home
   const [agent, setAgent] = useState(undefined) // undefined = checking, null = logged out
 
   useEffect(() => {
@@ -26,7 +27,7 @@ export default function App() {
     return () => window.removeEventListener('homenex-logout', onLogout)
   }, [])
 
-  // Listen for internal navigation events (e.g. settings -> admin)
+  // Listen for internal navigation events (e.g. more -> admin)
   useEffect(() => {
     const onNav = (e) => setTab(e.detail)
     window.addEventListener('homenex-navigate', onNav)
@@ -36,7 +37,7 @@ export default function App() {
   const signOut = () => {
     setToken(null)
     setAgent(null)
-    setTab('today')
+    setTab('home')
     setInboxLeadId(null)
   }
 
@@ -57,6 +58,7 @@ export default function App() {
   }
 
   const openConversation = (leadId) => {
+    setDetailLeadId(null)
     setInboxLeadId(leadId)
     setTab('inbox')
   }
@@ -64,16 +66,31 @@ export default function App() {
   return (
     <div className="phone">
       <main className="pb-24">
-        {tab === 'today' && (
-          <TodayTab agent={agent} onGoTo={setTab} onOpenConversation={openConversation} onSignOut={signOut} />
+        {tab === 'home' && (
+          <DashboardTab
+            agent={agent}
+            onGoTo={setTab}
+            onOpenConversation={openConversation}
+            onOpenLead={setDetailLeadId}
+            onSignOut={signOut}
+          />
         )}
         {tab === 'leads' && <LeadsTab onOpenConversation={openConversation} />}
         {tab === 'inbox' && <InboxTab leadId={inboxLeadId} onSelectLead={setInboxLeadId} />}
-        {tab === 'clients' && <ClientsTab />}
-        {tab === 'insights' && <InsightsTab />}
-        {tab === 'settings' && <SettingsTab agent={agent} onAgentUpdate={setAgent} />}
-        {tab === 'admin' && agent?.is_admin === 1 && <AdminPanel onBack={() => setTab('settings')} />}
+        {tab === 'properties' && <PropertiesTab />}
+        {tab === 'more' && (
+          <MoreTab agent={agent} onAgentUpdate={setAgent} onOpenConversation={openConversation} />
+        )}
+        {tab === 'admin' && agent?.is_admin === 1 && <AdminPanel onBack={() => setTab('more')} />}
       </main>
+
+      {detailLeadId && (
+        <LeadDetail
+          leadId={detailLeadId}
+          onClose={() => setDetailLeadId(null)}
+          onOpenConversation={openConversation}
+        />
+      )}
 
       {tab !== 'admin' && <BottomNav tab={tab} setTab={setTab} />}
     </div>

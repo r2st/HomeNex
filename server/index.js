@@ -31,11 +31,32 @@ import {
   findContactByWaId,
   recordContactMessage,
   listContacts,
+  getContactDetail,
+  getContactByPhone,
   addContact,
-  bulkAddContacts,
+  updateContact,
   deleteContact,
+  attachLeadContact,
+  updateLeadName,
+  updateLeadCrm,
+  setLeadStage,
+  listPipelineStages,
+  createProperty,
+  listProperties,
+  getProperty,
+  updateProperty,
+  deleteProperty,
+  createFollowup,
+  listFollowups,
+  updateFollowup,
+  createSiteVisit,
+  listSiteVisits,
+  updateSiteVisit,
+  dashboard,
+  logAudit,
   normalizePhone,
 } from './db.js'
+import { paiseToDisplay } from './money.js'
 import { generateReply, extractLead, aiConfigured } from './ai.js'
 import { sendText, markRead, whatsappConfigured } from './whatsapp.js'
 import { signup, login, requireAuth } from './auth.js'
@@ -49,6 +70,15 @@ const app = express()
 
 // Express 4 doesn't forward rejected-promise errors from async handlers; wrap them.
 const ah = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next)
+
+// Copy only the defined keys of an allowlist — buildSet in db.js writes NULL for
+// keys that are present-but-undefined, so absent fields must stay absent.
+const pick = (obj, keys) =>
+  Object.fromEntries(keys.filter((k) => obj?.[k] !== undefined).map((k) => [k, obj[k]]))
+
+// Postgres errors that mean "the client sent a bad value", not "the server broke":
+// check violation, foreign key violation, invalid text -> int/timestamp casts.
+const pgBadRequest = (err) => ['23514', '23503', '22P02', '22007', '22008', '22003'].includes(err.code)
 
 app.use(
   express.json({
@@ -79,6 +109,11 @@ async function handleInbound({ agentId = null, brokerName, waId, name, text, sou
   const isNewLead = !lead.ai_summary && (await getMessages(lead.id, 1)).length === 0
   await addMessage(lead.id, 'buyer', text)
   await recordContactMessage(waId) // stamp first/last message time on the CRM contact, if known
+  // CRM: link the lead to its auto-captured contact and drop it into the pipeline.
+  if (agentId) {
+    const contact = await getContactByPhone(waId)
+    if (contact?.agent_id === agentId) await attachLeadContact(lead.id, contact.id)
+  }
   if (isNewLead) {
     await logActivity(agentId, lead.id, 'lead', agentId
       ? `New lead: ${name || waId} via ${source}`
@@ -268,13 +303,70 @@ app.put('/api/agent/wa-phone', ah(async (req, res) => {
 }))
 
 // --- Dashboard API — every route is scoped to the logged-in agent. ---
-app.get('/api/leads', ah(async (req, res) => res.json(await listLeads(req.agent.id))))
+app.get('/api/leads', ah(async (req, res) =>
+  res.json(await listLeads(req.agent.id, {
+    pipelineType: req.query.pipeline_type || '',
+    stage: req.query.stage || '',
+  })),
+))
 
 app.get('/api/leads/:id', ah(async (req, res) => {
   const lead = await getAssignableLead(req.params.id, req.agent.id)
   if (!lead) return res.status(404).json({ error: 'not found' })
-  res.json({ ...lead, messages: await getMessages(lead.id) })
+  res.json({
+    ...lead,
+    messages: await getMessages(lead.id),
+    followups: await listFollowups(req.agent.id, { leadId: lead.id }),
+    site_visits: await listSiteVisits(req.agent.id, { leadId: lead.id }),
+    contact: lead.contact_id ? await getContactDetail(lead.contact_id, req.agent.id).then((c) => c && { ...c, leads: undefined }) : null,
+  })
 }))
+
+// Update a lead's CRM fields (budget in paise, BHK, property type, localities, ...).
+app.put('/api/leads/:id', ah(async (req, res) => {
+  const fields = pick(req.body ?? {}, [
+    'name', 'pipeline_type', 'budget_min', 'budget_max', 'bhk', 'property_type',
+    'preferred_localities', 'timeline', 'financing', 'notes',
+  ])
+  try {
+    // `name` lives outside LEAD_CRM_FIELDS' allowlist — handle it explicitly.
+    if (fields.name !== undefined) {
+      const lead = await getLeadForAgent(req.params.id, req.agent.id)
+      if (!lead) return res.status(404).json({ error: 'not found' })
+      await updateLeadName(lead.id, String(fields.name || '').trim() || null)
+      delete fields.name
+    }
+    const lead = await updateLeadCrm(req.params.id, req.agent.id, fields)
+    if (!lead) return res.status(404).json({ error: 'not found' })
+    res.json(lead)
+  } catch (err) {
+    if (!pgBadRequest(err)) throw err
+    res.status(400).json({ error: err.message })
+  }
+}))
+
+// Move a lead between pipeline stages. Moving to Lost requires a lost_reason.
+app.put('/api/leads/:id/stage', ah(async (req, res) => {
+  const { stage, lost_reason } = req.body ?? {}
+  if (!stage) return res.status(400).json({ error: 'stage is required' })
+  try {
+    const lead = await setLeadStage(req.params.id, req.agent.id, { stage, lost_reason })
+    if (!lead) return res.status(404).json({ error: 'not found' })
+    await logActivity(req.agent.id, lead.id, 'agent',
+      `${lead.name || lead.wa_id} moved to ${stage}${stage === 'Lost' ? ` (${lead.lost_reason})` : ''}`)
+    await logAudit(req.agent.id, 'lead', lead.id, 'stage_change', { stage, lost_reason: lead.lost_reason })
+    res.json(lead)
+  } catch (err) {
+    if (err.code === 'BAD_STAGE' || err.code === 'LOST_REASON_REQUIRED') {
+      return res.status(400).json({ error: err.message })
+    }
+    throw err
+  }
+}))
+
+app.get('/api/pipeline-stages', ah(async (req, res) =>
+  res.json(await listPipelineStages(req.query.type || null)),
+))
 
 // Claim an unassigned lead from the shared pool, and remember the sender as a client.
 app.post('/api/leads/:id/assign', ah(async (req, res) => {
@@ -285,8 +377,10 @@ app.post('/api/leads/:id/assign', ah(async (req, res) => {
   } catch {
     // Already a contact (or claimed elsewhere) — assignment still stands.
   }
+  const contact = await getContactByPhone(lead.wa_id)
+  if (contact?.agent_id === req.agent.id) await attachLeadContact(lead.id, contact.id)
   await logActivity(req.agent.id, lead.id, 'agent', `${req.agent.name} claimed ${lead.name || lead.wa_id}`)
-  res.json(lead)
+  res.json(await getLead(lead.id))
 }))
 
 // Agent takes over / hands back to AI.
@@ -321,23 +415,32 @@ app.post('/api/leads/:id/reply', ah(async (req, res) => {
   }
 }))
 
-// --- Contacts (My Clients): the agent's known numbers on the shared line ---
-app.get('/api/contacts', ah(async (req, res) => res.json(await listContacts(req.agent.id))))
+// --- Contacts: auto-captured from WhatsApp conversations. There is no manual
+// "add contact" API — contacts are created by the inbound webhook (or when an
+// agent claims a pooled lead / texts a client to the shared number).
+app.get('/api/contacts', ah(async (req, res) =>
+  res.json(await listContacts(req.agent.id, { search: req.query.q || '', source: req.query.source || '' })),
+))
 
-app.post('/api/contacts', ah(async (req, res) => {
-  const { phone, name, notes } = req.body ?? {}
-  if (!phone || !name) return res.status(400).json({ error: 'phone and name are required' })
-  try {
-    res.json(await addContact(req.agent.id, phone, name, notes))
-  } catch (err) {
-    res.status(err.code === 'CONTACT_EXISTS' ? 409 : 400).json({ error: err.message })
-  }
+app.get('/api/contacts/:id', ah(async (req, res) => {
+  const contact = await getContactDetail(req.params.id, req.agent.id)
+  if (!contact) return res.status(404).json({ error: 'not found' })
+  res.json(contact)
 }))
 
-app.post('/api/contacts/bulk', ah(async (req, res) => {
-  const rows = req.body?.contacts
-  if (!Array.isArray(rows)) return res.status(400).json({ error: 'contacts array required' })
-  res.json(await bulkAddContacts(req.agent.id, rows))
+app.put('/api/contacts/:id', ah(async (req, res) => {
+  try {
+    const contact = await updateContact(
+      req.params.id,
+      req.agent.id,
+      pick(req.body ?? {}, ['name', 'notes', 'opt_in_status', 'labels']),
+    )
+    if (!contact) return res.status(404).json({ error: 'not found' })
+    res.json(contact)
+  } catch (err) {
+    if (!pgBadRequest(err)) throw err
+    res.status(400).json({ error: err.message })
+  }
 }))
 
 app.delete('/api/contacts/:id', ah(async (req, res) => {
@@ -357,6 +460,185 @@ app.post('/api/network', ah(async (req, res) => {
   if (!['INVENTORY', 'REQUIREMENT'].includes(p.type)) return res.status(400).json({ error: 'bad type' })
   res.json(await addNetworkPost(p))
 }))
+
+// --- Properties: the agent's inventory ---
+const PROPERTY_BODY_FIELDS = [
+  'title', 'property_type', 'bhk', 'size_sqft', 'size_unit', 'price_paise', 'locality', 'city',
+  'status', 'rera_project_number', 'builder_name', 'owner_name', 'facing', 'floor', 'total_floors',
+  'amenities', 'photos', 'brochure_url', 'video_url', 'notes',
+]
+
+app.get('/api/properties', ah(async (req, res) =>
+  res.json(await listProperties(req.agent.id, {
+    status: req.query.status || '',
+    propertyType: req.query.type || '',
+    bhk: req.query.bhk || '',
+    locality: req.query.locality || '',
+    city: req.query.city || '',
+    minPrice: req.query.min_price ? Number(req.query.min_price) : null,
+    maxPrice: req.query.max_price ? Number(req.query.max_price) : null,
+    search: req.query.q || '',
+  })),
+))
+
+app.get('/api/properties/:id', ah(async (req, res) => {
+  const property = await getProperty(req.params.id, req.agent.id)
+  if (!property) return res.status(404).json({ error: 'not found' })
+  res.json(property)
+}))
+
+app.post('/api/properties', ah(async (req, res) => {
+  try {
+    const property = await createProperty(req.agent.id, pick(req.body ?? {}, PROPERTY_BODY_FIELDS))
+    await logAudit(req.agent.id, 'property', property.id, 'create', { title: property.title })
+    res.json(property)
+  } catch (err) {
+    if (!pgBadRequest(err) && !/title is required/.test(err.message)) throw err
+    res.status(400).json({ error: err.message })
+  }
+}))
+
+app.put('/api/properties/:id', ah(async (req, res) => {
+  try {
+    const property = await updateProperty(req.params.id, req.agent.id, pick(req.body ?? {}, PROPERTY_BODY_FIELDS))
+    if (!property) return res.status(404).json({ error: 'not found' })
+    res.json(property)
+  } catch (err) {
+    if (!pgBadRequest(err)) throw err
+    res.status(400).json({ error: err.message })
+  }
+}))
+
+app.delete('/api/properties/:id', ah(async (req, res) => {
+  if (!(await deleteProperty(req.params.id, req.agent.id))) return res.status(404).json({ error: 'not found' })
+  res.json({ ok: true })
+}))
+
+// Format a property as a WhatsApp-ready message.
+export function formatPropertyMessage(p) {
+  const spec = [p.bhk && `${p.bhk} BHK`, p.property_type, p.size_sqft && `${p.size_sqft} ${p.size_unit || 'sqft'}`]
+    .filter(Boolean)
+    .join(' · ')
+  const who = p.builder_name ? `🏗️ ${p.builder_name}` : p.owner_name ? `👤 ${p.owner_name}` : null
+  return [
+    `🏠 *${p.title}*`,
+    spec || null,
+    (p.locality || p.city) && `📍 ${[p.locality, p.city].filter(Boolean).join(', ')}`,
+    p.price_paise != null && `💰 ${paiseToDisplay(p.price_paise)}`,
+    who,
+    p.rera_project_number && `✅ RERA: ${p.rera_project_number}`,
+    p.brochure_url && `📄 Brochure: ${p.brochure_url}`,
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
+// "Send to chat": push a formatted property card into a lead's WhatsApp conversation.
+app.post('/api/properties/:id/send-to-chat', ah(async (req, res) => {
+  const { lead_id } = req.body ?? {}
+  if (!lead_id) return res.status(400).json({ error: 'lead_id is required' })
+  const property = await getProperty(req.params.id, req.agent.id)
+  if (!property) return res.status(404).json({ error: 'property not found' })
+  const lead = await getLeadForAgent(lead_id, req.agent.id)
+  if (!lead) return res.status(404).json({ error: 'lead not found' })
+  const text = formatPropertyMessage(property)
+  try {
+    const waMsgId = await sendText(lead.wa_id, text, req.agent.wa_phone_number_id)
+    const msg = await addMessage(lead.id, 'agent', text, waMsgId)
+    await logActivity(req.agent.id, lead.id, 'agent', `Sent "${property.title}" to ${lead.name || lead.wa_id}`)
+    await logAudit(req.agent.id, 'property', property.id, 'send_to_chat', { lead_id: lead.id })
+    res.json({ ok: true, message: msg })
+  } catch (err) {
+    res.status(err.code === 'WA_NOT_CONFIGURED' ? 503 : 502).json({ error: err.message })
+  }
+}))
+
+// --- Follow-ups & reminders ---
+app.get('/api/followups', ah(async (req, res) =>
+  res.json(await listFollowups(req.agent.id, {
+    pendingOnly: req.query.pending === '1',
+    today: req.query.today === '1',
+    leadId: req.query.lead_id || null,
+  })),
+))
+
+app.post('/api/followups', ah(async (req, res) => {
+  const { lead_id, due_at, note, type } = req.body ?? {}
+  if (!lead_id || !due_at) return res.status(400).json({ error: 'lead_id and due_at are required' })
+  const lead = await getLeadForAgent(lead_id, req.agent.id)
+  if (!lead) return res.status(404).json({ error: 'lead not found' })
+  try {
+    res.json(await createFollowup(req.agent.id, { lead_id: lead.id, due_at, note, type }))
+  } catch (err) {
+    if (!pgBadRequest(err)) throw err
+    res.status(400).json({ error: err.message })
+  }
+}))
+
+app.put('/api/followups/:id', ah(async (req, res) => {
+  try {
+    const followup = await updateFollowup(
+      req.params.id,
+      req.agent.id,
+      pick(req.body ?? {}, ['completed', 'due_at', 'note', 'type']),
+    )
+    if (!followup) return res.status(404).json({ error: 'not found' })
+    res.json(followup)
+  } catch (err) {
+    if (!pgBadRequest(err)) throw err
+    res.status(400).json({ error: err.message })
+  }
+}))
+
+// --- Site visits ---
+app.get('/api/site-visits', ah(async (req, res) =>
+  res.json(await listSiteVisits(req.agent.id, {
+    leadId: req.query.lead_id || null,
+    status: req.query.status || '',
+    today: req.query.today === '1',
+  })),
+))
+
+app.post('/api/site-visits', ah(async (req, res) => {
+  const { lead_id, property_id, scheduled_at, pickup_required, pickup_location, builder_preregistered } = req.body ?? {}
+  if (!lead_id || !scheduled_at) return res.status(400).json({ error: 'lead_id and scheduled_at are required' })
+  const lead = await getLeadForAgent(lead_id, req.agent.id)
+  if (!lead) return res.status(404).json({ error: 'lead not found' })
+  if (property_id && !(await getProperty(property_id, req.agent.id))) {
+    return res.status(404).json({ error: 'property not found' })
+  }
+  try {
+    const visit = await createSiteVisit(req.agent.id, {
+      lead_id: lead.id, property_id, scheduled_at, pickup_required, pickup_location, builder_preregistered,
+    })
+    await logActivity(req.agent.id, lead.id, 'agent', `Site visit scheduled for ${lead.name || lead.wa_id}`)
+    res.json(visit)
+  } catch (err) {
+    if (!pgBadRequest(err)) throw err
+    res.status(400).json({ error: err.message })
+  }
+}))
+
+app.put('/api/site-visits/:id', ah(async (req, res) => {
+  try {
+    const visit = await updateSiteVisit(
+      req.params.id,
+      req.agent.id,
+      pick(req.body ?? {}, [
+        'scheduled_at', 'pickup_required', 'pickup_location', 'status', 'outcome_notes',
+        'builder_preregistered', 'property_id',
+      ]),
+    )
+    if (!visit) return res.status(404).json({ error: 'not found' })
+    res.json(visit)
+  } catch (err) {
+    if (!pgBadRequest(err)) throw err
+    res.status(400).json({ error: err.message })
+  }
+}))
+
+// --- Home dashboard: everything the agent needs to act on right now ---
+app.get('/api/dashboard', ah(async (req, res) => res.json(await dashboard(req.agent.id))))
 
 // --- Admin API (requires admin privileges; see adminRoutes.js) ---
 app.use('/api/admin', adminRouter)

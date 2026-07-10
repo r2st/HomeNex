@@ -1,7 +1,7 @@
 const TABS = [
   {
-    id: 'today',
-    label: 'Today',
+    id: 'home',
+    label: 'Home',
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-[22px] h-[22px]">
         <path d="M3 10.5 12 3l9 7.5" />
@@ -15,33 +15,32 @@ const TABS = [
     label: 'Leads',
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-[22px] h-[22px]">
-        <circle cx="9" cy="8" r="3.5" />
-        <path d="M2.5 20c.8-3.2 3.4-5 6.5-5s5.7 1.8 6.5 5" />
-        <path d="M16 4.6a3.5 3.5 0 0 1 0 6.8" />
-        <path d="M17.5 15.3c2 .7 3.5 2.3 4 4.7" />
+        <rect x="3" y="4" width="5" height="16" rx="1.2" />
+        <rect x="10" y="4" width="5" height="10" rx="1.2" />
+        <rect x="17" y="4" width="4" height="13" rx="1.2" />
       </svg>
     ),
   },
   { id: 'inbox', label: 'Inbox', icon: null },
   {
-    id: 'clients',
-    label: 'Clients',
+    id: 'properties',
+    label: 'Properties',
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-[22px] h-[22px]">
-        <path d="M17 20h5v-1a4 4 0 0 0-3-3.87" />
-        <path d="M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z" />
-        <path d="M2 20v-1a5 5 0 0 1 5-5h4a5 5 0 0 1 5 5v1" />
-        <path d="M15 3.13A4 4 0 0 1 15 11" />
+        <path d="M3 21h18" />
+        <path d="M5 21V7l7-4 7 4v14" />
+        <path d="M9 9h.01M15 9h.01M9 13h.01M15 13h.01M9 17h.01M15 17h.01" />
       </svg>
     ),
   },
   {
-    id: 'settings',
-    label: 'Settings',
+    id: 'more',
+    label: 'More',
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-[22px] h-[22px]">
-        <circle cx="12" cy="12" r="3" />
-        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" />
+        <circle cx="5" cy="12" r="1.6" />
+        <circle cx="12" cy="12" r="1.6" />
+        <circle cx="19" cy="12" r="1.6" />
       </svg>
     ),
   },

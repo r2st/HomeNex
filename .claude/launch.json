@@ -7,6 +7,16 @@
       "runtimeArgs": ["run", "dev"],
       "port": 5173,
       "autoPort": true
+    },
+    {
+      "name": "homenex-server",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "DATABASE_URL=postgres://homenex:homenex@localhost:5433/homenex",
+        "node",
+        "server/index.js"
+      ],
+      "port": 8787
     }
   ]
 }
