@@ -100,6 +100,18 @@ import {
   removeGroupMember,
   autoGroupContacts,
   resolveSegment,
+  findAgentByIngestToken,
+  regenerateIngestToken,
+  recordCtwaReferral,
+  createLeadSourceEvent,
+  listLeadSourceEvents,
+  leadSourceStats,
+  listPortalIntegrations,
+  upsertPortalIntegration,
+  getPortalIntegrationRaw,
+  listSyndications,
+  getMeta,
+  setMeta,
 } from './db.js'
 import { paiseToDisplay } from './money.js'
 import { bookingConfirmationText } from './siteVisit.js'
@@ -116,6 +128,19 @@ import { setupGuidePage } from './setupGuide.js'
 import { signup, login, changePhone, changePassword, requireAuth } from './auth.js'
 import { handleAgentCommand } from './agentCommands.js'
 import adminRouter from './adminRoutes.js'
+import {
+  ingestAddress,
+  parsePortalEmail,
+  parseLeadgenFields,
+  extractReferral,
+  ingestLead,
+  freeEntryWindow,
+  waDeepLink,
+  syndicateProperty,
+  formatListingForPortal,
+  SYNDICATION_PORTALS,
+} from './leadSources.js'
+import { fetchLeadgenData } from './whatsapp.js'
 
 const { PORT = 8787, WHATSAPP_VERIFY_TOKEN = 'homenex-verify', WHATSAPP_APP_SECRET } = process.env
 
@@ -158,9 +183,23 @@ function verifySignature(req) {
 // Core pipeline for one inbound buyer message on the shared WhatsApp number:
 // persist -> AI reply -> WhatsApp send (from the shared number) -> extract BLTC.
 // agentId is null for the unassigned pool (an unknown sender); brokerName personalises the AI.
-async function handleInbound({ agentId = null, brokerName, waId, name, text, source = 'WhatsApp', phoneNumberId = null, send = true }) {
+async function handleInbound({ agentId = null, brokerName, waId, name, text, source = 'WhatsApp', phoneNumberId = null, send = true, referral = null }) {
   const lead = agentId ? await upsertLead(agentId, waId, name) : await upsertUnassignedLead(waId, name)
   const isNewLead = !lead.ai_summary && (await getMessages(lead.id, 1)).length === 0
+  // Click-to-WhatsApp attribution: capture the ad referral and (re)open the 72h free window.
+  if (referral) {
+    await recordCtwaReferral(lead.id, referral)
+    if (isNewLead) {
+      await createLeadSourceEvent({
+        agent_id: agentId, lead_id: lead.id, channel: 'ctwa',
+        external_id: referral.ctwa_clid || null, status: 'created',
+        contact_phone: waId, contact_name: name,
+        auto_reply_status: 'sent', raw: referral,
+      }).catch(() => {})
+      await logActivity(agentId, lead.id, 'lead',
+        `Click-to-WhatsApp lead: ${name || waId}${referral.headline ? ` · "${referral.headline}"` : ''}`)
+    }
+  }
   await addMessage(lead.id, 'buyer', text)
   await recordContactMessage(waId) // stamp first/last message time on the CRM contact, if known
   // CRM: link the lead to its auto-captured contact and drop it into the pipeline.
@@ -216,6 +255,55 @@ async function handleInbound({ agentId = null, brokerName, waId, name, text, sou
   return { lead: await getLead(lead.id), reply }
 }
 
+// Attribute a Meta Lead Ads leadgen to an agent: a form_id→agent map (set via the
+// Lead Sources screen) wins, else the configured default agent, else unmatched.
+async function resolveLeadgenAgent(formId) {
+  if (formId) {
+    const mapped = await getMeta(`leadgen_form:${formId}`)
+    if (mapped) return getAgent(Number(mapped))
+  }
+  const dflt = process.env.META_LEADGEN_DEFAULT_AGENT_ID
+  return dflt ? getAgent(Number(dflt)) : null
+}
+
+// Turn one Meta Lead Ads leadgen change into a CRM lead. The webhook only carries a
+// leadgen_id, so the answers are fetched from the Graph API (needs a Page access token).
+async function processLeadgen(value) {
+  const leadgenId = value?.leadgen_id
+  const formId = value?.form_id
+  if (!leadgenId) return
+  const agent = await resolveLeadgenAgent(formId)
+  const data = await fetchLeadgenData(leadgenId)
+  const parsed = data?.field_data ? parseLeadgenFields(data.field_data) : {}
+  const raw = { value, field_data: data?.field_data || null, ad_name: data?.ad_name }
+
+  if (!agent) {
+    await createLeadSourceEvent({
+      agent_id: null, channel: 'meta_lead_ad', external_id: leadgenId, status: 'unmatched',
+      contact_name: parsed.name || null, error: `no agent mapped for form ${formId || '?'}`, raw,
+    }).catch(() => {})
+    return
+  }
+  if (!parsed.phone) {
+    await createLeadSourceEvent({
+      agent_id: agent.id, channel: 'meta_lead_ad', external_id: leadgenId, status: 'failed',
+      contact_name: parsed.name || null, error: 'no phone in leadgen (Page access token configured?)', raw,
+    }).catch(() => {})
+    return
+  }
+  await ingestLead({
+    agent, channel: 'meta_lead_ad', external_id: leadgenId,
+    name: parsed.name, phone: parsed.phone, email: parsed.email,
+    source_ref: parsed.property || data?.ad_name || null,
+    message: parsed.property ? `Interested in ${parsed.property}` : null,
+    source_meta: {
+      ad_id: value?.ad_id || data?.ad_id, ad_name: data?.ad_name, form_id: formId,
+      campaign_id: value?.campaign_id || data?.campaign_id, city: parsed.city, budget: parsed.budget,
+    },
+    raw,
+  })
+}
+
 // --- Meta webhook verification (GET) ---
 app.get('/webhook', (req, res) => {
   if (
@@ -236,6 +324,14 @@ app.post('/webhook', (req, res) => {
     for (const entry of req.body?.entry ?? []) {
       for (const change of entry.changes ?? []) {
         const value = change.value
+        // Meta Lead Ads: a leadgen webhook carries only a leadgen_id — fetch the answers
+        // and turn them into a lead with an instant templated WhatsApp reply.
+        if (change.field === 'leadgen') {
+          for (const lg of Array.isArray(value) ? value : [value]) {
+            await processLeadgen(lg).catch((err) => console.error('leadgen processing error', err.message))
+          }
+          continue
+        }
         const waProfileName = value?.contacts?.[0]?.profile?.name
         // Which WhatsApp Business number received this message?
         const phoneNumberId = value?.metadata?.phone_number_id
@@ -253,6 +349,8 @@ app.post('/webhook', (req, res) => {
           }
           if (msg.type !== 'text') continue
           markRead(msg.id, phoneNumberId)
+          // Click-to-WhatsApp ads attach a referral to the opening message.
+          const referral = extractReferral(msg)
 
           // Per-agent line: if this number belongs to a specific agent, route directly
           // to them. The sender is auto-remembered as a contact for future reference.
@@ -268,6 +366,7 @@ app.post('/webhook', (req, res) => {
               name: waProfileName,
               text: msg.text.body,
               phoneNumberId,
+              referral,
             })
             continue
           }
@@ -282,6 +381,7 @@ app.post('/webhook', (req, res) => {
               name: contact.name || waProfileName,
               text: msg.text.body,
               phoneNumberId,
+              referral,
             })
           } else {
             // Unknown sender on a shared number → unassigned pool, visible to all agents to claim.
@@ -292,6 +392,7 @@ app.post('/webhook', (req, res) => {
               name: waProfileName,
               text: msg.text.body,
               phoneNumberId,
+              referral,
             })
           }
         }
@@ -299,6 +400,59 @@ app.post('/webhook', (req, res) => {
     }
   })().catch((err) => console.error('webhook processing error', err))
 })
+
+// --- Portal lead ingestion by email (§1.7) ---
+// Each workspace has a unique address  lead-<token>@<domain>  that agents set as the
+// contact email on 99acres/MagicBricks/Housing. An email provider's inbound-parse
+// webhook (Mailgun / SendGrid / Cloudflare Email Worker) POSTs the message here as JSON:
+//   { from, to, subject, text, html }
+app.post('/ingest/email/:token', ah(async (req, res) => {
+  const agent = await findAgentByIngestToken(req.params.token)
+  if (!agent) return res.status(404).json({ error: 'unknown ingest address' })
+  const { from = '', subject = '', text = '', html = '' } = req.body || {}
+  const parsed = parsePortalEmail({ from, subject, text, html })
+  if (!parsed || !parsed.phone) {
+    await createLeadSourceEvent({
+      agent_id: agent.id, channel: 'portal_email', status: 'failed',
+      error: 'no contact phone parsed from email', raw: { from, subject },
+    }).catch(() => {})
+    return res.status(202).json({ ok: false, reason: 'no_lead_parsed' })
+  }
+  const result = await ingestLead({
+    agent, channel: 'portal_email', portal: parsed.portal, external_id: parsed.external_id,
+    name: parsed.name, phone: parsed.phone, email: parsed.email,
+    source_ref: parsed.property, message: parsed.message,
+    source_meta: { budget: parsed.budget, subject, from },
+    raw: { from, subject, text: String(text || '').slice(0, 4000) },
+  })
+  res.json({
+    ok: result.ok !== false, duplicate: Boolean(result.duplicate),
+    lead_id: result.lead?.id || null, portal: parsed.portal, auto_reply: result.autoReplyStatus || null,
+  })
+}))
+
+// --- Direct portal API / push integration (§5.2) ---
+// A portal (or Zapier/middleware bridge) pushes a structured lead as JSON, keyed by the
+// workspace ingest token and portal:  { name, phone, email, property, message, budget, external_id }
+app.post('/ingest/portal/:token/:portal', ah(async (req, res) => {
+  const agent = await findAgentByIngestToken(req.params.token)
+  if (!agent) return res.status(404).json({ error: 'unknown ingest token' })
+  const portal = req.params.portal
+  if (!SYNDICATION_PORTALS.includes(portal)) return res.status(400).json({ error: 'unknown portal' })
+  const b = req.body || {}
+  if (!b.phone) return res.status(400).json({ error: 'phone required' })
+  const result = await ingestLead({
+    agent, channel: 'portal_api', portal, external_id: b.external_id || b.lead_id || null,
+    name: b.name || null, phone: b.phone, email: b.email || null,
+    source_ref: b.property || b.project || null, message: b.message || null,
+    source_meta: { budget: b.budget || null, config: b.config || null, city: b.city || null },
+    raw: b,
+  })
+  res.json({
+    ok: result.ok !== false, duplicate: Boolean(result.duplicate),
+    lead_id: result.lead?.id || null, auto_reply: result.autoReplyStatus || null,
+  })
+}))
 
 // --- Auth: one-screen signup (name, phone, email, password) and login ---
 app.post('/api/auth/signup', ah(async (req, res) => {
@@ -452,6 +606,8 @@ app.get('/api/leads/:id', ah(async (req, res) => {
     hybrid_reason: hybrid.reason,
     hybrid_source: hybrid.source,
     service_window: serviceWindow(lead),
+    // Click-to-WhatsApp free-messaging window (72h) — null unless this is an ad lead.
+    free_entry_window: freeEntryWindow(lead),
     messages: await getMessages(lead.id),
     followups: await listFollowups(req.agent.id, { leadId: lead.id }),
     site_visits: await listSiteVisits(req.agent.id, { leadId: lead.id }),
@@ -1158,6 +1314,95 @@ app.post('/api/groups/:id/send', ah(async (req, res) => {
   } catch (err) {
     res.status(err.code === 'WA_NOT_CONFIGURED' ? 503 : 502).json({ error: err.message, code: err.code })
   }
+}))
+
+// ===========================================================================
+// Lead Source Integrations (§1.7, §3.1, §5.2)
+// ===========================================================================
+
+// Walk-in / phone lead: the 10-second "Add lead" form. Creates the lead + contact,
+// tags the source, and returns a wa.me deep link the agent taps to open the thread
+// (plus an instant template send when a lead-intro template is configured).
+app.post('/api/leads/quick-add', ah(async (req, res) => {
+  const { phone, name, tags, channel = 'walk_in', message, open_message } = req.body ?? {}
+  if (!phone) return res.status(400).json({ error: 'phone required' })
+  if (!['walk_in', 'phone'].includes(channel)) return res.status(400).json({ error: 'invalid channel' })
+  const tagList = Array.isArray(tags) ? tags.filter((t) => typeof t === 'string').slice(0, 12) : []
+  const result = await ingestLead({
+    agent: req.agent, channel, name: name || null, phone,
+    message: message || (tagList.length ? tagList.join(', ') : null),
+    source_meta: { tags: tagList },
+    autoReply: false, // walk-ins are opened by the agent via the deep link below
+  })
+  if (result.ok === false) return res.status(400).json({ error: 'Enter a valid phone number' })
+  // Store tags as contact labels so they surface on the lead/contact.
+  if (tagList.length && result.lead?.contact_id) {
+    await updateContact(result.lead.contact_id, req.agent.id, { labels: tagList }).catch(() => {})
+  }
+  const opener = open_message ||
+    `Hi ${name || 'there'}, thanks for connecting with ${req.agent.business_name || req.agent.name}. How can I help with your property search?`
+  res.json({
+    lead: result.lead,
+    duplicate: Boolean(result.duplicate),
+    wa_deeplink: waDeepLink(phone, opener),
+  })
+}))
+
+// The workspace's lead-source hub: ingest email address, per-channel counts, and the
+// recent ingestion feed (portal emails, lead ads, CTWA, walk-ins).
+app.get('/api/lead-sources', ah(async (req, res) => {
+  res.json({
+    ingest_email: ingestAddress(req.agent.ingest_token),
+    ingest_token: req.agent.ingest_token,
+    stats: await leadSourceStats(req.agent.id),
+    events: await listLeadSourceEvents(req.agent.id, { channel: req.query.channel || '', limit: req.query.limit }),
+  })
+}))
+
+// Rotate the ingest address (invalidates the old one).
+app.post('/api/lead-sources/regenerate', ah(async (req, res) => {
+  const token = await regenerateIngestToken(req.agent.id)
+  res.json({ ingest_token: token, ingest_email: ingestAddress(token) })
+}))
+
+// Map a Meta Lead Ads form to this agent so its leadgen webhooks route here.
+app.post('/api/lead-sources/leadgen-form', ah(async (req, res) => {
+  const formId = String(req.body?.form_id || '').trim()
+  if (!formId) return res.status(400).json({ error: 'form_id required' })
+  await setMeta(`leadgen_form:${formId}`, String(req.agent.id))
+  res.json({ ok: true, form_id: formId })
+}))
+
+// --- Direct portal API integrations (99acres / MagicBricks / Housing / NoBroker) ---
+app.get('/api/portal-integrations', ah(async (req, res) =>
+  res.json(await listPortalIntegrations(req.agent.id)),
+))
+
+app.put('/api/portal-integrations/:portal', ah(async (req, res) => {
+  if (!SYNDICATION_PORTALS.includes(req.params.portal)) return res.status(400).json({ error: 'unknown portal' })
+  const fields = pick(req.body ?? {}, ['enabled', 'api_key', 'api_secret', 'config'])
+  const row = await upsertPortalIntegration(req.agent.id, req.params.portal, fields)
+  res.json(row)
+}))
+
+// --- Listing syndication: compose once, export portal-formatted content ---
+app.get('/api/properties/:id/syndications', ah(async (req, res) => {
+  const property = await getProperty(req.params.id, req.agent.id)
+  if (!property) return res.status(404).json({ error: 'not found' })
+  const saved = await listSyndications(req.agent.id, property.id)
+  // Live preview for every portal, so the agent sees the formatted output before exporting.
+  const preview = SYNDICATION_PORTALS.map((portal) => formatListingForPortal(property, portal))
+  res.json({ portals: SYNDICATION_PORTALS, saved, preview })
+}))
+
+app.post('/api/properties/:id/syndicate', ah(async (req, res) => {
+  const property = await getProperty(req.params.id, req.agent.id)
+  if (!property) return res.status(404).json({ error: 'not found' })
+  const portal = req.body?.portal
+  if (!SYNDICATION_PORTALS.includes(portal)) return res.status(400).json({ error: 'unknown portal' })
+  const row = await syndicateProperty(req.agent, property, portal)
+  await logActivity(req.agent.id, null, 'agent', `Exported "${property.title}" to ${portal}`)
+  res.json(row)
 }))
 
 // --- Admin API (requires admin privileges; see adminRoutes.js) ---

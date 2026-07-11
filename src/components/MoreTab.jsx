@@ -6,6 +6,7 @@ import InsightsTab from './InsightsTab.jsx'
 import SettingsTab from './SettingsTab.jsx'
 import LeadDetail from './LeadDetail.jsx'
 import FestiveTab from './FestiveTab.jsx'
+import LeadSourcesScreen from './LeadSourcesScreen.jsx'
 
 function SubScreen({ title, onBack, children }) {
   return (
@@ -143,6 +144,7 @@ function SiteVisitsScreen({ onBack, onOpenLead }) {
 }
 
 const MENU = [
+  { id: 'sources', icon: '🎯', label: 'Lead sources', sub: 'Portals, Lead Ads, click-to-WhatsApp' },
   { id: 'followups', icon: '⏰', label: 'Follow-ups', sub: 'Reminders and overdue nudges' },
   { id: 'sitevisits', icon: '🏗️', label: 'Site visits', sub: "Today's and upcoming visits" },
   { id: 'contacts', icon: '👥', label: 'Contacts', sub: 'Auto-captured from WhatsApp' },
@@ -171,6 +173,12 @@ export default function MoreTab({ agent, onAgentUpdate, onOpenConversation }) {
           <LeadDetail leadId={leadId} onClose={() => setLeadId(null)} onOpenConversation={onOpenConversation} />
         )}
       </div>
+    )
+  if (screen === 'sources')
+    return (
+      <SubScreen title="Lead sources" onBack={() => setScreen(null)}>
+        <LeadSourcesScreen />
+      </SubScreen>
     )
   if (screen === 'festive')
     return (

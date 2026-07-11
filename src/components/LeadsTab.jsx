@@ -3,6 +3,7 @@ import { api, usePoll, fmtAgo } from '../api.js'
 import { paiseRangeToDisplay } from '../money.js'
 import { Avatar, Chip, Sheet, TEMP_STYLE, inputCls } from './ui.jsx'
 import LeadDetail from './LeadDetail.jsx'
+import QuickAddLead from './QuickAddLead.jsx'
 
 const PIPELINES = [
   { id: 'buy_primary', label: 'Buy (Primary)' },
@@ -163,6 +164,7 @@ export default function LeadsTab({ onOpenConversation }) {
   const [dropTarget, setDropTarget] = useState(null) // stage name being hovered
   const [lostFor, setLostFor] = useState(null) // { leadId } awaiting a lost reason
   const [moveError, setMoveError] = useState(null)
+  const [quickAdd, setQuickAdd] = useState(false)
   const refresh = () => setRefreshKey((k) => k + 1)
 
   const { data: allLeads, error } = usePoll(api.leads, 5000, [refreshKey])
@@ -312,6 +314,16 @@ export default function LeadsTab({ onOpenConversation }) {
             ))}
         </div>
       )}
+
+      {/* 10-second walk-in / phone lead capture (§4.4) */}
+      <button
+        onClick={() => setQuickAdd(true)}
+        className="fixed bottom-24 right-5 z-30 h-14 pl-4 pr-5 rounded-full bg-brand text-white font-bold text-[14px] shadow-float flex items-center gap-1.5 active:scale-95 transition"
+      >
+        <span className="text-[20px] leading-none">+</span> Add lead
+      </button>
+
+      {quickAdd && <QuickAddLead onClose={() => setQuickAdd(false)} onAdded={refresh} />}
 
       {lostFor && (
         <LostReasonSheet

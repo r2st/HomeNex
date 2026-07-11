@@ -20,6 +20,15 @@ const PIPELINE_LABEL = {
 
 const VISIT_STATUSES = ['scheduled', 'confirmed', 'completed', 'no_show', 'rescheduled']
 
+// Where the lead came from (migration 010). Drives the source banner + CTWA window.
+const SOURCE_ICON = {
+  whatsapp: '💬', portal_email: '📧', portal_api: '🔌', meta_lead_ad: '📣', ctwa: '📣', walk_in: '🚶', phone: '📞', referral: '🤝',
+}
+const SOURCE_LABEL = {
+  whatsapp: 'WhatsApp', portal_email: 'Portal email', portal_api: 'Portal push',
+  meta_lead_ad: 'Facebook / Instagram Lead Ad', ctwa: 'Click-to-WhatsApp ad', walk_in: 'Walk-in', phone: 'Phone', referral: 'Referral',
+}
+
 // Stage picker: tap a stage to move the lead; Lost asks for a reason first.
 function StagePicker({ lead, onClose, onMoved }) {
   const pipelineType = lead.pipeline_type || 'buy_primary'
@@ -707,6 +716,29 @@ export default function LeadDetail({ leadId, onClose, onOpenConversation, onChan
       </div>
 
       <div className="px-5 py-5 space-y-4 pb-10">
+        {(lead.source_channel || lead.free_entry_window) && (
+          <section className="bg-card rounded-2xl border border-line shadow-card p-4">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <span className="text-[18px]">{SOURCE_ICON[lead.source_channel] || '💬'}</span>
+              <div className="min-w-0">
+                <p className="text-[10.5px] font-bold tracking-[0.18em] text-ink-soft">LEAD SOURCE</p>
+                <p className="text-[13px] font-bold text-ink truncate">
+                  {SOURCE_LABEL[lead.source_channel] || 'WhatsApp'}
+                  {lead.source_portal ? ` · ${lead.source_portal}` : ''}
+                </p>
+                {lead.source_ref && <p className="text-[11.5px] text-ink-soft truncate">Enquired: {lead.source_ref}</p>}
+              </div>
+            </div>
+            {lead.free_entry_window && (
+              <div className={`mt-2.5 rounded-xl px-3 py-2 text-[12px] font-semibold leading-snug ${lead.free_entry_window.open ? 'bg-brand-wash text-brand-deep' : 'bg-cream text-ink-faint'}`}>
+                {lead.free_entry_window.open
+                  ? `🎁 Free 72-hour messaging window — ${lead.free_entry_window.hours_left}h left. Reply freely, no template needed.`
+                  : '72-hour free-messaging window has closed — send an approved template.'}
+              </div>
+            )}
+          </section>
+        )}
+
         {!unassigned && (
           <section className="bg-card rounded-2xl border border-line shadow-card p-4 flex items-center gap-3">
             <div className="min-w-0 flex-1">

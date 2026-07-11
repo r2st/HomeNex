@@ -180,6 +180,15 @@ export const api = {
   autoGroup: (by) => post('/api/groups/auto', { by }),
   previewSegment: (criteria) => post('/api/segments/preview', { criteria }),
   sendToGroup: (id, message) => post(`/api/groups/${id}/send`, { message }),
+  // Lead Source Integrations (§1.7, §3.1, §5.2)
+  quickAddLead: (body) => post('/api/leads/quick-add', body),
+  leadSources: (channel) => get(`/api/lead-sources${qs({ channel })}`),
+  regenerateIngest: () => post('/api/lead-sources/regenerate', {}),
+  mapLeadgenForm: (formId) => post('/api/lead-sources/leadgen-form', { form_id: formId }),
+  portalIntegrations: () => get('/api/portal-integrations'),
+  updatePortalIntegration: (portal, body) => put(`/api/portal-integrations/${portal}`, body),
+  propertySyndications: (id) => get(`/api/properties/${id}/syndications`),
+  syndicate: (id, portal) => post(`/api/properties/${id}/syndicate`, { portal }),
 }
 
 // Poll an endpoint so the dashboard stays live as real messages arrive.

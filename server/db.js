@@ -123,14 +123,15 @@ const AGENT_COLS =
   'id, name, phone, email, business_name, city, bio, rera_id, rera_state, rera_expiry, avatar_url, ' +
   'timezone, language, notify_new_lead, notify_followup_due, notify_daily_digest, ' +
   'quiet_hours_start, quiet_hours_end, is_active, deactivated_at, ' +
-  'wa_phone_number_id, wa_phone_number, waba_status, waba_registered_at, meta_waba_id, is_admin, created_at'
+  'wa_phone_number_id, wa_phone_number, waba_status, waba_registered_at, meta_waba_id, is_admin, ingest_token, created_at'
 
 export async function createAgent(name, phone, email, passwordHash, waPhoneNumber = null) {
   const pn = waPhoneNumber ? normalizePhone(waPhoneNumber) : null
   if (pn && pn.replace(/\D/g, '').length < 10) throw new Error('Enter a valid WhatsApp Business number')
   const { rows } = await q(
-    `INSERT INTO agents (name, phone, email, password_hash, wa_phone_number, waba_status)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+    `INSERT INTO agents (name, phone, email, password_hash, wa_phone_number, waba_status, ingest_token)
+     VALUES ($1, $2, $3, $4, $5, $6, substr(md5(random()::text || clock_timestamp()::text), 1, 12))
+     RETURNING id`,
     [name, normalizePhone(phone), email ? email.toLowerCase() : null, passwordHash, pn, pn ? 'pending' : 'none'],
   )
   return getAgent(rows[0].id)
@@ -2503,6 +2504,246 @@ export async function autoGroupContacts(agentId, by) {
     groups.push({ ...group, member_count: contacts.length })
   }
   return groups
+}
+
+// ===========================================================================
+// Lead Source Integrations (migration 010): portal email ingest, Meta Lead Ads,
+// click-to-WhatsApp attribution, walk-in/phone quick-add, portal API + syndication.
+// db.js holds the storage primitives; the orchestration lives in leadSources.js.
+// ===========================================================================
+
+// The workspace's inbound-email address that portals send lead notifications to.
+export async function findAgentByIngestToken(token) {
+  if (!token) return null
+  const { rows } = await q('SELECT * FROM agents WHERE ingest_token = $1', [token])
+  return rows[0] || null
+}
+
+// Rotate an agent's ingest token (invalidates the old address). Returns the new token.
+export async function regenerateIngestToken(agentId) {
+  const { rows } = await q(
+    `UPDATE agents SET ingest_token = substr(md5(random()::text || clock_timestamp()::text), 1, 12)
+     WHERE id = $1 RETURNING ingest_token`,
+    [agentId],
+  )
+  return rows[0]?.ingest_token || null
+}
+
+// Find an agent-owned lead by its canonical WhatsApp id (digits, no '+'). Used for
+// dedupe when a portal/ad/walk-in lead arrives for a number we already track.
+export async function getLeadByAgentWaId(agentId, waId) {
+  const { rows } = await q('SELECT * FROM leads WHERE agent_id = $1 AND wa_id = $2', [agentId, waId])
+  return rows[0] || null
+}
+
+// Stamp structured provenance on a lead. Channel/portal are only set when still empty
+// (a portal touch on an existing WhatsApp lead is a merge, not a rewrite), but the raw
+// metadata is always merged in and the free-entry / CTWA anchors updated when provided.
+export async function setLeadSourceProvenance(leadId, prov = {}) {
+  await q(
+    `UPDATE leads SET
+       source = COALESCE($2, source),
+       source_channel = COALESCE(source_channel, $3),
+       source_portal = COALESCE(source_portal, $4),
+       source_ref = COALESCE($5, source_ref),
+       source_meta = source_meta || $6::jsonb,
+       ctwa_clid = COALESCE($7, ctwa_clid),
+       free_entry_at = COALESCE($8, free_entry_at),
+       updated_at = now()
+     WHERE id = $1`,
+    [
+      leadId,
+      prov.source ?? null,
+      prov.source_channel ?? null,
+      prov.source_portal ?? null,
+      prov.source_ref ?? null,
+      JSON.stringify(prov.source_meta || {}),
+      prov.ctwa_clid ?? null,
+      prov.free_entry_at ?? null,
+    ],
+  )
+  return getLead(leadId)
+}
+
+// Click-to-WhatsApp referral: the buyer DID open a WhatsApp chat (via an ad), so unlike
+// setLeadSourceProvenance this always (re)starts the 72h free-entry window and merges the
+// referral metadata. Channel is only stamped if the lead had no structured source yet.
+export async function recordCtwaReferral(leadId, referral = {}) {
+  await q(
+    `UPDATE leads SET
+       source = 'ctwa',
+       source_channel = COALESCE(source_channel, 'ctwa'),
+       source_meta = source_meta || $2::jsonb,
+       ctwa_clid = COALESCE($3, ctwa_clid),
+       free_entry_at = now(),
+       updated_at = now()
+     WHERE id = $1`,
+    [leadId, JSON.stringify({ ctwa: referral }), referral.ctwa_clid ?? null],
+  )
+  return getLead(leadId)
+}
+
+// Log an ingestion attempt. Dedupes on (agent_id, channel, external_id): a second event
+// for the same portal lead id returns { event, duplicate:true } without inserting.
+export async function createLeadSourceEvent(e) {
+  if (e.external_id != null && e.agent_id != null) {
+    const { rows } = await q(
+      `INSERT INTO lead_source_events
+         (agent_id, lead_id, channel, portal, external_id, status, contact_phone, contact_name, auto_reply_status, raw, error)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11)
+       ON CONFLICT (agent_id, channel, external_id) WHERE external_id IS NOT NULL DO NOTHING
+       RETURNING *`,
+      [e.agent_id, e.lead_id ?? null, e.channel, e.portal ?? null, e.external_id,
+       e.status ?? 'received', e.contact_phone ?? null, e.contact_name ?? null,
+       e.auto_reply_status ?? null, JSON.stringify(e.raw || {}), e.error ?? null],
+    )
+    if (rows[0]) return { event: rows[0], duplicate: false }
+    const existing = (
+      await q('SELECT * FROM lead_source_events WHERE agent_id = $1 AND channel = $2 AND external_id = $3',
+        [e.agent_id, e.channel, e.external_id])
+    ).rows[0]
+    return { event: existing, duplicate: true }
+  }
+  const { rows } = await q(
+    `INSERT INTO lead_source_events
+       (agent_id, lead_id, channel, portal, external_id, status, contact_phone, contact_name, auto_reply_status, raw, error)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11) RETURNING *`,
+    [e.agent_id ?? null, e.lead_id ?? null, e.channel, e.portal ?? null, e.external_id ?? null,
+     e.status ?? 'received', e.contact_phone ?? null, e.contact_name ?? null,
+     e.auto_reply_status ?? null, JSON.stringify(e.raw || {}), e.error ?? null],
+  )
+  return { event: rows[0], duplicate: false }
+}
+
+export async function updateLeadSourceEvent(id, fields = {}) {
+  const { sets, params } = buildSet(
+    { lead_id: 'int', status: 'text', auto_reply_status: 'text', error: 'text' },
+    fields,
+  )
+  if (!sets.length) return null
+  const { rows } = await q(
+    `UPDATE lead_source_events SET ${sets.join(', ')} WHERE id = $${params.length + 1} RETURNING *`,
+    [...params, id],
+  )
+  return rows[0]
+}
+
+// Recent ingestion feed for the "Lead sources" screen.
+export async function listLeadSourceEvents(agentId, { channel = '', limit = 50 } = {}) {
+  const where = ['e.agent_id = $1']
+  const params = [agentId]
+  if (channel) {
+    params.push(channel)
+    where.push(`e.channel = $${params.length}`)
+  }
+  params.push(Math.min(Number(limit) || 50, 200))
+  const { rows } = await q(
+    `SELECT e.*, l.name AS lead_name
+       FROM lead_source_events e
+       LEFT JOIN leads l ON l.id = e.lead_id
+      WHERE ${where.join(' AND ')}
+      ORDER BY e.id DESC LIMIT $${params.length}`,
+    params,
+  )
+  return rows
+}
+
+// Per-channel ingestion counts for the dashboard header.
+export async function leadSourceStats(agentId) {
+  const { rows } = await q(
+    `SELECT source_channel AS channel, COUNT(*)::int AS n
+       FROM leads WHERE agent_id = $1 AND source_channel IS NOT NULL
+       GROUP BY source_channel`,
+    [agentId],
+  )
+  return rows
+}
+
+// --- Direct portal API integrations (99acres / MagicBricks / Housing / NoBroker) ---
+
+const PORTAL_INT_FIELDS = { enabled: 'bool', api_key: 'text', api_secret: 'text', config: 'jsonb', last_sync_at: 'text', last_status: 'text' }
+
+// Secrets are never returned to the client; expose only whether they're set.
+function maskPortalIntegration(row) {
+  if (!row) return row
+  const { api_key, api_secret, ...rest } = row
+  return { ...rest, has_api_key: Boolean(api_key), has_api_secret: Boolean(api_secret) }
+}
+
+export async function listPortalIntegrations(agentId) {
+  const { rows } = await q(
+    'SELECT * FROM portal_integrations WHERE agent_id = $1 ORDER BY portal',
+    [agentId],
+  )
+  return rows.map(maskPortalIntegration)
+}
+
+// Raw row incl. secrets — server-internal use (making portal API calls).
+export async function getPortalIntegrationRaw(agentId, portal) {
+  const { rows } = await q(
+    'SELECT * FROM portal_integrations WHERE agent_id = $1 AND portal = $2',
+    [agentId, portal],
+  )
+  return rows[0] || null
+}
+
+export async function upsertPortalIntegration(agentId, portal, fields = {}) {
+  const existing = await getPortalIntegrationRaw(agentId, portal)
+  if (!existing) {
+    await q('INSERT INTO portal_integrations (agent_id, portal) VALUES ($1, $2)', [agentId, portal])
+  }
+  const { sets, params } = buildSet(PORTAL_INT_FIELDS, fields)
+  if (sets.length) {
+    await q(
+      `UPDATE portal_integrations SET ${sets.join(', ')}, updated_at = now()
+       WHERE agent_id = $${params.length + 1} AND portal = $${params.length + 2}`,
+      [...params, agentId, portal],
+    )
+  }
+  return maskPortalIntegration(await getPortalIntegrationRaw(agentId, portal))
+}
+
+// --- Listing syndication (compose once, export portal-formatted) ---
+
+export async function upsertSyndication(propertyId, agentId, portal, fields = {}) {
+  const existing = (
+    await q('SELECT id FROM property_syndications WHERE property_id = $1 AND portal = $2', [propertyId, portal])
+  ).rows[0]
+  if (!existing) {
+    await q(
+      'INSERT INTO property_syndications (property_id, agent_id, portal) VALUES ($1, $2, $3)',
+      [propertyId, agentId, portal],
+    )
+  }
+  const { sets, params } = buildSet(
+    { status: 'text', formatted: 'jsonb', external_listing_id: 'text', exported_at: 'text' },
+    fields,
+  )
+  if (sets.length) {
+    await q(
+      `UPDATE property_syndications SET ${sets.join(', ')}, updated_at = now()
+       WHERE property_id = $${params.length + 1} AND portal = $${params.length + 2}`,
+      [...params, propertyId, portal],
+    )
+  }
+  const { rows } = await q(
+    'SELECT * FROM property_syndications WHERE property_id = $1 AND portal = $2', [propertyId, portal],
+  )
+  return rows[0]
+}
+
+export async function listSyndications(agentId, propertyId = null) {
+  const where = ['agent_id = $1']
+  const params = [agentId]
+  if (propertyId != null) {
+    params.push(propertyId)
+    where.push(`property_id = $${params.length}`)
+  }
+  const { rows } = await q(
+    `SELECT * FROM property_syndications WHERE ${where.join(' AND ')} ORDER BY updated_at DESC`,
+    params,
+  )
+  return rows
 }
 
 export { pool, q as query }

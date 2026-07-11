@@ -282,6 +282,82 @@ function AnalyticsCard({ propertyId, onOpenLead }) {
   )
 }
 
+const PORTAL_LABELS = { '99acres': '99acres', magicbricks: 'MagicBricks', housing: 'Housing.com', nobroker: 'NoBroker' }
+
+// Listing syndication (§5.2): compose the property once, preview and export the
+// portal-formatted content for each portal, then copy it into the portal's listing form.
+function SyndicateCard({ property }) {
+  const [data, setData] = useState(null)
+  const [portal, setPortal] = useState('99acres')
+  const [busy, setBusy] = useState(false)
+  const [copied, setCopied] = useState('')
+
+  const load = () => api.propertySyndications(property.id).then(setData).catch(() => {})
+  useEffect(() => { load() }, [property.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  if (!data) return null
+
+  const preview = data.preview.find((p) => p.portal === portal)
+  const exported = data.saved.find((s) => s.portal === portal)
+
+  const doExport = async () => {
+    setBusy(true)
+    try { await api.syndicate(property.id, portal); await load() } finally { setBusy(false) }
+  }
+  const copy = async (text, which) => {
+    await navigator.clipboard?.writeText(text).catch(() => {})
+    setCopied(which)
+    setTimeout(() => setCopied(''), 1500)
+  }
+
+  return (
+    <section className="bg-card rounded-2xl border border-line shadow-card p-4">
+      <p className="text-[10.5px] font-bold tracking-[0.18em] text-brand mb-1">SYNDICATE LISTING</p>
+      <p className="text-[11.5px] text-ink-faint mb-3">Compose once — export portal-ready content for each portal.</p>
+      <div className="flex gap-1.5 flex-wrap mb-3">
+        {data.portals.map((p) => (
+          <Chip key={p} active={portal === p} onClick={() => setPortal(p)}>{PORTAL_LABELS[p] || p}</Chip>
+        ))}
+      </div>
+
+      {preview && (
+        <div className="space-y-2.5">
+          <p className="text-[12.5px] font-bold text-ink">
+            {preview.price_display || 'Price on request'}
+            {preview.spec ? <span className="text-ink-soft font-semibold"> · {preview.spec}</span> : null}
+          </p>
+
+          <div className="bg-cream border border-line rounded-xl p-3">
+            <p className="text-[10px] font-bold tracking-[0.14em] text-ink-soft mb-1">WHATSAPP TEXT</p>
+            <p className="text-[12px] text-ink whitespace-pre-wrap leading-snug">{preview.whatsapp_text}</p>
+            <button onClick={() => copy(preview.whatsapp_text, 'wa')} className="mt-1.5 text-[11px] font-bold text-brand-deep active:scale-95 transition">
+              {copied === 'wa' ? '✓ Copied' : 'Copy'}
+            </button>
+          </div>
+
+          <div className="bg-cream border border-line rounded-xl p-3">
+            <p className="text-[10px] font-bold tracking-[0.14em] text-ink-soft mb-1">PORTAL DESCRIPTION</p>
+            <p className="text-[12px] text-ink leading-snug">{preview.description}</p>
+            <button onClick={() => copy(preview.description, 'desc')} className="mt-1.5 text-[11px] font-bold text-brand-deep active:scale-95 transition">
+              {copied === 'desc' ? '✓ Copied' : 'Copy'}
+            </button>
+          </div>
+
+          <button
+            onClick={doExport}
+            disabled={busy}
+            className="w-full bg-brand-wash text-brand-deep font-bold text-[13px] rounded-full py-2.5 active:scale-[0.99] transition disabled:opacity-50"
+          >
+            {busy ? 'Exporting…' : exported ? `✓ Exported to ${PORTAL_LABELS[portal]} · re-export` : `Export to ${PORTAL_LABELS[portal]}`}
+          </button>
+          {exported?.exported_at && (
+            <p className="text-[10.5px] text-ink-faint text-center">Last exported {fmtAgo(exported.exported_at)}</p>
+          )}
+        </div>
+      )}
+    </section>
+  )
+}
+
 export default function PropertyDetail({ propertyId, onClose, onChanged, onOpenLead }) {
   const [refreshKey, setRefreshKey] = useState(0)
   const { data: property } = usePoll(() => api.property(propertyId), 30000, [propertyId, refreshKey])
@@ -388,6 +464,7 @@ export default function PropertyDetail({ propertyId, onClose, onChanged, onOpenL
             </section>
 
             <MicroPageCard propertyId={property.id} />
+            <SyndicateCard property={property} />
             <AnalyticsCard propertyId={property.id} onOpenLead={onOpenLead} />
 
             <button
