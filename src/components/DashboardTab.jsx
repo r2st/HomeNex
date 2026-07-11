@@ -228,6 +228,38 @@ export default function DashboardTab({ agent, onGoTo, onOpenConversation, onOpen
         </section>
       )}
 
+      {d && d.overdueFollowups && d.overdueFollowups.length > 0 && (
+        <section className="mt-7 rise rise-3">
+          <SectionHeader badge={d.overdueFollowups.length}>⏰ OVERDUE · BY HEAT</SectionHeader>
+          <div className="mt-3 bg-card rounded-2xl border border-line shadow-card divide-y divide-line">
+            {d.overdueFollowups.slice(0, 6).map((f) => {
+              const temp = f.lead_effective_temp || f.lead_temp || 'Cold'
+              return (
+                <div key={f.id} className="flex items-center gap-3 px-4 py-3">
+                  <button
+                    onClick={() => complete(f.id)}
+                    title="Mark done"
+                    className="shrink-0 w-6 h-6 rounded-full border-2 border-brand/50 text-transparent hover:text-brand text-[13px] leading-none active:scale-90 transition"
+                  >
+                    ✓
+                  </button>
+                  <button
+                    onClick={() => (onOpenLead ? onOpenLead(f.lead_id) : onOpenConversation(f.lead_id))}
+                    className="min-w-0 flex-1 text-left"
+                  >
+                    <p className="text-[13px] font-bold text-hot truncate">
+                      {temp === 'Hot' ? '🔥' : temp === 'Warm' ? '☀️' : '❄️'} {f.lead_name || f.lead_wa_id}
+                    </p>
+                    {f.note && <p className="text-[12px] text-ink-soft truncate">{f.note}</p>}
+                  </button>
+                  <span className="shrink-0 text-[11px] font-medium tabular-nums text-hot">{fmtAgo(f.due_at)}</span>
+                </div>
+              )
+            })}
+          </div>
+        </section>
+      )}
+
       {d && d.siteVisitsToday.length > 0 && (
         <section className="mt-7 rise rise-3">
           <SectionHeader badge={d.siteVisitsToday.length}>TODAY'S SITE VISITS</SectionHeader>

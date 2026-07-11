@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api, usePoll, fmtAgo, fmtTime } from '../api.js'
-import { paiseRangeToDisplay, lakhsToPaise, paiseToLakhs } from '../money.js'
+import { paiseRangeToDisplay, paiseToDisplay, lakhsToPaise, paiseToLakhs } from '../money.js'
 import { ScoreRing, SlideOver, Sheet, Chip, Field, inputCls } from './ui.jsx'
 
 const LOST_REASONS = [
@@ -104,6 +104,80 @@ function StagePicker({ lead, onClose, onMoved }) {
       </div>
       {error && <p className="mt-3 text-[12px] text-hot bg-amber-wash rounded-xl px-3.5 py-2.5">{error}</p>}
     </Sheet>
+  )
+}
+
+// AI auto-fill: field values the AI extracted from the conversation that differ
+// from what's on the lead card. The agent accepts or rejects each one — nothing is
+// ever written automatically. Renders nothing when the AI has no new suggestions.
+function AutofillCard({ lead, refreshKey, onApplied }) {
+  const [suggestions, setSuggestions] = useState([])
+  const [busy, setBusy] = useState(null)
+
+  useEffect(() => {
+    let live = true
+    api
+      .autofill(lead.id)
+      .then((r) => live && setSuggestions(r.suggestions || []))
+      .catch(() => live && setSuggestions([]))
+    return () => {
+      live = false
+    }
+  }, [lead.id, refreshKey])
+
+  const reject = (field) => setSuggestions((s) => s.filter((x) => x.field !== field))
+
+  const accept = async (sug) => {
+    setBusy(sug.field)
+    try {
+      const updated = await api.applyAutofill(lead.id, { [sug.field]: sug.suggested })
+      reject(sug.field)
+      onApplied?.(updated)
+    } catch {
+      // Leave the suggestion in place so the agent can retry.
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  if (!suggestions.length) return null
+
+  return (
+    <section className="bg-card rounded-2xl border border-line shadow-card p-4">
+      <p className="text-[10.5px] font-bold tracking-[0.18em] text-brand mb-1">✨ AI SUGGESTIONS</p>
+      <p className="text-[11.5px] text-ink-soft mb-3">From the conversation — tap ✓ to fill the lead card, ✕ to dismiss.</p>
+      <ul className="space-y-2">
+        {suggestions.map((s) => (
+          <li key={s.field} className="flex items-center gap-2">
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] font-bold text-ink-soft">{s.label}</p>
+              <p className="text-[12.5px] text-ink truncate">
+                {s.suggested_display}
+                {s.current != null && s.current !== '' && (
+                  <span className="text-ink-faint"> (was {Array.isArray(s.current) ? s.current.join(', ') : String(s.current)})</span>
+                )}
+              </p>
+            </div>
+            <button
+              onClick={() => accept(s)}
+              disabled={busy === s.field}
+              className="shrink-0 h-7 w-7 rounded-full bg-brand text-white font-bold disabled:opacity-50"
+              aria-label={`Accept ${s.label}`}
+            >
+              ✓
+            </button>
+            <button
+              onClick={() => reject(s.field)}
+              disabled={busy === s.field}
+              className="shrink-0 h-7 w-7 rounded-full border border-line text-ink-soft font-bold disabled:opacity-50"
+              aria-label={`Reject ${s.label}`}
+            >
+              ✕
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
   )
 }
 
@@ -242,25 +316,53 @@ function CrmEditor({ lead, onSaved }) {
   )
 }
 
+// One-tap follow-up presets. Date-based presets land at 10am local (agents call in
+// the morning); "Custom" opens the datetime picker.
+function presetDate(kind) {
+  const d = new Date()
+  d.setSeconds(0, 0)
+  if (kind === 'tomorrow') {
+    d.setDate(d.getDate() + 1)
+    d.setHours(10, 0)
+  } else if (kind === '3days') {
+    d.setDate(d.getDate() + 3)
+    d.setHours(10, 0)
+  } else if (kind === 'nextweek') {
+    d.setDate(d.getDate() + 7)
+    d.setHours(10, 0)
+  }
+  return d
+}
+
+const FOLLOWUP_PRESETS = [
+  { kind: 'tomorrow', label: 'Tomorrow 10am' },
+  { kind: '3days', label: 'In 3 days' },
+  { kind: 'nextweek', label: 'Next week' },
+]
+
 function FollowupsSection({ lead, refresh }) {
-  const [adding, setAdding] = useState(false)
+  const [custom, setCustom] = useState(false)
   const [dueAt, setDueAt] = useState('')
   const [note, setNote] = useState('')
   const [error, setError] = useState(null)
 
-  const add = async (e) => {
-    e.preventDefault()
-    if (!dueAt) return
+  const schedule = async (due, followupNote) => {
     setError(null)
     try {
-      await api.createFollowup({ lead_id: lead.id, due_at: new Date(dueAt).toISOString(), note: note || null })
-      setAdding(false)
+      await api.createFollowup({ lead_id: lead.id, due_at: due.toISOString(), note: followupNote || null })
+      setCustom(false)
       setDueAt('')
       setNote('')
       refresh()
     } catch (err) {
       setError(err.message)
     }
+  }
+
+  const add = async (e) => {
+    e.preventDefault()
+    if (!dueAt) return
+    await schedule(new Date(dueAt), note)
   }
 
   const toggle = async (f) => {
@@ -270,13 +372,28 @@ function FollowupsSection({ lead, refresh }) {
 
   return (
     <section className="bg-card rounded-2xl border border-line shadow-card p-4">
-      <div className="flex items-center justify-between mb-2">
-        <p className="text-[10.5px] font-bold tracking-[0.18em] text-ink-soft">FOLLOW-UPS</p>
-        <button onClick={() => setAdding((v) => !v)} className="text-[11.5px] font-bold text-brand underline underline-offset-2">
-          {adding ? 'Cancel' : '+ Add'}
+      <p className="text-[10.5px] font-bold tracking-[0.18em] text-ink-soft mb-2">FOLLOW-UPS</p>
+      {/* One-tap presets — the fastest path; "Custom" reveals the datetime picker. */}
+      <div className="flex gap-1.5 flex-wrap mb-3">
+        {FOLLOWUP_PRESETS.map((p) => (
+          <button
+            key={p.kind}
+            onClick={() => schedule(presetDate(p.kind), null)}
+            className="text-[11.5px] font-bold rounded-full px-3 py-1.5 border border-line bg-card text-ink-soft active:scale-95 transition"
+          >
+            {p.label}
+          </button>
+        ))}
+        <button
+          onClick={() => setCustom((v) => !v)}
+          className={`text-[11.5px] font-bold rounded-full px-3 py-1.5 border transition active:scale-95 ${
+            custom ? 'bg-brand text-white border-brand' : 'border-line bg-card text-ink-soft'
+          }`}
+        >
+          Custom
         </button>
       </div>
-      {adding && (
+      {custom && (
         <form onSubmit={add} className="space-y-2 mb-3">
           <input type="datetime-local" value={dueAt} onChange={(e) => setDueAt(e.target.value)} className={inputCls} required />
           <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note (optional)" className={inputCls} />
@@ -286,7 +403,8 @@ function FollowupsSection({ lead, refresh }) {
           </button>
         </form>
       )}
-      {(lead.followups || []).length === 0 && !adding && (
+      {error && !custom && <p className="text-[12px] text-hot bg-amber-wash rounded-xl px-3.5 py-2.5 mb-3">{error}</p>}
+      {(lead.followups || []).length === 0 && !custom && (
         <p className="text-[12px] text-ink-faint">No follow-ups yet.</p>
       )}
       <div className="space-y-2">
@@ -410,6 +528,66 @@ function SiteVisitsSection({ lead, refresh }) {
             </div>
           </div>
         ))}
+      </div>
+    </section>
+  )
+}
+
+// Quick match: inventory that fits this lead's budget / BHK / locality, each with a
+// one-tap "Send" that pushes the property card into the WhatsApp conversation.
+function QuickMatchSection({ lead }) {
+  const [matches, setMatches] = useState(null)
+  const [sent, setSent] = useState({})
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    let alive = true
+    api.leadPropertyMatches(lead.id).then((m) => alive && setMatches(m)).catch(() => alive && setMatches([]))
+    return () => { alive = false }
+  }, [lead.id])
+
+  const send = async (p) => {
+    setError(null)
+    setSent((s) => ({ ...s, [p.id]: 'sending' }))
+    try {
+      await api.sendPropertyToChat(p.id, lead.id)
+      setSent((s) => ({ ...s, [p.id]: 'sent' }))
+    } catch (err) {
+      setError(err.message)
+      setSent((s) => ({ ...s, [p.id]: undefined }))
+    }
+  }
+
+  if (!matches || matches.length === 0) return null
+  return (
+    <section className="bg-card rounded-2xl border border-line shadow-card p-4">
+      <p className="text-[10.5px] font-bold tracking-[0.18em] text-ink-soft mb-1">🎯 MATCHING INVENTORY</p>
+      <p className="text-[11.5px] text-ink-faint mb-3">Fits this buyer's budget, BHK & locality.</p>
+      {error && <p className="text-[12px] text-hot bg-amber-wash rounded-xl px-3.5 py-2.5 mb-3">{error}</p>}
+      <div className="space-y-2">
+        {matches.slice(0, 5).map((p) => {
+          const spec = [p.bhk && `${p.bhk} BHK`, p.property_type, p.locality].filter(Boolean).join(' · ')
+          const state = sent[p.id]
+          return (
+            <div key={p.id} className="flex items-center gap-2.5 border border-line rounded-xl px-3 py-2.5">
+              <div className="min-w-0 flex-1">
+                <p className="text-[12.5px] font-bold text-ink truncate">{p.title}</p>
+                <p className="text-[11.5px] text-ink-soft truncate">
+                  {[spec, p.price_paise != null && paiseToDisplay(p.price_paise)].filter(Boolean).join(' · ')}
+                </p>
+              </div>
+              <button
+                onClick={() => !state && send(p)}
+                disabled={state === 'sending' || state === 'sent'}
+                className={`shrink-0 text-[11.5px] font-bold rounded-full px-3 py-1.5 transition active:scale-95 ${
+                  state === 'sent' ? 'bg-brand-wash text-brand-deep' : 'bg-brand text-white'
+                }`}
+              >
+                {state === 'sent' ? '✓ Sent' : state === 'sending' ? '…' : 'Send'}
+              </button>
+            </div>
+          )
+        })}
       </div>
     </section>
   )
@@ -549,6 +727,8 @@ export default function LeadDetail({ leadId, onClose, onOpenConversation, onChan
 
         {!unassigned && <BriefingPanel leadId={lead.id} refreshKey={refreshKey} />}
 
+        {!unassigned && <AutofillCard lead={lead} refreshKey={refreshKey} onApplied={refresh} />}
+
         {!unassigned && <CrmEditor lead={lead} onSaved={refresh} />}
 
         {(lead.ai_summary || lead.locality || lead.config || lead.intent || lead.ai_score) && (
@@ -585,6 +765,7 @@ export default function LeadDetail({ leadId, onClose, onOpenConversation, onChan
           </section>
         )}
 
+        {!unassigned && <QuickMatchSection lead={lead} />}
         {!unassigned && <FollowupsSection lead={lead} refresh={refresh} />}
         {!unassigned && <SiteVisitsSection lead={lead} refresh={refresh} />}
 

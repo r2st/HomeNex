@@ -179,6 +179,26 @@ export default function SettingsTab({ agent, onAgentUpdate }) {
       <PreferencesCard agent={current} onSaved={onSaved} />
       <WabaCard agent={current} onSaved={onSaved} />
 
+      {/* Setup guide: full step-by-step for adding a number to Meta WABA. */}
+      <a
+        href="/setup-guide"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="block bg-white border border-line rounded-2xl p-4 active:scale-[0.99] transition hover:bg-cream"
+      >
+        <div className="flex items-center gap-3">
+          <span className="text-[22px]">📘</span>
+          <div className="min-w-0 flex-1">
+            <p className="font-bold text-[13.5px] text-ink">WhatsApp Business setup guide</p>
+            <p className="text-[12px] text-ink-soft mt-0.5 leading-snug">
+              How to add a phone number to Meta WhatsApp Business — prerequisites, steps,
+              and troubleshooting.
+            </p>
+          </div>
+          <span className="text-ink-faint text-lg">↗</span>
+        </div>
+      </a>
+
       {/* How it works */}
       <div className="bg-white border border-line rounded-2xl p-4 space-y-3">
         <h3 className="text-[13px] font-bold text-ink-soft">How WABA Registration Works</h3>
@@ -188,6 +208,9 @@ export default function SettingsTab({ agent, onAgentUpdate }) {
           <li>Once active, all incoming messages are auto-tracked in your dashboard</li>
           <li>New senders are automatically added as your clients</li>
         </ol>
+        <a href="/setup-guide" target="_blank" rel="noopener noreferrer" className="inline-block text-[12.5px] font-bold text-brand">
+          Read the full setup guide →
+        </a>
       </div>
 
       {current.is_admin === 1 && (

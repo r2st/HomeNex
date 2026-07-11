@@ -18,9 +18,18 @@ import {
   recomputeAgentScores,
   createNotification,
   createFollowup,
+  addMessage,
+  logActivity,
 } from './db.js'
+import { sendText, whatsappConfigured } from './whatsapp.js'
+import { reminderT1Text, reminderT2Text } from './siteVisit.js'
 
 const today = (now) => new Date(now).toISOString().slice(0, 10)
+
+// A brand-new lead is "unreplied" if no agent/AI message has ever gone out and the
+// buyer has been waiting longer than this. Kept short — the first reply is what wins
+// a WhatsApp lead. See §4.6 "No-response nudge".
+const NO_RESPONSE_NUDGE_MINUTES = 30
 
 // --- Individual jobs (each per-agent, tenant-scoped, returns how many it acted on) ---
 
@@ -151,6 +160,93 @@ export async function siteVisitRemindersForAgent(agentId) {
   return n
 }
 
+// No-response nudge: a brand-new lead whose only messages are from the buyer and
+// who has now waited past the threshold with no agent/AI reply. Notifies once per
+// waiting spell (keyed to the last-inbound hour, so a fresh message re-nudges).
+export async function noResponseNudgeForAgent(agentId, now = Date.now()) {
+  const { rows } = await query(
+    `SELECT l.id, l.name, l.wa_id, l.last_inbound_at
+     FROM leads l
+     WHERE l.agent_id = $1 AND l.closed_at IS NULL AND l.last_inbound_at IS NOT NULL
+       AND l.last_inbound_at <= now() - ($2 || ' minutes')::interval
+       AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.lead_id = l.id AND m.role IN ('agent','ai'))`,
+    [agentId, String(NO_RESPONSE_NUDGE_MINUTES)],
+  )
+  let n = 0
+  for (const l of rows) {
+    const windowHour = Math.floor(new Date(l.last_inbound_at).getTime() / 3600_000)
+    const created = await createNotification(agentId, {
+      type: 'no_response_nudge',
+      title: `🆕 Unanswered lead: ${l.name || l.wa_id}`,
+      body: `A new buyer has waited ${NO_RESPONSE_NUDGE_MINUTES}+ min with no reply. First response wins the deal.`,
+      entity_type: 'lead',
+      entity_id: l.id,
+      dedupe_key: `noresp:${l.id}:${windowHour}`,
+    })
+    if (created) n++
+  }
+  return n
+}
+
+// Deliver one automated site-visit WhatsApp message: send it, mirror it into the
+// lead's transcript, log the activity. `send` is injectable for tests.
+async function deliverVisitMessage(agent, visit, text, send) {
+  const waId = await send(visit.lead_wa_id, text, agent.wa_phone_number_id)
+  await addMessage(visit.lead_id, 'agent', text, waId)
+  await logActivity(agent.id, visit.lead_id, 'agent', `Auto site-visit reminder sent to ${visit.lead_name || visit.lead_wa_id}`)
+  return waId
+}
+
+// Automated WhatsApp confirmations before a visit: a T-1-day heads-up and a
+// T-2-hour reminder that carries the location pin. Each fires at most once (guarded
+// by the reminder_t*_sent_at columns). `send` defaults to the real WhatsApp sender;
+// when WhatsApp isn't configured the job is a no-op so dev/test runs stay quiet.
+export async function siteVisitWaRemindersForAgent(agentId, now = Date.now(), send = sendText) {
+  if (send === sendText && !whatsappConfigured()) return 0
+  const agent = (
+    await query('SELECT id, wa_phone_number_id, timezone FROM agents WHERE id = $1', [agentId])
+  ).rows[0]
+  if (!agent) return 0
+  const { rows } = await query(
+    `SELECT v.*, l.name AS lead_name, l.wa_id AS lead_wa_id,
+            p.title AS property_title, p.locality AS property_locality, p.city AS property_city
+     FROM site_visits v
+     JOIN leads l ON l.id = v.lead_id
+     LEFT JOIN properties p ON p.id = v.property_id
+     WHERE v.agent_id = $1 AND v.status IN ('scheduled','confirmed')
+       AND v.scheduled_at > to_timestamp($2 / 1000.0)
+       AND v.scheduled_at <= to_timestamp($2 / 1000.0) + interval '26 hours'`,
+    [agentId, now],
+  )
+  const opts = { timezone: agent.timezone || 'Asia/Kolkata' }
+  let n = 0
+  for (const v of rows) {
+    const hoursUntil = (new Date(v.scheduled_at).getTime() - now) / 3600_000
+    let column = null
+    let text = null
+    // Inside the final ~2h, only the T-2h reminder (with the pin) is relevant — a
+    // same-day booking must never fall through to a "your visit is tomorrow" note.
+    if (hoursUntil <= 2.5) {
+      if (!v.reminder_t2_sent_at) {
+        column = 'reminder_t2_sent_at'
+        text = reminderT2Text(v, opts)
+      }
+    } else if (hoursUntil <= 25 && !v.reminder_t1_sent_at) {
+      column = 'reminder_t1_sent_at'
+      text = reminderT1Text(v, opts)
+    }
+    if (!column) continue
+    try {
+      await deliverVisitMessage(agent, v, text, send)
+      await query(`UPDATE site_visits SET ${column} = now() WHERE id = $1`, [v.id])
+      n++
+    } catch (err) {
+      console.error(`site-visit reminder failed for visit ${v.id}:`, err.message)
+    }
+  }
+  return n
+}
+
 // Flip expected commissions past their payout date to overdue, and notify once.
 export async function commissionOverdueSweepForAgent(agentId) {
   const { rows } = await query(
@@ -184,8 +280,10 @@ export const JOBS = [
   { name: 'scores', everyMin: 720, fn: recomputeScoresForAgent },
   { name: 'service_window', everyMin: 15, fn: serviceWindowWatchForAgent },
   { name: 'hot_leads', everyMin: 30, fn: detectHotLeadsForAgent },
+  { name: 'no_response', everyMin: 10, fn: noResponseNudgeForAgent },
   { name: 'stale_followups', everyMin: 240, fn: generateStaleFollowupsForAgent },
   { name: 'site_visits', everyMin: 360, fn: siteVisitRemindersForAgent },
+  { name: 'site_visit_wa', everyMin: 30, fn: siteVisitWaRemindersForAgent },
   { name: 'commissions', everyMin: 1440, fn: commissionOverdueSweepForAgent },
 ]
 

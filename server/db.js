@@ -2,7 +2,7 @@ import pg from 'pg'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { decayLead } from './scoring.js'
+import { decayLead, hybridScore } from './scoring.js'
 import { worklistItem, rankWorklist, worklistCounts } from './worklist.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -1236,6 +1236,30 @@ export async function updateLeadCrm(leadId, agentId, fields) {
   return rows[0]
 }
 
+// Fields the agent may accept from an AI auto-fill suggestion. Kept deliberately
+// tight: only lead-qualification data, never pipeline/stage/ownership columns.
+const AUTOFILL_APPLY_FIELDS = new Set([
+  'name', 'intent', 'bhk', 'preferred_localities', 'budget_min', 'budget_max', 'timeline', 'financing',
+])
+
+// Apply an agent-accepted subset of AI auto-fill suggestions to a lead. `accepted`
+// is a { field: value } map; only whitelisted fields are written, and `name`/`intent`
+// (outside the generic CRM allowlist) are handled explicitly. Returns the updated lead
+// or null if the lead isn't the agent's.
+export async function applyAutofill(leadId, agentId, accepted = {}) {
+  const lead = await getLeadForAgent(leadId, agentId)
+  if (!lead) return null
+  const entries = Object.entries(accepted).filter(([k, v]) => AUTOFILL_APPLY_FIELDS.has(k) && v != null)
+  const crmFields = {}
+  for (const [k, v] of entries) {
+    if (k === 'name') await updateLeadName(leadId, String(v || '').trim() || null)
+    else if (k === 'intent') await q('UPDATE leads SET intent = $2, updated_at = now() WHERE id = $1 AND agent_id = $3', [leadId, v, agentId])
+    else crmFields[k] = v
+  }
+  if (Object.keys(crmFields).length) return updateLeadCrm(leadId, agentId, crmFields)
+  return getLeadForAgent(leadId, agentId)
+}
+
 // Stages that end a lead's journey — moving into one stamps closed_at.
 const TERMINAL_STAGES = new Set(['Registered/Closed', 'Closed', 'Lost'])
 
@@ -1257,6 +1281,10 @@ export async function setLeadStage(leadId, agentId, { stage, lost_reason } = {})
     err.code = 'LOST_REASON_REQUIRED'
     throw err
   }
+  // A lead's stage column is NULL until its first move; null reads as "New"
+  // everywhere, so the first transition is recorded as leaving New (capturing the
+  // time it sat there since creation).
+  const fromStage = lead.stage || 'New'
   const { rows } = await q(
     `UPDATE leads SET
        pipeline_type = COALESCE(pipeline_type, $3),
@@ -1267,7 +1295,33 @@ export async function setLeadStage(leadId, agentId, { stage, lost_reason } = {})
      WHERE id = $1 AND agent_id = $2 RETURNING *`,
     [leadId, agentId, pipelineType, stage, lost_reason ? String(lost_reason).trim() : null, TERMINAL_STAGES.has(stage)],
   )
+  // Append-only transition log (feeds pipeline analytics). Skip genuine no-ops so
+  // re-saving the same stage doesn't manufacture zero-length dwell rows.
+  if (rows[0] && fromStage !== stage) {
+    await recordStageEvent(rows[0], fromStage)
+  }
   return rows[0]
+}
+
+// Log one stage transition, computing how long the lead sat in from_stage from the
+// timestamp of its previous transition (falling back to the lead's creation time).
+async function recordStageEvent(lead, fromStage) {
+  // Dwell in from_stage = time since the lead's previous transition (or, for the
+  // first move, since the lead was created).
+  const { rows: dwellRows } = await q(
+    `SELECT EXTRACT(EPOCH FROM (now() - COALESCE(
+       (SELECT created_at FROM lead_stage_events WHERE lead_id = $1 ORDER BY id DESC LIMIT 1),
+       (SELECT created_at FROM leads WHERE id = $1)
+     )))::bigint AS secs`,
+    [lead.id],
+  )
+  const secondsInFrom = dwellRows[0]?.secs ?? null
+  await q(
+    `INSERT INTO lead_stage_events
+       (lead_id, agent_id, pipeline_type, from_stage, to_stage, lost_reason, seconds_in_from_stage)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [lead.id, lead.agent_id, lead.pipeline_type || 'buy_primary', fromStage, lead.stage, lead.lost_reason ?? null, secondsInFrom],
+  )
 }
 
 // --- CRM: pipeline stages ---
@@ -1279,6 +1333,133 @@ export async function listPipelineStages(pipelineType = null) {
     ).rows
   }
   return (await q('SELECT * FROM pipeline_stages ORDER BY pipeline_type, stage_order')).rows
+}
+
+// --- CRM: pipeline analytics (funnel counts, avg time-in-stage, lost reasons) ---
+//
+// Built from lead_stage_events (transition history) plus the live stage distribution.
+// Time-in-stage averages only completed dwells (a lead that has moved on); the
+// current stage of a still-open lead has no end yet, so it isn't averaged.
+export async function pipelineAnalytics(agentId, pipelineType = 'buy_primary') {
+  const stages = await listPipelineStages(pipelineType)
+
+  // Count leads per stage — the funnel snapshot. Terminal stages (Lost, Closed)
+  // carry closed_at, so they're included here on purpose; the "open total" below
+  // excludes them. Otherwise won/lost would always read zero.
+  const dist = (
+    await q(
+      `SELECT COALESCE(stage, 'New') AS stage, COUNT(*)::int AS n
+       FROM leads
+       WHERE agent_id = $1 AND COALESCE(pipeline_type, 'buy_primary') = $2
+       GROUP BY COALESCE(stage, 'New')`,
+      [agentId, pipelineType],
+    )
+  ).rows
+  const liveByStage = Object.fromEntries(dist.map((r) => [r.stage, r.n]))
+
+  // Average completed dwell time per stage, in seconds.
+  const dwell = (
+    await q(
+      `SELECT from_stage AS stage, ROUND(AVG(seconds_in_from_stage))::bigint AS avg_secs, COUNT(*)::int AS moves
+       FROM lead_stage_events
+       WHERE agent_id = $1 AND pipeline_type = $2 AND from_stage IS NOT NULL AND seconds_in_from_stage IS NOT NULL
+       GROUP BY from_stage`,
+      [agentId, pipelineType],
+    )
+  ).rows
+  const dwellByStage = Object.fromEntries(dwell.map((r) => [r.stage, { avg_seconds: Number(r.avg_secs), moves: r.moves }]))
+
+  // Lost-reason breakdown across all of this pipeline's leads.
+  const lostReasons = (
+    await q(
+      `SELECT COALESCE(lost_reason, 'Unspecified') AS reason, COUNT(*)::int AS n
+       FROM leads
+       WHERE agent_id = $1 AND COALESCE(pipeline_type, 'buy_primary') = $2 AND stage = 'Lost'
+       GROUP BY COALESCE(lost_reason, 'Unspecified') ORDER BY n DESC`,
+      [agentId, pipelineType],
+    )
+  ).rows
+
+  const funnel = stages.map((s) => ({
+    stage: s.stage_name,
+    order: s.stage_order,
+    open: liveByStage[s.stage_name] || 0,
+    avg_seconds_in_stage: dwellByStage[s.stage_name]?.avg_seconds ?? null,
+    transitions_out: dwellByStage[s.stage_name]?.moves ?? 0,
+  }))
+
+  const terminal = new Set(['Registered/Closed', 'Closed', 'Lost'])
+  const won = funnel
+    .filter((f) => f.stage === 'Registered/Closed' || f.stage === 'Closed')
+    .reduce((a, f) => a + f.open, 0)
+  const lost = funnel.filter((f) => f.stage === 'Lost').reduce((a, f) => a + f.open, 0)
+  const openTotal = funnel.filter((f) => !terminal.has(f.stage)).reduce((a, f) => a + f.open, 0)
+
+  return { pipeline_type: pipelineType, funnel, lost_reasons: lostReasons, totals: { open: openTotal, won, lost } }
+}
+
+// Recent stage-transition history for one lead (timeline in the detail panel).
+export async function leadStageHistory(leadId, agentId) {
+  return (
+    await q(
+      `SELECT from_stage, to_stage, lost_reason, seconds_in_from_stage, created_at
+       FROM lead_stage_events WHERE lead_id = $1 AND agent_id = $2 ORDER BY id`,
+      [leadId, agentId],
+    )
+  ).rows
+}
+
+// --- Quick match: inventory that fits a lead's budget / BHK / locality ---
+//
+// A property matches when it is available and every criterion the lead HAS is met
+// (a lead with no budget still matches on BHK+locality). Ranked by how many
+// criteria matched, then freshest first.
+export async function propertyMatchesForLead(leadId, agentId) {
+  const lead = await getLeadForAgent(leadId, agentId)
+  if (!lead) return null
+  const localities = Array.isArray(lead.preferred_localities) ? lead.preferred_localities : []
+  const params = [agentId]
+  const where = [`agent_id = $1`, `status = 'available'`]
+
+  // Budget: a property fits if its price is within the lead's range. Allow a 10%
+  // stretch over budget_max so a slightly-over listing still surfaces.
+  if (lead.budget_max != null) {
+    params.push(Math.round(lead.budget_max * 1.1))
+    where.push(`(price_paise IS NULL OR price_paise <= $${params.length})`)
+  }
+  if (lead.budget_min != null) {
+    params.push(Math.round(lead.budget_min * 0.9))
+    where.push(`(price_paise IS NULL OR price_paise >= $${params.length})`)
+  }
+  if (lead.bhk) {
+    params.push(lead.bhk)
+    where.push(`(bhk IS NULL OR bhk = $${params.length})`)
+  }
+  if (lead.property_type) {
+    params.push(lead.property_type)
+    where.push(`(property_type IS NULL OR property_type = $${params.length})`)
+  }
+
+  // Locality match is a ranking signal (not a hard filter): score +1 when the
+  // property's locality matches any of the lead's preferred localities.
+  let localityScore = '0'
+  if (localities.length) {
+    params.push(localities.map((l) => `%${l}%`))
+    localityScore = `(locality ILIKE ANY ($${params.length}::text[]))::int`
+  }
+
+  const { rows } = await q(
+    `SELECT *,
+       (${localityScore}
+        + (bhk IS NOT NULL AND bhk = $${params.length + 1})::int
+        + (price_paise IS NOT NULL)::int) AS match_score
+     FROM properties
+     WHERE ${where.join(' AND ')}
+     ORDER BY match_score DESC, updated_at DESC
+     LIMIT 20`,
+    [...params, lead.bhk || ''],
+  )
+  return rows
 }
 
 // --- CRM: properties (agent inventory) ---
@@ -1559,7 +1740,35 @@ export async function updateSiteVisit(id, agentId, fields) {
      WHERE id = $${params.length + 1} AND agent_id = $${params.length + 2} RETURNING *`,
     [...params, id, agentId],
   )
-  return rows[0]
+  const visit = rows[0]
+  // Outcome capture drives the pipeline: a completed visit advances the lead to the
+  // "visit done" stage; a no-show / reschedule bounces it back to "visit scheduled".
+  if (visit && 'status' in fields) await applyVisitOutcomeToPipeline(visit, agentId)
+  return visit
+}
+
+// Stamp that the booking confirmation went out (so the scheduler's reminders,
+// which check the sent-at columns, don't treat this as un-notified).
+export async function stampSiteVisitConfirmation(id, agentId) {
+  await q('UPDATE site_visits SET confirmation_sent_at = now() WHERE id = $1 AND agent_id = $2', [id, agentId])
+}
+
+// Map a site-visit outcome to the lead's next pipeline stage. No-op for statuses
+// that aren't outcomes (scheduled/confirmed), for closed/terminal leads, and when
+// the target stage isn't part of the lead's pipeline.
+const VISIT_OUTCOME_STAGE = {
+  buy: { completed: 'Site Visit Done', no_show: 'Site Visit Scheduled', rescheduled: 'Site Visit Scheduled' },
+  rental: { completed: 'Visit', no_show: 'Visit', rescheduled: 'Visit' },
+}
+async function applyVisitOutcomeToPipeline(visit, agentId) {
+  const lead = await getLeadForAgent(visit.lead_id, agentId)
+  if (!lead || lead.closed_at || TERMINAL_STAGES.has(lead.stage)) return
+  const family = (lead.pipeline_type || 'buy_primary') === 'rental' ? 'rental' : 'buy'
+  const target = VISIT_OUTCOME_STAGE[family][visit.status]
+  if (!target || target === lead.stage) return
+  const stages = await listPipelineStages(lead.pipeline_type || 'buy_primary')
+  if (!stages.some((s) => s.stage_name === target)) return
+  await setLeadStage(lead.id, agentId, { stage: target })
 }
 
 // --- CRM: follow-ups ---
@@ -1574,10 +1783,14 @@ export async function createFollowup(agentId, f) {
   return rows[0]
 }
 
-export async function listFollowups(agentId, { pendingOnly = false, leadId = null, today = false } = {}) {
+export async function listFollowups(
+  agentId,
+  { pendingOnly = false, leadId = null, today = false, overdueOnly = false, byHeat = false } = {},
+) {
   const where = ['f.agent_id = $1']
   const params = [agentId]
-  if (pendingOnly) where.push('f.completed_at IS NULL')
+  if (pendingOnly || overdueOnly) where.push('f.completed_at IS NULL')
+  if (overdueOnly) where.push('f.due_at < now()')
   if (leadId) {
     params.push(leadId)
     where.push(`f.lead_id = $${params.length}`)
@@ -1587,13 +1800,20 @@ export async function listFollowups(agentId, { pendingOnly = false, leadId = nul
     params.push(await agentTimezone(agentId))
     where.push(`(f.due_at AT TIME ZONE $${params.length})::date <= (now() AT TIME ZONE $${params.length})::date`)
   }
+  // The overdue queue is worked hottest-lead-first: a cold lead's slipped follow-up
+  // matters less than a hot one's. Everywhere else, chronological order is right.
+  const orderBy = byHeat
+    ? `COALESCE(l.effective_score, l.score, 0) DESC, f.due_at`
+    : `f.completed_at NULLS FIRST, f.due_at`
   const { rows } = await q(
     `SELECT f.*, l.name AS lead_name, l.wa_id AS lead_wa_id,
+       l.temp AS lead_temp, l.effective_temp AS lead_effective_temp,
+       COALESCE(l.effective_score, l.score, 0) AS lead_heat,
        (f.completed_at IS NULL AND f.due_at < now())::int AS overdue
      FROM followups f
      JOIN leads l ON l.id = f.lead_id
      WHERE ${where.join(' AND ')}
-     ORDER BY f.completed_at NULLS FIRST, f.due_at`,
+     ORDER BY ${orderBy}`,
     params,
   )
   return rows
@@ -1763,6 +1983,8 @@ export async function dashboard(agentId) {
   return {
     unanswered,
     followupsToday: await listFollowups(agentId, { pendingOnly: true, today: true }),
+    // Slipped follow-ups, worked hottest-lead-first (the "overdue queue" widget).
+    overdueFollowups: await listFollowups(agentId, { overdueOnly: true, byHeat: true }),
     siteVisitsToday: await listSiteVisits(agentId, { today: true }),
     hotLeads,
     activity: await listActivity(agentId, 20),
@@ -1792,12 +2014,30 @@ export async function leadEngagementSignals(leadId) {
   const { rows } = await q(
     `SELECT
        (SELECT MAX(created_at) FROM messages WHERE lead_id = $1 AND role = 'buyer') AS last_buyer_at,
+       (SELECT COUNT(*) FROM messages WHERE lead_id = $1 AND role = 'buyer') AS buyer_replies,
+       (SELECT COUNT(*) FROM site_visits WHERE lead_id = $1) AS visit_count,
        ARRAY(SELECT viewed_at FROM property_page_views WHERE lead_id = $1 ORDER BY viewed_at DESC LIMIT 50) AS page_views,
        ARRAY(SELECT scheduled_at FROM site_visits WHERE lead_id = $1) AS site_visits`,
     [leadId],
   )
   const r = rows[0] || {}
-  return { lastBuyerAt: r.last_buyer_at, pageViews: r.page_views || [], siteVisits: r.site_visits || [] }
+  return {
+    lastBuyerAt: r.last_buyer_at,
+    pageViews: r.page_views || [],
+    siteVisits: r.site_visits || [],
+    // Extra signals the rules+LLM hybrid needs: how many times the buyer replied,
+    // and whether a site visit was ever agreed (any visit row counts).
+    buyerReplies: Number(r.buyer_replies) || 0,
+    visitAgreed: (Number(r.visit_count) || 0) > 0,
+  }
+}
+
+// Rules + LLM hybrid temperature for a lead (see scoring.hybridScore). Does not
+// persist — used by lead detail / briefing and after stage events for a fresh,
+// explainable Hot/Warm/Cold + reason string.
+export async function computeHybridScore(lead, now = Date.now()) {
+  const sig = await leadEngagementSignals(lead.id)
+  return hybridScore(lead, sig, now)
 }
 
 // Compute the decayed score for a lead without persisting (used by lead detail /

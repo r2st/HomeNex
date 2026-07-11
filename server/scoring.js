@@ -120,3 +120,94 @@ export function decayLead(lead = {}, signals = {}, now = Date.now()) {
   }
   return { fitScore, engagementScore, effectiveScore, temperature, factors }
 }
+
+// --- Rules + LLM hybrid temperature -----------------------------------------
+//
+// The decay model above is engagement-driven. The product also wants a hard,
+// explainable RULE that promotes a lead to Hot on classic qualification signals,
+// independent of how recently they clicked:
+//
+//   Budget stated + timeline < 3 months + replied >= 2x + visit agreed -> Hot
+//
+// Rules and the LLM/decay signal are combined so neither alone can hide a Hot lead:
+// a lead the rule fires on is Hot even if the AI scored it Warm, and vice-versa.
+
+// Parse a free-text timeline ("2 months", "2 mahine", "next month", "ASAP",
+// "3-4 months", "6 mahine me") into an approximate number of months, or null.
+export function parseTimelineMonths(timeline) {
+  if (timeline == null) return null
+  const t = String(timeline).toLowerCase().trim()
+  if (!t) return null
+  if (/(asap|urgent|immediate|immediately|turant|abhi|right away|this month|is mahine)/.test(t)) return 0
+  if (/(next month|agle mahine|agle mahina)/.test(t)) return 1
+  // "week(s)" -> fraction of a month.
+  const week = t.match(/(\d+(?:\.\d+)?)\s*(weeks?|hafte|haftaa?|hafta)/)
+  if (week) return Math.round((Number(week[1]) / 4.345) * 10) / 10
+  // "N months / mahine" — take the upper bound of a range like "3-4 months".
+  const nums = [...t.matchAll(/(\d+(?:\.\d+)?)/g)].map((m) => Number(m[1])).filter((n) => Number.isFinite(n))
+  if (/(month|mahine|mahina|maah|mah)/.test(t) && nums.length) return Math.max(...nums)
+  if (/(year|saal|varsh|varsha)/.test(t) && nums.length) return Math.max(...nums) * 12
+  // Bare number with no unit but a "month-ish" context is ambiguous — don't guess.
+  return null
+}
+
+// Was a budget stated on this lead, in any of the columns we might have filled?
+const hasBudget = (lead = {}) =>
+  lead.budget_max != null || lead.budget_min != null || lead.budget_max_l != null || lead.budget_min_l != null
+
+// Evaluate the hard qualification rule. Returns the individual signals plus whether
+// the Hot rule fired, so callers can show the buyer exactly why they're Hot.
+export function ruleSignals(lead = {}, signals = {}) {
+  const timelineMonths = parseTimelineMonths(lead.timeline)
+  const budgetStated = hasBudget(lead)
+  const timelineSoon = timelineMonths != null && timelineMonths < 3
+  const engaged = (signals.buyerReplies ?? 0) >= 2
+  const visitAgreed = Boolean(signals.visitAgreed)
+  const hotRule = budgetStated && timelineSoon && engaged && visitAgreed
+  return { budgetStated, timelineMonths, timelineSoon, engaged, visitAgreed, hotRule }
+}
+
+// Combine the hard rule, the LLM fit, and the engagement decay into one verdict.
+// Returns { temperature, score, reason, source, rules, decay }.
+export function hybridScore(lead = {}, signals = {}, now = Date.now()) {
+  const decay = decayLead(lead, signals, now)
+  const rules = ruleSignals(lead, signals)
+
+  // Order of precedence: a fired hard rule wins (Hot); otherwise take the hotter of
+  // the LLM band and the decayed engagement temperature so a strong lead that has
+  // gone briefly quiet isn't prematurely written off.
+  const rank = { Hot: 3, Warm: 2, Cold: 1 }
+  const llmTemp = { hot: 'Hot', warm: 'Warm', cold: 'Cold' }[lead.ai_score] || null
+
+  let temperature = decay.temperature
+  let source = 'engagement'
+  if (llmTemp && rank[llmTemp] > rank[temperature]) {
+    temperature = llmTemp
+    source = 'llm'
+  }
+  if (rules.hotRule) {
+    temperature = 'Hot'
+    source = 'rule'
+  }
+
+  const reason = buildReason(temperature, source, rules, lead, decay)
+  return { temperature, score: decay.effectiveScore, reason, source, rules, decay }
+}
+
+function buildReason(temperature, source, rules, lead, decay) {
+  if (source === 'rule') {
+    const t = rules.timelineMonths
+    return `Hot by rule: budget stated, timeline ${t === 0 ? 'immediate' : `~${t} month(s)`} (<3), replied 2+ times, and site visit agreed.`
+  }
+  const bits = []
+  if (rules.budgetStated) bits.push('budget stated')
+  if (rules.timelineSoon) bits.push('near-term timeline')
+  if (rules.engaged) bits.push('actively replying')
+  if (rules.visitAgreed) bits.push('visit agreed')
+  const engagementNote =
+    decay.factors.last_signal_age_h == null
+      ? 'no recent activity'
+      : `last active ${decay.factors.last_signal_age_h}h ago`
+  const lead_in = source === 'llm' ? 'AI assessment' : 'engagement'
+  return `${temperature} by ${lead_in}: ${bits.length ? bits.join(', ') + '; ' : ''}${engagementNote} (effective score ${decay.effectiveScore}).`
+}

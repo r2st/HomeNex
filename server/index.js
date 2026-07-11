@@ -41,8 +41,12 @@ import {
   attachLeadContact,
   updateLeadName,
   updateLeadCrm,
+  applyAutofill,
   setLeadStage,
   listPipelineStages,
+  pipelineAnalytics,
+  leadStageHistory,
+  propertyMatchesForLead,
   createProperty,
   listProperties,
   getProperty,
@@ -54,6 +58,7 @@ import {
   createSiteVisit,
   listSiteVisits,
   updateSiteVisit,
+  stampSiteVisitConfirmation,
   dashboard,
   logAudit,
   normalizePhone,
@@ -71,6 +76,8 @@ import {
   finishFestiveSchedule,
   festiveRecipients,
   computeLeadDecay,
+  computeHybridScore,
+  recomputeLeadScore,
   recomputeAgentScores,
   leadPageViews,
   worklist,
@@ -95,7 +102,8 @@ import {
   resolveSegment,
 } from './db.js'
 import { paiseToDisplay } from './money.js'
-import { generateReply, extractLead, suggestReplies, aiConfigured } from './ai.js'
+import { bookingConfirmationText } from './siteVisit.js'
+import { generateReply, extractLead, suggestReplies, aiConfigured, categorizeInquiry, buildAutofillSuggestions } from './ai.js'
 import { emiReplyFor, parseEmiQuery, formatEmiMessage } from './emi.js'
 import { FESTIVALS, getFestival, personalizeGreeting } from './festivals.js'
 import { renderMicroPage } from './micropage.js'
@@ -104,6 +112,7 @@ import { evaluateSend, warmupDailyCap, SEND_BLOCK_REASONS } from './sendLimiter.
 import { runDueJobs } from './scheduler.js'
 import { sendText, markRead, whatsappConfigured, checkToken } from './whatsapp.js'
 import { privacyPage, termsPage } from './legal.js'
+import { setupGuidePage } from './setupGuide.js'
 import { signup, login, changePhone, changePassword, requireAuth } from './auth.js'
 import { handleAgentCommand } from './agentCommands.js'
 import adminRouter from './adminRoutes.js'
@@ -429,7 +438,8 @@ app.get('/api/leads', ah(async (req, res) =>
 app.get('/api/leads/:id', ah(async (req, res) => {
   const lead = await getAssignableLead(req.params.id, req.agent.id)
   if (!lead) return res.status(404).json({ error: 'not found' })
-  const decay = await computeLeadDecay(lead)
+  const hybrid = await computeHybridScore(lead)
+  const decay = hybrid.decay
   res.json({
     ...lead,
     // Fresh decayed scoring, computed live so the label is never "was hot once".
@@ -437,10 +447,15 @@ app.get('/api/leads/:id', ah(async (req, res) => {
     effective_temp: decay.temperature,
     engagement_score: decay.engagementScore,
     score_factors: decay.factors,
+    // Rules + LLM hybrid verdict: Hot/Warm/Cold with an explainable reason string.
+    hybrid_temp: hybrid.temperature,
+    hybrid_reason: hybrid.reason,
+    hybrid_source: hybrid.source,
     service_window: serviceWindow(lead),
     messages: await getMessages(lead.id),
     followups: await listFollowups(req.agent.id, { leadId: lead.id }),
     site_visits: await listSiteVisits(req.agent.id, { leadId: lead.id }),
+    stage_history: await leadStageHistory(lead.id, req.agent.id),
     contact: lead.contact_id ? await getContactDetail(lead.contact_id, req.agent.id).then((c) => c && { ...c, leads: undefined }) : null,
   })
 }))
@@ -473,6 +488,38 @@ app.get('/api/leads/:id/suggestions', ah(async (req, res) => {
   } catch (err) {
     console.error('suggestions failed', err)
     res.json({ suggestions: [] })
+  }
+}))
+
+// AI auto-fill: per-field values the agent can accept or reject into the lead card.
+// Reads the stored extraction by default (instant, free); ?fresh=1 re-runs the
+// categorizer over the thread. Nothing is applied here — this is a proposal only.
+app.get('/api/leads/:id/autofill', ah(async (req, res) => {
+  const lead = await getLeadForAgent(req.params.id, req.agent.id)
+  if (!lead) return res.status(404).json({ error: 'not found' })
+  let extraction = lead.ai_extracted
+  if (req.query.fresh) {
+    try {
+      extraction = (await extractLead(await getMessages(lead.id))) || extraction
+    } catch (err) {
+      console.error('autofill fresh extraction failed', err.message)
+    }
+  }
+  res.json({ suggestions: buildAutofillSuggestions(lead, extraction) })
+}))
+
+// Apply the agent-accepted subset of auto-fill suggestions. Body: { accepted: {field: value} }.
+app.post('/api/leads/:id/autofill/apply', ah(async (req, res) => {
+  const accepted = req.body?.accepted
+  if (!accepted || typeof accepted !== 'object') return res.status(400).json({ error: 'accepted map is required' })
+  try {
+    const lead = await applyAutofill(req.params.id, req.agent.id, accepted)
+    if (!lead) return res.status(404).json({ error: 'not found' })
+    await logActivity(req.agent.id, lead.id, 'agent', `Auto-fill accepted: ${Object.keys(accepted).join(', ')}`)
+    res.json(lead)
+  } catch (err) {
+    if (!pgBadRequest(err)) throw err
+    res.status(400).json({ error: err.message })
   }
 }))
 
@@ -509,6 +556,9 @@ app.put('/api/leads/:id/stage', ah(async (req, res) => {
     await logActivity(req.agent.id, lead.id, 'agent',
       `${lead.name || lead.wa_id} moved to ${stage}${stage === 'Lost' ? ` (${lead.lost_reason})` : ''}`)
     await logAudit(req.agent.id, 'lead', lead.id, 'stage_change', { stage, lost_reason: lead.lost_reason })
+    // Stage events are a scoring signal (e.g. "Site Visit Done" flips visit-agreed):
+    // recompute the decayed engagement score so the worklist stays honest. Best-effort.
+    await recomputeLeadScore(lead.id).catch((e) => console.error('rescore on stage failed', e.message))
     res.json(lead)
   } catch (err) {
     if (err.code === 'BAD_STAGE' || err.code === 'LOST_REASON_REQUIRED') {
@@ -521,6 +571,23 @@ app.put('/api/leads/:id/stage', ah(async (req, res) => {
 app.get('/api/pipeline-stages', ah(async (req, res) =>
   res.json(await listPipelineStages(req.query.type || null)),
 ))
+
+// Pipeline analytics: funnel counts, average time-in-stage, and lost-reason mix,
+// computed from the lead_stage_events transition log.
+app.get('/api/pipeline/analytics', ah(async (req, res) => {
+  const type = req.query.type || 'buy_primary'
+  if (!['buy_primary', 'buy_resale', 'rental'].includes(type)) {
+    return res.status(400).json({ error: 'bad pipeline type' })
+  }
+  res.json(await pipelineAnalytics(req.agent.id, type))
+}))
+
+// Quick match: inventory that fits this lead's budget / BHK / locality.
+app.get('/api/leads/:id/property-matches', ah(async (req, res) => {
+  const matches = await propertyMatchesForLead(req.params.id, req.agent.id)
+  if (matches === null) return res.status(404).json({ error: 'lead not found' })
+  res.json(matches)
+}))
 
 // Claim an unassigned lead from the shared pool, and remember the sender as a client.
 app.post('/api/leads/:id/assign', ah(async (req, res) => {
@@ -774,6 +841,8 @@ app.get('/api/followups', ah(async (req, res) =>
   res.json(await listFollowups(req.agent.id, {
     pendingOnly: req.query.pending === '1',
     today: req.query.today === '1',
+    overdueOnly: req.query.overdue === '1',
+    byHeat: req.query.by_heat === '1',
     leadId: req.query.lead_id || null,
   })),
 ))
@@ -828,7 +897,24 @@ app.post('/api/site-visits', ah(async (req, res) => {
       lead_id: lead.id, property_id, scheduled_at, pickup_required, pickup_location, builder_preregistered,
     })
     await logActivity(req.agent.id, lead.id, 'agent', `Site visit scheduled for ${lead.name || lead.wa_id}`)
-    res.json(visit)
+    // Fire the automated WhatsApp booking confirmation (best-effort: a WhatsApp
+    // outage or closed service window must not fail the scheduling itself).
+    const property = property_id ? await getProperty(property_id, req.agent.id) : null
+    const text = bookingConfirmationText({
+      lead_name: lead.name, lead_wa_id: lead.wa_id, scheduled_at: visit.scheduled_at,
+      property_title: property?.title, property_locality: property?.locality, property_city: property?.city,
+      pickup_required: visit.pickup_required, pickup_location: visit.pickup_location,
+    }, { timezone: req.agent.timezone })
+    let confirmation_sent = false
+    try {
+      const waMsgId = await sendText(lead.wa_id, text, req.agent.wa_phone_number_id)
+      await addMessage(lead.id, 'agent', text, waMsgId)
+      await stampSiteVisitConfirmation(visit.id, req.agent.id)
+      confirmation_sent = true
+    } catch {
+      // WhatsApp not configured / window closed — the T-1 and T-2h reminders still run.
+    }
+    res.json({ ...visit, confirmation_sent })
   } catch (err) {
     if (!pgBadRequest(err)) throw err
     res.status(400).json({ error: err.message })
@@ -1143,6 +1229,10 @@ app.get('/p/:slug', ah(async (req, res) => {
 // Must be registered before the SPA catch-all so they aren't swallowed by index.html.
 app.get('/privacy', (_req, res) => res.type('html').send(privacyPage()))
 app.get('/terms', (_req, res) => res.type('html').send(termsPage()))
+
+// In-app WhatsApp Business onboarding guide, linked from Settings. Public (no auth)
+// so it can be opened in a new tab and shared with agents who aren't signed in yet.
+app.get('/setup-guide', (_req, res) => res.type('html').send(setupGuidePage()))
 
 // Serve the built admin site at /admin (built with `npm run build:admin`).
 const adminDist = path.join(__dirname, '..', 'admin', 'dist')
