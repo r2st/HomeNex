@@ -347,7 +347,7 @@ app.put('/api/agent/password', ah(async (req, res) => {
 }))
 
 // Agent edits their own profile. Phone lives on PUT /api/agent/phone (password-gated).
-const PROFILE_FIELDS = ['name', 'email', 'business_name', 'city', 'bio', 'rera_id', 'avatar_url']
+const PROFILE_FIELDS = ['name', 'email', 'business_name', 'city', 'bio', 'rera_id', 'rera_state', 'rera_expiry', 'avatar_url']
 const PROFILE_ERROR_STATUS = { EMAIL_TAKEN: 409, NOT_FOUND: 404 }
 app.put('/api/agent/profile', ah(async (req, res) => {
   const fields = pick(req.body ?? {}, PROFILE_FIELDS)

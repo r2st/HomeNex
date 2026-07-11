@@ -11,6 +11,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // is ~90 trillion rupees. NUMERIC (commission_pct) likewise parses to a number.
 pg.types.setTypeParser(20, (v) => (v === null ? null : Number(v)))
 pg.types.setTypeParser(1700, (v) => (v === null ? null : parseFloat(v)))
+// DATE (rera_expiry, commission payout dates) comes back as a plain 'YYYY-MM-DD'
+// string, not a JS Date at local midnight — avoids off-by-one timezone shifts.
+pg.types.setTypeParser(1082, (v) => v)
 
 const connectionString =
   process.env.DATABASE_URL || 'postgres://homenex:homenex@localhost:5432/homenex'
@@ -117,7 +120,7 @@ export function normalizeIndianMobile(raw) {
 const phoneDigits = (raw) => String(raw || '').replace(/\D/g, '')
 
 const AGENT_COLS =
-  'id, name, phone, email, business_name, city, bio, rera_id, avatar_url, ' +
+  'id, name, phone, email, business_name, city, bio, rera_id, rera_state, rera_expiry, avatar_url, ' +
   'timezone, language, notify_new_lead, notify_followup_due, notify_daily_digest, ' +
   'quiet_hours_start, quiet_hours_end, is_active, deactivated_at, ' +
   'wa_phone_number_id, wa_phone_number, waba_status, waba_registered_at, meta_waba_id, is_admin, created_at'
@@ -928,6 +931,19 @@ const PROFILE_TEXT = {
   city: { max: 80, label: 'City' },
   bio: { max: 500, label: 'About you' },
   rera_id: { max: 64, label: 'RERA registration ID' },
+  rera_state: { max: 64, label: 'RERA state' },
+}
+
+// RERA registration expiry, an ISO date (YYYY-MM-DD). Stored NULL when blank.
+export function normalizeReraExpiry(raw) {
+  const v = String(raw ?? '').trim()
+  if (!v) return null
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) fail('RERA expiry must be a date (YYYY-MM-DD)')
+  const d = new Date(`${v}T00:00:00Z`)
+  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== v) {
+    fail('RERA expiry is not a valid date')
+  }
+  return v
 }
 
 // The agent edits their own profile. The phone number is deliberately absent —
@@ -968,6 +984,8 @@ export async function updateAgentProfileSelf(agentId, fields = {}) {
   }
 
   if (fields.avatar_url !== undefined) set('avatar_url', normalizeAvatar(fields.avatar_url))
+
+  if (fields.rera_expiry !== undefined) set('rera_expiry', normalizeReraExpiry(fields.rera_expiry))
 
   if (!updates.length) return agent
   params.push(agentId)
