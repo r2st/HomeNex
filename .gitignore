@@ -8,3 +8,4 @@ keys/
 *.log
 .wrangler
 *.db*
+server/uploads/

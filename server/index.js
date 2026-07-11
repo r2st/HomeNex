@@ -69,6 +69,30 @@ import {
   propertyViewStats,
   listMessageTemplates,
   createMessageTemplate,
+  updateMessageTemplate,
+  getMessageTemplate,
+  deleteMessageTemplate,
+  markLeadRead,
+  assignLeadTo,
+  listLeadNotes,
+  addLeadNote,
+  deleteLeadNote,
+  listQuickReplies,
+  createQuickReply,
+  updateQuickReply,
+  deleteQuickReply,
+  listMediaAssets,
+  getMediaAsset,
+  createMediaAsset,
+  deleteMediaAsset,
+  recordMediaSend,
+  mediaIdsSentToLead,
+  listLabels,
+  createLabel,
+  deleteLabel,
+  leadLabels,
+  setLeadLabel,
+  applyAutoLabel,
   createFestiveSchedule,
   listFestiveSchedules,
   cancelFestiveSchedule,
@@ -122,7 +146,9 @@ import { renderMicroPage } from './micropage.js'
 import { buildBriefing } from './briefing.js'
 import { evaluateSend, warmupDailyCap, SEND_BLOCK_REASONS } from './sendLimiter.js'
 import { runDueJobs } from './scheduler.js'
-import { sendText, markRead, whatsappConfigured, checkToken } from './whatsapp.js'
+import { sendText, sendMedia, markRead, whatsappConfigured, checkToken } from './whatsapp.js'
+import { renderTemplate, fillTemplate, appendRera, waMediaType } from './inbox.js'
+import fs from 'node:fs'
 import { privacyPage, termsPage } from './legal.js'
 import { setupGuidePage } from './setupGuide.js'
 import { signup, login, changePhone, changePassword, requireAuth } from './auth.js'
@@ -159,13 +185,44 @@ const pick = (obj, keys) =>
 // check violation, foreign key violation, invalid text -> int/timestamp casts.
 const pgBadRequest = (err) => ['23514', '23503', '22P02', '22007', '22008', '22003'].includes(err.code)
 
+// Media library uploads land here and are served publicly at /uploads (WhatsApp must
+// be able to fetch them by URL). PUBLIC_BASE_URL makes the stored URL absolute so a
+// link-based media send works in production; it falls back to a relative path (fine
+// for same-origin display and for tests where WhatsApp is unconfigured).
+const UPLOAD_DIR = path.join(__dirname, 'uploads')
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '')
+const EXT_BY_MIME = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'video/mp4': 'mp4', 'application/pdf': 'pdf' }
+
+// Write a base64 (or data-URL) payload to the uploads dir under a random name and
+// return its public URL, canonical filename, mime and byte size.
+function saveUpload(dataBase64, filename, mime) {
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true })
+  let b64 = String(dataBase64)
+  const m = b64.match(/^data:([^;]+);base64,(.*)$/s)
+  if (m) {
+    mime = mime || m[1]
+    b64 = m[2]
+  }
+  const buf = Buffer.from(b64, 'base64')
+  if (!buf.length) throw new Error('empty upload')
+  const extFromName = filename && path.extname(filename).replace(/^\./, '')
+  const ext = (extFromName || EXT_BY_MIME[mime] || 'bin').toLowerCase().replace(/[^a-z0-9]/g, '')
+  const stored = `${crypto.randomBytes(12).toString('hex')}.${ext}`
+  fs.writeFileSync(path.join(UPLOAD_DIR, stored), buf)
+  return { url: `${PUBLIC_BASE_URL}/uploads/${stored}`, filename: filename || stored, mime: mime || null, size: buf.length }
+}
+
 app.use(
   express.json({
+    limit: '25mb', // media library uploads arrive as base64 JSON
     verify: (req, _res, buf) => {
       req.rawBody = buf
     },
   }),
 )
+
+// Publicly serve uploaded media so WhatsApp (and the dashboard) can fetch it by URL.
+app.use('/uploads', express.static(UPLOAD_DIR))
 
 function verifySignature(req) {
   if (!WHATSAPP_APP_SECRET) return true // signature check requires the app secret
@@ -211,6 +268,7 @@ async function handleInbound({ agentId = null, brokerName, waId, name, text, sou
     await logActivity(agentId, lead.id, 'lead', agentId
       ? `New lead: ${name || waId} via ${source}`
       : `Unclaimed lead: ${name || waId} messaged the shared number`)
+    if (agentId) await applyAutoLabel(lead.id, agentId, 'new')
   }
 
   let reply = null
@@ -243,10 +301,13 @@ async function handleInbound({ agentId = null, brokerName, waId, name, text, sou
     if (x) {
       await applyExtraction(lead.id, x)
       const updated = await getLead(lead.id)
-      if (updated.temp === 'Hot' && prevTemp !== 'Hot')
+      if (updated.temp === 'Hot' && prevTemp !== 'Hot') {
         await logActivity(agentId, lead.id, 'hot', `${updated.name || waId} is now HOT (score ${updated.score})`)
-      else if (x.score != null)
+        if (agentId) await applyAutoLabel(lead.id, agentId, 'hot')
+      } else if (x.score != null)
         await logActivity(agentId, lead.id, 'ai', `${updated.name || waId} re-scored: ${updated.score}/100`)
+      // A buyer who identifies as a broker/dealer gets the Broker label automatically.
+      if (agentId && x.intent === 'broker') await applyAutoLabel(lead.id, agentId, 'broker')
     }
   } catch (err) {
     console.error('extraction failed', err)
@@ -612,8 +673,61 @@ app.get('/api/leads/:id', ah(async (req, res) => {
     followups: await listFollowups(req.agent.id, { leadId: lead.id }),
     site_visits: await listSiteVisits(req.agent.id, { leadId: lead.id }),
     stage_history: await leadStageHistory(lead.id, req.agent.id),
+    // Unified inbox layer: internal notes, labels, and media already sent here.
+    notes: await listLeadNotes(lead.id),
+    labels: await leadLabels(lead.id),
+    media_sent_ids: await mediaIdsSentToLead(lead.id),
+    assigned_agent_id: lead.assigned_agent_id || lead.agent_id,
     contact: lead.contact_id ? await getContactDetail(lead.contact_id, req.agent.id).then((c) => c && { ...c, leads: undefined }) : null,
   })
+}))
+
+// Mark a thread read (clears the unread badge in the inbox list).
+app.post('/api/leads/:id/read', ah(async (req, res) => {
+  const lead = await markLeadRead(req.params.id, req.agent.id)
+  if (!lead) return res.status(404).json({ error: 'not found' })
+  res.json({ ok: true })
+}))
+
+// Reassign a thread to another agent (owner only). assignee_id null hands it back.
+app.post('/api/leads/:id/assign-to', ah(async (req, res) => {
+  const lead = await assignLeadTo(req.params.id, req.agent.id, req.body?.assignee_id ?? null)
+  if (!lead) return res.status(404).json({ error: 'not found' })
+  await logActivity(req.agent.id, lead.id, 'agent', `${req.agent.name} reassigned the chat`)
+  res.json(lead)
+}))
+
+// --- Internal notes on a thread (private to the team, never sent to WhatsApp) ---
+app.get('/api/leads/:id/notes', ah(async (req, res) => {
+  const lead = await getAssignableLead(req.params.id, req.agent.id)
+  if (!lead) return res.status(404).json({ error: 'not found' })
+  res.json(await listLeadNotes(lead.id))
+}))
+
+app.post('/api/leads/:id/notes', ah(async (req, res) => {
+  const lead = await getAssignableLead(req.params.id, req.agent.id)
+  if (!lead) return res.status(404).json({ error: 'not found' })
+  try {
+    res.json(await addLeadNote(lead.id, req.agent.id, req.body?.body))
+  } catch (err) {
+    if (!/note body is required/.test(err.message)) throw err
+    res.status(400).json({ error: err.message })
+  }
+}))
+
+app.delete('/api/leads/:id/notes/:noteId', ah(async (req, res) => {
+  const ok = await deleteLeadNote(req.params.noteId, req.agent.id)
+  res.status(ok ? 200 : 404).json({ ok })
+}))
+
+// --- Labels on a thread ---
+app.put('/api/leads/:id/labels/:labelId', ah(async (req, res) => {
+  const lead = await getAssignableLead(req.params.id, req.agent.id)
+  if (!lead) return res.status(404).json({ error: 'not found' })
+  const on = req.body?.on !== false // default to adding
+  const labels = await setLeadLabel(lead.id, Number(req.params.labelId), req.agent.id, on)
+  if (labels === null) return res.status(404).json({ error: 'label not found' })
+  res.json(labels)
 }))
 
 // Pre-contact briefing: "Before you call" — rule-based talking points (instant,
@@ -786,9 +900,15 @@ app.post('/api/leads/:id/reply', ah(async (req, res) => {
   const templateId = req.body?.template_id
   let text
   if (templateId) {
-    const tpl = (await listMessageTemplates(req.agent.id)).find((t) => t.id === Number(templateId))
+    const tpl = await getMessageTemplate(Number(templateId), req.agent.id)
     if (!tpl) return res.status(404).json({ error: 'template not found' })
-    text = tpl.body
+    // Agents fill variables; the approved body is never edited here. Marketing
+    // templates get the RERA number appended automatically.
+    const { text: rendered, missing } = renderTemplate(tpl, req.body?.variables || {}, req.agent)
+    if (missing.length) {
+      return res.status(400).json({ error: `Fill in: ${missing.join(', ')}`, code: 'TEMPLATE_VARS_MISSING', missing })
+    }
+    text = rendered
   } else {
     text = (req.body?.text || '').trim()
     if (!text) return res.status(400).json({ error: 'text required' })
@@ -1104,6 +1224,137 @@ app.post('/api/templates', ah(async (req, res) => {
   } catch (err) {
     if (!pgBadRequest(err) && !/name and body are required/.test(err.message) && err.code !== '23505') throw err
     res.status(400).json({ error: err.message })
+  }
+}))
+
+// Edit a template. Locked templates (system pack, or Meta-approved) accept metadata
+// changes but NOT body/name/category edits — agents fill variables, not the wording.
+app.put('/api/templates/:id', ah(async (req, res) => {
+  const tpl = await getMessageTemplate(Number(req.params.id), req.agent.id)
+  if (!tpl) return res.status(404).json({ error: 'not found' })
+  const fields = pick(req.body ?? {}, ['name', 'category', 'body', 'variables', 'rera_auto_append', 'meta_status'])
+  const editsBody = ['name', 'category', 'body'].some((k) => k in fields)
+  if ((tpl.is_locked || tpl.meta_status === 'approved') && editsBody) {
+    return res.status(403).json({
+      error: 'This template is approved and locked — you can fill its variables but not edit the wording.',
+      code: 'TEMPLATE_LOCKED',
+    })
+  }
+  try {
+    res.json(await updateMessageTemplate(tpl.id, req.agent.id, fields))
+  } catch (err) {
+    if (!pgBadRequest(err) && err.code !== '23505') throw err
+    res.status(400).json({ error: err.message })
+  }
+}))
+
+// Delete a template. System (curated pack) templates can't be removed.
+app.delete('/api/templates/:id', ah(async (req, res) => {
+  const ok = await deleteMessageTemplate(Number(req.params.id), req.agent.id)
+  if (!ok) {
+    const tpl = await getMessageTemplate(Number(req.params.id), req.agent.id)
+    if (tpl?.is_system) return res.status(403).json({ error: 'System templates cannot be deleted', code: 'TEMPLATE_SYSTEM' })
+    return res.status(404).json({ error: 'not found' })
+  }
+  res.json({ ok: true })
+}))
+
+// --- Quick replies: saved snippets with {{name}}/{{property}}/{{visit_time}} ---
+app.get('/api/quick-replies', ah(async (req, res) => res.json(await listQuickReplies(req.agent.id))))
+
+app.post('/api/quick-replies', ah(async (req, res) => {
+  try {
+    res.json(await createQuickReply(req.agent.id, pick(req.body ?? {}, ['title', 'body'])))
+  } catch (err) {
+    if (!pgBadRequest(err) && !/title and body are required/.test(err.message) && err.code !== '23505') throw err
+    res.status(400).json({ error: err.message })
+  }
+}))
+
+app.put('/api/quick-replies/:id', ah(async (req, res) => {
+  const updated = await updateQuickReply(Number(req.params.id), req.agent.id, pick(req.body ?? {}, ['title', 'body']))
+  if (!updated) return res.status(404).json({ error: 'not found' })
+  res.json(updated)
+}))
+
+app.delete('/api/quick-replies/:id', ah(async (req, res) => {
+  const ok = await deleteQuickReply(Number(req.params.id), req.agent.id)
+  res.status(ok ? 200 : 404).json({ ok })
+}))
+
+// --- Labels: manage the workspace label set ---
+app.get('/api/labels', ah(async (req, res) => res.json(await listLabels(req.agent.id))))
+
+app.post('/api/labels', ah(async (req, res) => {
+  try {
+    res.json(await createLabel(req.agent.id, pick(req.body ?? {}, ['name', 'color'])))
+  } catch (err) {
+    if (!pgBadRequest(err) && !/label name is required/.test(err.message) && err.code !== '23505') throw err
+    res.status(400).json({ error: err.message })
+  }
+}))
+
+app.delete('/api/labels/:id', ah(async (req, res) => {
+  const ok = await deleteLabel(Number(req.params.id), req.agent.id)
+  if (!ok) return res.status(403).json({ error: 'System labels cannot be deleted', code: 'LABEL_SYSTEM' })
+  res.json({ ok: true })
+}))
+
+// --- Media library: upload once, attach to any chat in two taps ---
+app.get('/api/media', ah(async (req, res) => res.json(await listMediaAssets(req.agent.id))))
+
+// Register an asset. Two modes: { storage:'url', url } for an already-hosted file,
+// or { storage:'local', data_base64, filename } to upload a file we host at /uploads.
+app.post('/api/media', ah(async (req, res) => {
+  const b = req.body ?? {}
+  try {
+    let asset = pick(b, ['title', 'kind', 'caption'])
+    if (b.data_base64) {
+      const saved = saveUpload(b.data_base64, b.filename, b.mime)
+      asset = { ...asset, storage: 'local', url: saved.url, filename: saved.filename, mime: saved.mime, size_bytes: saved.size }
+    } else {
+      if (!b.url) return res.status(400).json({ error: 'url or data_base64 is required' })
+      asset = { ...asset, storage: 'url', url: b.url, filename: b.filename ?? null, mime: b.mime ?? null }
+    }
+    res.json(await createMediaAsset(req.agent.id, asset))
+  } catch (err) {
+    if (!pgBadRequest(err) && !/required/.test(err.message)) throw err
+    res.status(400).json({ error: err.message })
+  }
+}))
+
+app.delete('/api/media/:id', ah(async (req, res) => {
+  const ok = await deleteMediaAsset(Number(req.params.id), req.agent.id)
+  res.status(ok ? 200 : 404).json({ ok })
+}))
+
+// Send a library asset into a chat. Records the send so the UI can show "sent".
+// Free-text-window rules don't apply to media the same way, but Meta still requires
+// an open session for non-template media, so we enforce the 24h window here too.
+app.post('/api/media/:id/send', ah(async (req, res) => {
+  const lead = await getLeadForAgent(req.body?.lead_id, req.agent.id)
+  if (!lead) return res.status(404).json({ error: 'lead not found' })
+  const asset = await getMediaAsset(Number(req.params.id), req.agent.id)
+  if (!asset) return res.status(404).json({ error: 'media not found' })
+  const win = serviceWindow(lead)
+  if (lead.last_inbound_at && !win.open) {
+    return res.status(409).json({
+      error: 'The 24-hour window has closed — media can only be sent while the chat is open.',
+      code: 'WINDOW_EXPIRED', service_window: win,
+    })
+  }
+  const caption = (req.body?.caption ?? asset.caption) || asset.title
+  try {
+    const waMsgId = await sendMedia(
+      lead.wa_id,
+      { type: waMediaType(asset.kind), link: asset.url, caption, filename: asset.filename },
+      req.agent.wa_phone_number_id,
+    )
+    await recordMediaSend(asset.id, lead.id, req.agent.id, waMsgId)
+    const msg = await addMessage(lead.id, 'agent', `📎 ${asset.title}${caption && caption !== asset.title ? ` — ${caption}` : ''}`, waMsgId)
+    res.json({ message: msg, media_id: asset.id })
+  } catch (err) {
+    res.status(err.code === 'WA_NOT_CONFIGURED' ? 503 : 502).json({ error: err.message, code: err.code })
   }
 }))
 

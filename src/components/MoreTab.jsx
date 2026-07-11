@@ -7,6 +7,7 @@ import SettingsTab from './SettingsTab.jsx'
 import LeadDetail from './LeadDetail.jsx'
 import FestiveTab from './FestiveTab.jsx'
 import LeadSourcesScreen from './LeadSourcesScreen.jsx'
+import SnippetsMediaScreen from './SnippetsMediaScreen.jsx'
 
 function SubScreen({ title, onBack, children }) {
   return (
@@ -148,6 +149,7 @@ const MENU = [
   { id: 'followups', icon: '⏰', label: 'Follow-ups', sub: 'Reminders and overdue nudges' },
   { id: 'sitevisits', icon: '🏗️', label: 'Site visits', sub: "Today's and upcoming visits" },
   { id: 'contacts', icon: '👥', label: 'Contacts', sub: 'Auto-captured from WhatsApp' },
+  { id: 'snippets', icon: '⚡', label: 'Snippets & media', sub: 'Templates, quick replies, media library, labels' },
   { id: 'festive', icon: '🪔', label: 'Festive greetings', sub: 'Diwali, Holi, Eid & more — schedule wishes' },
   { id: 'insights', icon: '📊', label: 'Insights', sub: 'Performance and market network' },
   { id: 'settings', icon: '⚙️', label: 'Settings', sub: 'Profile, password, preferences, WhatsApp Business' },
@@ -178,6 +180,12 @@ export default function MoreTab({ agent, onAgentUpdate, onOpenConversation }) {
     return (
       <SubScreen title="Lead sources" onBack={() => setScreen(null)}>
         <LeadSourcesScreen />
+      </SubScreen>
+    )
+  if (screen === 'snippets')
+    return (
+      <SubScreen title="Snippets & media" onBack={() => setScreen(null)}>
+        <SnippetsMediaScreen />
       </SubScreen>
     )
   if (screen === 'festive')

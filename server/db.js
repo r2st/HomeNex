@@ -134,6 +134,9 @@ export async function createAgent(name, phone, email, passwordHash, waPhoneNumbe
      RETURNING id`,
     [name, normalizePhone(phone), email ? email.toLowerCase() : null, passwordHash, pn, pn ? 'pending' : 'none'],
   )
+  // Every workspace starts with the system labels, default quick replies and the
+  // curated pre-approved template pack (mirrors the 010 migration seed for new agents).
+  await seedWorkspaceDefaults(rows[0].id)
   return getAgent(rows[0].id)
 }
 
@@ -582,7 +585,17 @@ export async function listLeads(agentId, { pipelineType = '', stage = '' } = {})
           WHERE c.agent_id = $1 AND replace(c.phone, '+', '') = l.wa_id LIMIT 1) AS contact_name,
        (SELECT text FROM messages m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) AS last_msg,
        (SELECT role FROM messages m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) AS last_role,
-       (SELECT created_at FROM messages m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) AS last_at
+       (SELECT created_at FROM messages m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) AS last_at,
+       -- Unread = buyer messages newer than the last time the agent opened the thread.
+       (SELECT count(*) FROM messages m
+          WHERE m.lead_id = l.id AND m.role = 'buyer'
+            AND (l.last_read_at IS NULL OR m.created_at > l.last_read_at))::int AS unread_count,
+       COALESCE(l.assigned_agent_id, l.agent_id) AS handling_agent_id,
+       COALESCE(
+         (SELECT json_agg(json_build_object('id', lb.id, 'name', lb.name, 'color', lb.color) ORDER BY lb.sort, lb.id)
+            FROM lead_labels ll JOIN labels lb ON lb.id = ll.label_id
+            WHERE ll.lead_id = l.id),
+         '[]'::json) AS labels
      FROM leads l
      WHERE ${where.join(' AND ')}
      ORDER BY l.updated_at DESC`,
@@ -1300,6 +1313,10 @@ export async function setLeadStage(leadId, agentId, { stage, lost_reason } = {})
   // re-saving the same stage doesn't manufacture zero-length dwell rows.
   if (rows[0] && fromStage !== stage) {
     await recordStageEvent(rows[0], fromStage)
+    // Auto-labels follow the lifecycle: moving to Lost tags the thread Lost; booking
+    // a visit tags it Site Visit Scheduled (also fired from createSiteVisit).
+    if (stage === 'Lost') await applyAutoLabel(leadId, agentId, 'lost')
+    if (stage === 'Site Visit Scheduled') await applyAutoLabel(leadId, agentId, 'site_visit_scheduled')
   }
   return rows[0]
 }
@@ -1691,6 +1708,8 @@ export async function createSiteVisit(agentId, v) {
       Boolean(v.builder_preregistered),
     ],
   )
+  // Booking a site visit auto-labels the thread so it stands out in the inbox.
+  await applyAutoLabel(v.lead_id, agentId, 'site_visit_scheduled')
   return rows[0]
 }
 
@@ -2744,6 +2763,266 @@ export async function listSyndications(agentId, propertyId = null) {
     params,
   )
   return rows
+}
+
+// ===========================================================================
+// Unified WhatsApp Inbox + Template Messages (migration 012)
+// ===========================================================================
+
+// Seed the six system labels, default quick replies and curated template pack for
+// one agent. Idempotent (ON CONFLICT DO NOTHING) so it is safe on every signup and
+// after the migration has already seeded existing agents.
+export async function seedWorkspaceDefaults(agentId) {
+  await q(
+    `INSERT INTO labels (agent_id, name, color, auto_key, is_system, sort) VALUES
+       ($1,'New','#3b82f6','new',true,0),
+       ($1,'Hot','#ef4444','hot',true,1),
+       ($1,'Site Visit Scheduled','#8b5cf6','site_visit_scheduled',true,2),
+       ($1,'Token Paid','#10b981','token_paid',true,3),
+       ($1,'Lost','#6b7280','lost',true,4),
+       ($1,'Broker','#f59e0b','broker',true,5)
+     ON CONFLICT (agent_id, name) DO NOTHING`,
+    [agentId],
+  )
+  await q(
+    `INSERT INTO quick_replies (agent_id, title, body, is_system) VALUES
+       ($1,'Greeting','Hi {{name}}, thanks for reaching out! How can I help with your property search today?',true),
+       ($1,'Share brochure','Hi {{name}}, sharing the details for {{property}}. Let me know what you think!',true),
+       ($1,'Visit confirm','Great, {{name}}! Your site visit for {{property}} is confirmed for {{visit_time}}. See you there.',true),
+       ($1,'Ask budget','To shortlist the best options for you, may I know your budget range and preferred locality?',true),
+       ($1,'Follow up','Hi {{name}}, just following up on your property enquiry. Are you still looking? Happy to help.',true)
+     ON CONFLICT (agent_id, title) DO NOTHING`,
+    [agentId],
+  )
+  await q(
+    `INSERT INTO message_templates
+       (agent_id, name, category, body, variables, rera_auto_append, is_system, is_locked, meta_status, language) VALUES
+       ($1,'welcome','utility','Hi {{name}}, thanks for connecting with us. How can we help you find your next home today?','["name"]',false,true,true,'approved','en'),
+       ($1,'site_visit_reminder','utility','Hi {{name}}, a reminder for your site visit at {{property}} on {{visit_time}}. Reply here if you need to reschedule.','["name","property","visit_time"]',false,true,true,'approved','en'),
+       ($1,'new_listing','marketing','Hi {{name}}, a new property matching your requirement just came up: {{property}}. Would you like the details?','["name","property"]',true,true,true,'approved','en'),
+       ($1,'price_update','marketing','Hi {{name}}, there is a price update on {{property}}. Reply YES to get the latest pricing and availability.','["name","property"]',true,true,true,'approved','en'),
+       ($1,'festival_greeting','marketing','Hi {{name}}, wishing you and your family a joyful festive season from all of us!','["name"]',true,true,true,'approved','en')
+     ON CONFLICT (agent_id, name) DO NOTHING`,
+    [agentId],
+  )
+}
+
+// --- Team inbox: unread + assignment ---------------------------------------
+
+// Mark a thread read by stamping last_read_at. Only affects the agent's own or
+// unassigned-pool leads (getAssignableLead guards ownership). Returns the lead.
+export async function markLeadRead(leadId, agentId) {
+  const lead = await getAssignableLead(leadId, agentId)
+  if (!lead) return null
+  await q('UPDATE leads SET last_read_at = now() WHERE id = $1', [leadId])
+  return getLead(leadId)
+}
+
+// Reassign a thread to another agent (or back to the owner with assigneeId=null).
+// Only the current owner may reassign. Returns the updated lead, or null if the
+// caller doesn't own it.
+export async function assignLeadTo(leadId, agentId, assigneeId) {
+  const lead = await getLeadForAgent(leadId, agentId)
+  if (!lead) return null
+  await q('UPDATE leads SET assigned_agent_id = $2, updated_at = now() WHERE id = $1', [leadId, assigneeId ?? null])
+  return getLead(leadId)
+}
+
+// --- Internal notes ---------------------------------------------------------
+
+export async function listLeadNotes(leadId) {
+  const { rows } = await q(
+    `SELECT n.*, a.name AS agent_name
+       FROM lead_notes n JOIN agents a ON a.id = n.agent_id
+       WHERE n.lead_id = $1 ORDER BY n.id`,
+    [leadId],
+  )
+  return rows
+}
+
+export async function addLeadNote(leadId, agentId, body) {
+  const text = String(body || '').trim()
+  if (!text) throw new Error('note body is required')
+  const { rows } = await q(
+    'INSERT INTO lead_notes (lead_id, agent_id, body) VALUES ($1, $2, $3) RETURNING *',
+    [leadId, agentId, text],
+  )
+  return rows[0]
+}
+
+// A note is deletable only by its author.
+export async function deleteLeadNote(id, agentId) {
+  const res = await q('DELETE FROM lead_notes WHERE id = $1 AND agent_id = $2', [id, agentId])
+  return res.rowCount > 0
+}
+
+// --- Quick replies ----------------------------------------------------------
+
+export async function listQuickReplies(agentId) {
+  return (await q('SELECT * FROM quick_replies WHERE agent_id = $1 ORDER BY title', [agentId])).rows
+}
+
+export async function createQuickReply(agentId, { title, body }) {
+  if (!title || !body) throw new Error('title and body are required')
+  const { rows } = await q(
+    'INSERT INTO quick_replies (agent_id, title, body) VALUES ($1, $2, $3) RETURNING *',
+    [agentId, String(title).trim(), String(body)],
+  )
+  return rows[0]
+}
+
+export async function updateQuickReply(id, agentId, fields) {
+  const { sets, params } = buildSet({ title: 'text', body: 'text' }, fields)
+  if (!sets.length)
+    return (await q('SELECT * FROM quick_replies WHERE id = $1 AND agent_id = $2', [id, agentId])).rows[0]
+  const { rows } = await q(
+    `UPDATE quick_replies SET ${sets.join(', ')}, updated_at = now()
+     WHERE id = $${params.length + 1} AND agent_id = $${params.length + 2} RETURNING *`,
+    [...params, id, agentId],
+  )
+  return rows[0]
+}
+
+export async function deleteQuickReply(id, agentId) {
+  const res = await q('DELETE FROM quick_replies WHERE id = $1 AND agent_id = $2', [id, agentId])
+  return res.rowCount > 0
+}
+
+// --- Media library ----------------------------------------------------------
+
+// Assets plus how many distinct contacts each has been sent to (for the library UI).
+export async function listMediaAssets(agentId) {
+  const { rows } = await q(
+    `SELECT m.*,
+       (SELECT count(DISTINCT lead_id) FROM media_sends s WHERE s.media_id = m.id)::int AS sent_count
+     FROM media_assets m WHERE m.agent_id = $1 ORDER BY m.created_at DESC`,
+    [agentId],
+  )
+  return rows
+}
+
+export async function getMediaAsset(id, agentId) {
+  return (await q('SELECT * FROM media_assets WHERE id = $1 AND agent_id = $2', [id, agentId])).rows[0]
+}
+
+export async function createMediaAsset(agentId, a) {
+  if (!a.title || !a.url) throw new Error('title and url are required')
+  const { rows } = await q(
+    `INSERT INTO media_assets (agent_id, title, kind, storage, url, filename, mime, size_bytes, caption)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+    [
+      agentId,
+      String(a.title).trim(),
+      a.kind || 'document',
+      a.storage || 'url',
+      a.url,
+      a.filename ?? null,
+      a.mime ?? null,
+      a.size_bytes ?? null,
+      a.caption ?? null,
+    ],
+  )
+  return rows[0]
+}
+
+export async function deleteMediaAsset(id, agentId) {
+  const res = await q('DELETE FROM media_assets WHERE id = $1 AND agent_id = $2', [id, agentId])
+  return res.rowCount > 0
+}
+
+// Record that an asset was sent to a lead (drives the "already sent" marker).
+export async function recordMediaSend(mediaId, leadId, agentId, waMessageId = null) {
+  const { rows } = await q(
+    'INSERT INTO media_sends (media_id, lead_id, agent_id, wa_message_id) VALUES ($1,$2,$3,$4) RETURNING *',
+    [mediaId, leadId, agentId, waMessageId],
+  )
+  return rows[0]
+}
+
+// The set of media ids already sent to a given lead (for the attach picker).
+export async function mediaIdsSentToLead(leadId) {
+  const { rows } = await q('SELECT DISTINCT media_id FROM media_sends WHERE lead_id = $1', [leadId])
+  return rows.map((r) => r.media_id)
+}
+
+// --- Labels -----------------------------------------------------------------
+
+export async function listLabels(agentId) {
+  return (await q('SELECT * FROM labels WHERE agent_id = $1 ORDER BY sort, id', [agentId])).rows
+}
+
+export async function createLabel(agentId, { name, color }) {
+  if (!name || !String(name).trim()) throw new Error('label name is required')
+  const { rows } = await q(
+    `INSERT INTO labels (agent_id, name, color, is_system, sort)
+     VALUES ($1, $2, $3, false, (SELECT COALESCE(max(sort), 0) + 1 FROM labels WHERE agent_id = $1))
+     RETURNING *`,
+    [agentId, String(name).trim(), color || '#64748b'],
+  )
+  return rows[0]
+}
+
+// System labels are part of the lifecycle vocabulary and can't be deleted.
+export async function deleteLabel(id, agentId) {
+  const res = await q('DELETE FROM labels WHERE id = $1 AND agent_id = $2 AND is_system = false', [id, agentId])
+  return res.rowCount > 0
+}
+
+export async function leadLabels(leadId) {
+  const { rows } = await q(
+    `SELECT lb.id, lb.name, lb.color, lb.is_system, ll.applied_by
+       FROM lead_labels ll JOIN labels lb ON lb.id = ll.label_id
+       WHERE ll.lead_id = $1 ORDER BY lb.sort, lb.id`,
+    [leadId],
+  )
+  return rows
+}
+
+// Add or remove a label on a lead. The label must belong to the same agent as the
+// lead (validated by the caller passing agentId). applied_by defaults to 'manual'.
+export async function setLeadLabel(leadId, labelId, agentId, on, appliedBy = 'manual') {
+  const label = (await q('SELECT id FROM labels WHERE id = $1 AND agent_id = $2', [labelId, agentId])).rows[0]
+  if (!label) return null
+  if (on) {
+    await q(
+      `INSERT INTO lead_labels (lead_id, label_id, applied_by) VALUES ($1, $2, $3)
+       ON CONFLICT (lead_id, label_id) DO NOTHING`,
+      [leadId, labelId, appliedBy],
+    )
+  } else {
+    await q('DELETE FROM lead_labels WHERE lead_id = $1 AND label_id = $2', [leadId, labelId])
+  }
+  return leadLabels(leadId)
+}
+
+// Apply a system label to a lead by its auto_key (e.g. 'hot', 'lost'). No-op when
+// the lead has no owner (unassigned pool) or the label isn't seeded for the agent.
+export async function applyAutoLabel(leadId, agentId, autoKey) {
+  if (!leadId || !agentId || !autoKey) return
+  const label = (
+    await q('SELECT id FROM labels WHERE agent_id = $1 AND auto_key = $2', [agentId, autoKey])
+  ).rows[0]
+  if (!label) return
+  await q(
+    `INSERT INTO lead_labels (lead_id, label_id, applied_by) VALUES ($1, $2, 'auto')
+     ON CONFLICT (lead_id, label_id) DO NOTHING`,
+    [leadId, label.id],
+  )
+}
+
+// --- Templates: single fetch + delete (list/create/update already exist) -----
+
+export async function getMessageTemplate(id, agentId) {
+  return (await q('SELECT * FROM message_templates WHERE id = $1 AND agent_id = $2', [id, agentId])).rows[0]
+}
+
+// System templates are part of the curated pack and can't be deleted by the agent.
+export async function deleteMessageTemplate(id, agentId) {
+  const res = await q(
+    'DELETE FROM message_templates WHERE id = $1 AND agent_id = $2 AND is_system = false',
+    [id, agentId],
+  )
+  return res.rowCount > 0
 }
 
 export { pool, q as query }

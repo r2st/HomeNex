@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, usePoll, fmtTime, fmtAgo, parseTs } from '../api.js'
+import { Sheet, Field, inputCls } from './ui.jsx'
 
 const ROLE_LABEL = { ai: 'HomeNex AI', agent: 'You' }
 
@@ -17,21 +18,231 @@ const fmtCountdown = (ms) => {
   return h > 0 ? `${h}h ${m}m` : `${Math.max(1, m)}m`
 }
 
+// The variable names in a body, e.g. "Hi {{name}} about {{property}}" -> [name, property].
+const varsOf = (body) => {
+  const out = []
+  for (const m of String(body || '').matchAll(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g))
+    if (!out.includes(m[1])) out.push(m[1])
+  return out
+}
+
+// Client-side fill for quick replies: substitute what we know ({{name}} from the
+// lead), leaving other placeholders for the agent to complete in the draft box.
+const fillKnown = (body, lead) =>
+  String(body || '').replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (full, key) =>
+    key === 'name' && lead?.name ? lead.name : full,
+  )
+
+const LabelChip = ({ label, onRemove }) => (
+  <span
+    className="shrink-0 inline-flex items-center gap-1 text-[10.5px] font-bold rounded-full px-2 py-0.5 text-white"
+    style={{ backgroundColor: label.color || '#64748b' }}
+  >
+    {label.name}
+    {onRemove && (
+      <button onClick={onRemove} className="opacity-80 hover:opacity-100 leading-none">
+        ✕
+      </button>
+    )}
+  </span>
+)
+
+// Sheet to toggle the workspace labels on/off for this thread.
+function LabelSheet({ lead, onClose, onChanged }) {
+  const [labels, setLabels] = useState(null)
+  const active = new Set((lead.labels || []).map((l) => l.id))
+  useEffect(() => {
+    api.labels().then(setLabels).catch(() => setLabels([]))
+  }, [])
+  const toggle = async (l) => {
+    await api.setLeadLabel(lead.id, l.id, !active.has(l.id))
+    onChanged()
+  }
+  return (
+    <Sheet onClose={onClose} title="Labels">
+      <div className="flex flex-wrap gap-2">
+        {(labels || []).map((l) => {
+          const on = active.has(l.id)
+          return (
+            <button
+              key={l.id}
+              onClick={() => toggle(l)}
+              className={`text-[12px] font-bold rounded-full px-3 py-1.5 border transition active:scale-95 ${
+                on ? 'text-white border-transparent' : 'text-ink-soft border-line bg-card'
+              }`}
+              style={on ? { backgroundColor: l.color } : undefined}
+            >
+              {on ? '✓ ' : ''}
+              {l.name}
+            </button>
+          )
+        })}
+      </div>
+    </Sheet>
+  )
+}
+
+// Internal notes: private to the team, never sent to WhatsApp.
+function NotesSheet({ lead, onClose, onChanged }) {
+  const [draft, setDraft] = useState('')
+  const [busy, setBusy] = useState(false)
+  const notes = lead.notes || []
+  const add = async () => {
+    const body = draft.trim()
+    if (!body || busy) return
+    setBusy(true)
+    try {
+      await api.addLeadNote(lead.id, body)
+      setDraft('')
+      onChanged()
+    } finally {
+      setBusy(false)
+    }
+  }
+  const remove = async (n) => {
+    await api.deleteLeadNote(lead.id, n.id)
+    onChanged()
+  }
+  return (
+    <Sheet onClose={onClose} title="Internal notes">
+      <p className="text-[11.5px] text-ink-faint mb-3">Only your team sees these — never sent to the client.</p>
+      <div className="space-y-2 mb-3 max-h-52 overflow-y-auto no-scrollbar">
+        {notes.length === 0 && <p className="text-[12px] text-ink-soft">No notes yet.</p>}
+        {notes.map((n) => (
+          <div key={n.id} className="bg-white border border-line rounded-xl px-3 py-2">
+            <p className="text-[12.5px] text-ink whitespace-pre-line">{n.body}</p>
+            <div className="flex items-center justify-between mt-1">
+              <span className="text-[10px] text-ink-faint">
+                {n.agent_name} · {fmtTime(n.created_at)}
+              </span>
+              <button onClick={() => remove(n)} className="text-[10px] text-hot font-bold">
+                delete
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+      <textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        rows={2}
+        placeholder="Add a private note…"
+        className={inputCls + ' resize-none'}
+      />
+      <button
+        onClick={add}
+        disabled={busy || !draft.trim()}
+        className="mt-2 w-full bg-brand text-white font-bold text-[13px] rounded-xl py-2.5 disabled:opacity-40 active:scale-[0.99] transition"
+      >
+        Add note
+      </button>
+    </Sheet>
+  )
+}
+
+// Quick-reply picker — tap a snippet to drop it (with {{name}} filled) into the draft.
+function QuickReplySheet({ lead, onClose, onPick }) {
+  const [replies, setReplies] = useState(null)
+  useEffect(() => {
+    api.quickReplies().then(setReplies).catch(() => setReplies([]))
+  }, [])
+  return (
+    <Sheet onClose={onClose} title="Quick replies">
+      {replies?.length === 0 && (
+        <p className="text-[12px] text-ink-soft">No quick replies yet. Add some in More → Snippets &amp; media.</p>
+      )}
+      <div className="space-y-1.5">
+        {(replies || []).map((r) => (
+          <button
+            key={r.id}
+            onClick={() => onPick(fillKnown(r.body, lead))}
+            className="w-full text-left bg-white border border-line rounded-xl px-3.5 py-2.5 active:scale-[0.99] transition"
+          >
+            <p className="text-[12px] font-bold text-ink">{r.title}</p>
+            <p className="text-[11.5px] text-ink-soft line-clamp-2">{fillKnown(r.body, lead)}</p>
+          </button>
+        ))}
+      </div>
+    </Sheet>
+  )
+}
+
+// Media library picker — two taps to attach a saved asset. Marks what's already sent.
+function MediaSheet({ lead, onClose, onSent, onError }) {
+  const [assets, setAssets] = useState(null)
+  const [sendingId, setSendingId] = useState(null)
+  const sent = new Set(lead.media_sent_ids || [])
+  useEffect(() => {
+    api.media().then(setAssets).catch(() => setAssets([]))
+  }, [])
+  const send = async (a) => {
+    setSendingId(a.id)
+    try {
+      await api.sendMedia(a.id, lead.id)
+      onSent()
+    } catch (e) {
+      onError(e.message)
+    } finally {
+      setSendingId(null)
+    }
+  }
+  const ICON = { brochure: '📄', floor_plan: '📐', photo: '🖼️', video: '🎬', document: '📎' }
+  return (
+    <Sheet onClose={onClose} title="Attach from media library">
+      {assets?.length === 0 && (
+        <p className="text-[12px] text-ink-soft">Library is empty. Add files in More → Snippets &amp; media.</p>
+      )}
+      <div className="space-y-1.5">
+        {(assets || []).map((a) => (
+          <button
+            key={a.id}
+            onClick={() => send(a)}
+            disabled={sendingId != null}
+            className="w-full text-left bg-white border border-line rounded-xl px-3.5 py-2.5 flex items-center gap-3 active:scale-[0.99] transition disabled:opacity-50"
+          >
+            <span className="text-[20px]">{ICON[a.kind] || '📎'}</span>
+            <div className="min-w-0 flex-1">
+              <p className="text-[12.5px] font-bold text-ink truncate">{a.title}</p>
+              <p className="text-[11px] text-ink-faint truncate">{a.kind.replace('_', ' ')}</p>
+            </div>
+            {sendingId === a.id ? (
+              <span className="text-[10.5px] text-brand font-bold">Sending…</span>
+            ) : sent.has(a.id) ? (
+              <span className="text-[10px] text-emerald-600 font-bold">✓ sent</span>
+            ) : (
+              <span className="text-[10.5px] text-brand font-bold">Send</span>
+            )}
+          </button>
+        ))}
+      </div>
+    </Sheet>
+  )
+}
+
 // Template picker shown when the service window has closed (Meta policy:
-// only approved templates may start a business-initiated conversation).
+// only approved templates may start a business-initiated conversation). Agents
+// fill the variables; the approved body is never edited here.
 function TemplateComposer({ lead, onSent, onError }) {
   const [templates, setTemplates] = useState(null)
+  const [openId, setOpenId] = useState(null)
+  const [vars, setVars] = useState({})
   const [sendingId, setSendingId] = useState(null)
 
   useEffect(() => {
     api.templates().then(setTemplates).catch(() => setTemplates([]))
   }, [])
 
+  const open = (t) => {
+    setOpenId(openId === t.id ? null : t.id)
+    setVars({ name: lead.name || '' })
+  }
+
   const sendTemplate = async (t) => {
     setSendingId(t.id)
     try {
-      await api.replyTemplate(lead.id, t.id)
+      await api.replyTemplate(lead.id, t.id, vars)
       onSent()
+      setOpenId(null)
     } catch (e) {
       onError(e.message)
     } finally {
@@ -42,28 +253,57 @@ function TemplateComposer({ lead, onSent, onError }) {
   return (
     <div>
       <p className="text-[11.5px] font-bold text-hot bg-amber-wash rounded-lg px-3 py-2 mb-2">
-        ⏱️ 24-hour window closed — only template messages can be sent until{' '}
+        ⏱️ 24-hour window closed — only approved templates can be sent until{' '}
         {lead.name || 'the client'} replies again.
       </p>
       {templates === null && <p className="text-[11.5px] text-ink-faint px-1">Loading templates…</p>}
       {templates?.length === 0 && (
         <p className="text-[11.5px] text-ink-soft px-1">
-          No templates yet. Create one in Settings to re-open conversations.
+          No templates yet. Add one in More → Snippets &amp; media.
         </p>
       )}
-      <div className="space-y-1.5 max-h-40 overflow-y-auto no-scrollbar">
-        {(templates || []).map((t) => (
-          <button
-            key={t.id}
-            onClick={() => sendTemplate(t)}
-            disabled={sendingId != null}
-            className="w-full text-left bg-white border border-line rounded-xl px-3.5 py-2.5 active:scale-[0.99] transition disabled:opacity-50"
-          >
-            <p className="text-[12px] font-bold text-ink">{t.name}</p>
-            <p className="text-[11.5px] text-ink-soft truncate">{t.body}</p>
-            {sendingId === t.id && <p className="text-[10.5px] text-brand font-bold mt-0.5">Sending…</p>}
-          </button>
-        ))}
+      <div className="space-y-1.5 max-h-56 overflow-y-auto no-scrollbar">
+        {(templates || []).map((t) => {
+          const names = varsOf(t.body)
+          const isOpen = openId === t.id
+          return (
+            <div key={t.id} className="bg-white border border-line rounded-xl px-3.5 py-2.5">
+              <button onClick={() => open(t)} className="w-full text-left">
+                <div className="flex items-center gap-2">
+                  <p className="text-[12px] font-bold text-ink flex-1">{t.name}</p>
+                  {t.category === 'marketing' && (
+                    <span className="text-[9px] font-bold bg-brand-wash text-brand-deep rounded-full px-1.5 py-0.5">
+                      RERA auto
+                    </span>
+                  )}
+                  {(t.is_locked || t.meta_status === 'approved') && <span className="text-[10px]">🔒</span>}
+                </div>
+                <p className="text-[11.5px] text-ink-soft">{t.body}</p>
+              </button>
+              {isOpen && (
+                <div className="mt-2 space-y-2">
+                  {names.map((n) => (
+                    <Field key={n} label={n.replace('_', ' ')}>
+                      <input
+                        value={vars[n] || ''}
+                        onChange={(e) => setVars((v) => ({ ...v, [n]: e.target.value }))}
+                        className={inputCls}
+                        placeholder={n === 'name' ? lead.name || '' : ''}
+                      />
+                    </Field>
+                  ))}
+                  <button
+                    onClick={() => sendTemplate(t)}
+                    disabled={sendingId != null}
+                    className="w-full bg-brand text-white font-bold text-[13px] rounded-xl py-2.5 disabled:opacity-40 active:scale-[0.99] transition"
+                  >
+                    {sendingId === t.id ? 'Sending…' : 'Send template'}
+                  </button>
+                </div>
+              )}
+            </div>
+          )
+        })}
       </div>
     </div>
   )
@@ -75,9 +315,11 @@ function Conversation({ leadId, onBack }) {
   const [sending, setSending] = useState(false)
   const [suggestions, setSuggestions] = useState([])
   const [now, setNow] = useState(Date.now())
+  const [sheet, setSheet] = useState(null) // 'labels' | 'notes' | 'quick' | 'media'
   const suggestedForRef = useRef(null)
+  const readForRef = useRef(null)
   const scrollRef = useRef(null)
-  const { data: lead } = usePoll(() => api.lead(leadId), 3000, [leadId])
+  const { data: lead, error } = usePoll(() => api.lead(leadId), 3000, [leadId])
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
@@ -89,8 +331,14 @@ function Conversation({ leadId, onBack }) {
     return () => clearInterval(t)
   }, [])
 
+  // Mark the thread read once per lead (clears the unread badge in the list).
+  useEffect(() => {
+    if (!lead || readForRef.current === lead.id) return
+    readForRef.current = lead.id
+    api.markLeadRead(lead.id).catch(() => {})
+  }, [lead?.id])
+
   // Fetch AI reply suggestions when the buyer is waiting on an answer.
-  // Keyed on the last message so we only ask once per inbound message.
   const lastMsg = lead?.messages?.[lead.messages.length - 1]
   useEffect(() => {
     if (!lead || !lastMsg) return
@@ -110,9 +358,11 @@ function Conversation({ leadId, onBack }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lead?.id, lastMsg?.id, lastMsg?.role])
 
+  if (error) return <p className="text-center text-[13px] text-hot pt-16">Couldn't load this chat.</p>
   if (!lead) return <p className="text-center text-[13px] text-ink-faint pt-16">Loading…</p>
 
   const win = windowState(lead, now)
+  const labels = lead.labels || []
 
   const toggleAi = async () => {
     await api.setAi(lead.id, !lead.ai_enabled)
@@ -140,9 +390,7 @@ function Conversation({ leadId, onBack }) {
           ←
         </button>
         <div className="flex-1 min-w-0">
-          <p className="text-white font-bold text-[14.5px] leading-tight truncate">
-            {lead.name || lead.wa_id}
-          </p>
+          <p className="text-white font-bold text-[14.5px] leading-tight truncate">{lead.name || lead.wa_id}</p>
           <p className="text-white/75 text-[11px] truncate">
             +{lead.wa_id} · {lead.temp} · score {lead.score}
           </p>
@@ -153,12 +401,31 @@ function Conversation({ leadId, onBack }) {
           )}
         </div>
         <button
+          onClick={() => setSheet('notes')}
+          className="shrink-0 text-white/90 text-[11px] font-bold bg-white/15 rounded-full px-2.5 py-1.5 active:scale-95 transition"
+        >
+          📝{lead.notes?.length ? ` ${lead.notes.length}` : ''}
+        </button>
+        <button
           onClick={toggleAi}
           className={`shrink-0 text-[10.5px] font-bold rounded-full px-2.5 py-1.5 transition active:scale-95 ${
             lead.ai_enabled ? 'bg-white text-brand-deep' : 'bg-white/20 text-white'
           }`}
         >
-          {lead.ai_enabled ? '🤖 AI on' : 'AI off — you have the chat'}
+          {lead.ai_enabled ? '🤖 AI on' : 'AI off'}
+        </button>
+      </div>
+
+      {/* Labels bar */}
+      <div className="shrink-0 bg-cream border-b border-line px-3 py-1.5 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+        {labels.map((l) => (
+          <LabelChip key={l.id} label={l} onRemove={() => api.setLeadLabel(lead.id, l.id, false)} />
+        ))}
+        <button
+          onClick={() => setSheet('labels')}
+          className="shrink-0 text-[10.5px] font-bold text-ink-soft border border-line rounded-full px-2 py-0.5 active:scale-95 transition"
+        >
+          + Label
         </button>
       </div>
 
@@ -188,56 +455,92 @@ function Conversation({ leadId, onBack }) {
       </div>
 
       <div className="shrink-0 bg-cream border-t border-line px-3 pt-2.5 pb-3">
-        {sendError && (
-          <p className="text-[11.5px] text-hot bg-amber-wash rounded-lg px-3 py-2 mb-2">{sendError}</p>
-        )}
+        {sendError && <p className="text-[11.5px] text-hot bg-amber-wash rounded-lg px-3 py-2 mb-2">{sendError}</p>}
         {!win.open ? (
           <TemplateComposer lead={lead} onSent={() => setSendError(null)} onError={setSendError} />
         ) : (
-        <>
-        {suggestions.length > 0 && (
-          <div className="flex gap-2 overflow-x-auto no-scrollbar pb-2">
-            {suggestions.map((s, i) => (
+          <>
+            {suggestions.length > 0 && (
+              <div className="flex gap-2 overflow-x-auto no-scrollbar pb-2">
+                {suggestions.map((s, i) => (
+                  <button
+                    key={i}
+                    onClick={() => setDraft(s)}
+                    className="shrink-0 max-w-[240px] text-left text-[11.5px] leading-snug bg-brand-wash text-brand-deep border border-brand/25 rounded-xl px-3 py-2 active:scale-95 transition"
+                  >
+                    ✨ <span className="line-clamp-2">{s}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="flex items-center gap-2 pb-2">
               <button
-                key={i}
-                onClick={() => setDraft(s)}
-                className="shrink-0 max-w-[240px] text-left text-[11.5px] leading-snug bg-brand-wash text-brand-deep border border-brand/25 rounded-xl px-3 py-2 active:scale-95 transition"
+                onClick={() => setSheet('quick')}
+                className="shrink-0 text-[11px] font-bold text-brand-deep bg-brand-wash border border-brand/25 rounded-full px-3 py-1.5 active:scale-95 transition"
               >
-                ✨ <span className="line-clamp-2">{s}</span>
+                ⚡ Quick reply
               </button>
-            ))}
-          </div>
-        )}
-        <div className="flex items-end gap-2">
-          <textarea
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault()
-                send()
-              }
-            }}
-            rows={1}
-            placeholder={`Reply to ${lead.name || 'buyer'} on WhatsApp…`}
-            className="flex-1 resize-none bg-white border border-line rounded-2xl px-4 py-3 text-[13.5px] outline-none focus:border-brand/50"
-          />
-          <button
-            onClick={send}
-            disabled={sending || !draft.trim()}
-            className="shrink-0 w-11 h-11 rounded-full bg-brand disabled:opacity-40 text-white flex items-center justify-center shadow-card active:scale-95 transition"
-          >
-            <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 translate-x-[1px]">
-              <path d="M3.4 20.4 21.8 12 3.4 3.6 3.4 10l13 2-13 2z" />
-            </svg>
-          </button>
-        </div>
-        <p className="text-[10.5px] text-ink-faint mt-1.5 px-1">
-          Sends a real WhatsApp message from your business number.
-        </p>
-        </>
+              <button
+                onClick={() => setSheet('media')}
+                className="shrink-0 text-[11px] font-bold text-brand-deep bg-brand-wash border border-brand/25 rounded-full px-3 py-1.5 active:scale-95 transition"
+              >
+                📎 Media
+              </button>
+            </div>
+            <div className="flex items-end gap-2">
+              <textarea
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    send()
+                  }
+                }}
+                rows={1}
+                placeholder={`Reply to ${lead.name || 'buyer'} on WhatsApp…`}
+                className="flex-1 resize-none bg-white border border-line rounded-2xl px-4 py-3 text-[13.5px] outline-none focus:border-brand/50"
+              />
+              <button
+                onClick={send}
+                disabled={sending || !draft.trim()}
+                className="shrink-0 w-11 h-11 rounded-full bg-brand disabled:opacity-40 text-white flex items-center justify-center shadow-card active:scale-95 transition"
+              >
+                <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 translate-x-[1px]">
+                  <path d="M3.4 20.4 21.8 12 3.4 3.6 3.4 10l13 2-13 2z" />
+                </svg>
+              </button>
+            </div>
+            <p className="text-[10.5px] text-ink-faint mt-1.5 px-1">
+              Sends a real WhatsApp message from your business number.
+            </p>
+          </>
         )}
       </div>
+
+      {sheet === 'labels' && <LabelSheet lead={lead} onClose={() => setSheet(null)} onChanged={() => {}} />}
+      {sheet === 'notes' && <NotesSheet lead={lead} onClose={() => setSheet(null)} onChanged={() => {}} />}
+      {sheet === 'quick' && (
+        <QuickReplySheet
+          lead={lead}
+          onClose={() => setSheet(null)}
+          onPick={(text) => {
+            setDraft((d) => (d ? `${d} ${text}` : text))
+            setSheet(null)
+          }}
+        />
+      )}
+      {sheet === 'media' && (
+        <MediaSheet
+          lead={lead}
+          onClose={() => setSheet(null)}
+          onSent={() => setSheet(null)}
+          onError={(m) => {
+            setSendError(m)
+            setSheet(null)
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -280,18 +583,32 @@ export default function InboxTab({ leadId, onSelectLead }) {
             className={`w-full text-left bg-card rounded-2xl border border-line shadow-card px-4 py-3.5 active:scale-[0.99] transition rise rise-${Math.min(i + 1, 5)}`}
           >
             <div className="flex items-center gap-3">
-              <span className="shrink-0 w-11 h-11 rounded-full bg-brand-wash text-brand-deep font-display font-bold text-[15px] flex items-center justify-center">
+              <span className="relative shrink-0 w-11 h-11 rounded-full bg-brand-wash text-brand-deep font-display font-bold text-[15px] flex items-center justify-center">
                 {(l.name || l.wa_id).split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase()}
+                {l.unread_count > 0 && (
+                  <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-hot text-white text-[10px] font-bold flex items-center justify-center">
+                    {l.unread_count}
+                  </span>
+                )}
               </span>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between gap-2">
-                  <p className="font-bold text-[14.5px] text-ink truncate">{l.name || l.wa_id}</p>
+                  <p className={`text-[14.5px] truncate ${l.unread_count > 0 ? 'font-extrabold text-ink' : 'font-bold text-ink'}`}>
+                    {l.name || l.wa_id}
+                  </p>
                   <span className="shrink-0 text-[11px] text-ink-faint">{fmtAgo(l.last_at)}</span>
                 </div>
-                <p className="text-[12.5px] text-ink-soft truncate mt-0.5">
+                <p className={`text-[12.5px] truncate mt-0.5 ${l.unread_count > 0 ? 'text-ink font-semibold' : 'text-ink-soft'}`}>
                   {l.last_role === 'buyer' ? '' : l.last_role === 'ai' ? '🤖 ' : 'You: '}
                   {l.last_msg || '—'}
                 </p>
+                {l.labels?.length > 0 && (
+                  <div className="flex items-center gap-1 mt-1.5 overflow-hidden">
+                    {l.labels.slice(0, 3).map((lb) => (
+                      <LabelChip key={lb.id} label={lb} />
+                    ))}
+                  </div>
+                )}
               </div>
               {!l.ai_enabled && (
                 <span className="shrink-0 text-[9.5px] font-bold bg-amber-wash text-gold rounded-full px-2 py-0.5">

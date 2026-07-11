@@ -128,6 +128,48 @@ export async function fetchLeadgenData(leadgenId) {
   }
 }
 
+// Sends a media message (image / video / document) by link — the URL must be
+// publicly reachable by Meta. `type` is one of 'image' | 'video' | 'document'.
+// filename applies to documents; caption is optional. Returns the wa message id.
+export async function sendMedia(to, { type = 'document', link, caption, filename } = {}, phoneNumberId) {
+  if (!whatsappConfigured()) {
+    const err = new Error('WhatsApp is not configured (set WHATSAPP_ACCESS_TOKEN and WHATSAPP_PHONE_NUMBER_ID)')
+    err.code = 'WA_NOT_CONFIGURED'
+    throw err
+  }
+  if (!link) {
+    const err = new Error('media link required')
+    err.code = 'WA_MEDIA_MISSING'
+    throw err
+  }
+  const fromId = phoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID
+  const media = { link }
+  if (caption) media.caption = caption
+  if (type === 'document' && filename) media.filename = filename
+  const res = await fetch(`${GRAPH}/${fromId}/messages`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ messaging_product: 'whatsapp', to, type, [type]: media }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    if (isTokenError(data.error)) {
+      const err = new Error(
+        'WhatsApp access token is expired or invalid — refresh WHATSAPP_ACCESS_TOKEN in the server .env',
+      )
+      err.code = 'WA_TOKEN_EXPIRED'
+      throw err
+    }
+    const err = new Error(`WhatsApp media send failed (${res.status}): ${JSON.stringify(data.error || data)}`)
+    err.code = 'WA_SEND_FAILED'
+    throw err
+  }
+  return data.messages?.[0]?.id ?? null
+}
+
 export async function markRead(messageId, phoneNumberId) {
   if (!whatsappConfigured() || !messageId) return
   const fromId = phoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID

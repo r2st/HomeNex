@@ -255,8 +255,10 @@ test('commissions: create with pct + paise values, update status', async () => {
 // === Message templates ===
 
 test('message templates: create, meta approval status, unique name per agent', async () => {
+  // 'custom_reminder' avoids the curated pack names (welcome, site_visit_reminder, …)
+  // that seedWorkspaceDefaults now reserves per agent.
   const t = await db.createMessageTemplate(agent.id, {
-    name: 'site_visit_reminder',
+    name: 'custom_reminder',
     category: 'utility',
     body: 'Hi {{name}}, reminder for your site visit at {{time}}.',
     variables: ['name', 'time'],
@@ -273,7 +275,7 @@ test('message templates: create, meta approval status, unique name per agent', a
   assert.equal(approved.meta_status, 'approved')
 
   await assert.rejects(
-    () => db.createMessageTemplate(agent.id, { name: 'site_visit_reminder', body: 'dup' }),
+    () => db.createMessageTemplate(agent.id, { name: 'custom_reminder', body: 'dup' }),
     /duplicate key|unique/i,
   )
 })
