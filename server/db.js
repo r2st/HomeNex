@@ -3025,5 +3025,459 @@ export async function deleteMessageTemplate(id, agentId) {
   return res.rowCount > 0
 }
 
+// ===========================================================================
+// Team Management (§5.3, migration 011): teams, roles, lead assignment, privacy.
+//
+// An agent belongs to at most one team (team_members.agent_id is UNIQUE). Lead
+// ownership stays agent_id; team_id is a denormalized tag that lets managers see
+// the whole team. The privacy wall is enforced in the API — agents reach only
+// their own leads via /api/leads; /api/team/* is gated to managers and owners.
+// ===========================================================================
+
+// The team id an agent belongs to, or null. Cheap single-column lookup used on
+// the inbound hot path, so it stays a bare SELECT rather than a join.
+export async function agentTeamId(agentId) {
+  return (await q('SELECT team_id FROM team_members WHERE agent_id = $1', [agentId])).rows[0]?.team_id ?? null
+}
+
+// The agent's team plus their membership (role/localities). null for a solo agent.
+export async function getAgentTeam(agentId) {
+  const { rows } = await q(
+    `SELECT t.*, tm.role, tm.id AS member_id, tm.localities, tm.accepts_leads
+     FROM team_members tm JOIN teams t ON t.id = tm.team_id WHERE tm.agent_id = $1`,
+    [agentId],
+  )
+  return rows[0] ? { ...rows[0], is_owner: rows[0].role === 'owner' } : null
+}
+
+export async function getTeamById(teamId) {
+  return (await q('SELECT * FROM teams WHERE id = $1', [teamId])).rows[0] || null
+}
+
+// Create a team; the creator becomes its owner member. An agent can be in one team.
+export async function createTeam(ownerAgentId, name) {
+  const nm = String(name ?? '').trim()
+  if (!nm) fail('Team name is required')
+  if (nm.length > 120) fail('Team name is too long (max 120 characters)')
+  if (await agentTeamId(ownerAgentId)) fail('You are already in a team', 'ALREADY_IN_TEAM')
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const { rows } = await client.query(
+      'INSERT INTO teams (name, owner_agent_id) VALUES ($1, $2) RETURNING *',
+      [nm, ownerAgentId],
+    )
+    await client.query('INSERT INTO team_members (team_id, agent_id, role) VALUES ($1, $2, $3)', [
+      rows[0].id,
+      ownerAgentId,
+      'owner',
+    ])
+    await client.query('COMMIT')
+    return rows[0]
+  } catch (e) {
+    await client.query('ROLLBACK')
+    if (e.code === '23505') fail('You are already in a team', 'ALREADY_IN_TEAM')
+    throw e
+  } finally {
+    client.release()
+  }
+}
+
+export async function updateTeam(teamId, fields = {}) {
+  if (fields.name !== undefined && !String(fields.name).trim()) fail('Team name cannot be empty')
+  const { sets, params } = buildSet(
+    { name: 'text', assignment_strategy: 'text', shared_wa_phone_number_id: 'text' },
+    fields,
+  )
+  if (!sets.length) return getTeamById(teamId)
+  const { rows } = await q(
+    `UPDATE teams SET ${sets.join(', ')}, updated_at = now() WHERE id = $${params.length + 1} RETURNING *`,
+    [...params, teamId],
+  )
+  return rows[0]
+}
+
+// Owner disbands the team: leads return to their agents (team scope dropped),
+// members and invites fall away via ON DELETE CASCADE.
+export async function deleteTeam(teamId) {
+  await q('UPDATE leads SET team_id = NULL WHERE team_id = $1', [teamId])
+  await q('DELETE FROM teams WHERE id = $1', [teamId])
+  return true
+}
+
+// Members with their agent identity and this-team lead counts, owner first.
+export async function listTeamMembers(teamId) {
+  return (
+    await q(
+      `SELECT tm.id AS member_id, tm.agent_id, tm.role, tm.localities, tm.accepts_leads, tm.joined_at,
+              a.name, a.phone, a.email, a.avatar_url, a.wa_phone_number, a.is_active,
+              (SELECT COUNT(*) FROM leads l WHERE l.agent_id = tm.agent_id AND l.team_id = $1)::int AS lead_count
+       FROM team_members tm JOIN agents a ON a.id = tm.agent_id
+       WHERE tm.team_id = $1
+       ORDER BY CASE tm.role WHEN 'owner' THEN 0 WHEN 'manager' THEN 1 ELSE 2 END, a.name`,
+      [teamId],
+    )
+  ).rows
+}
+
+export async function isTeamMember(teamId, agentId) {
+  return Boolean(
+    (await q('SELECT 1 FROM team_members WHERE team_id = $1 AND agent_id = $2', [teamId, agentId])).rows[0],
+  )
+}
+
+// --- Invitations: invite by login number, the invitee accepts ---
+
+export async function inviteToTeam(teamId, invitedBy, { phone, role = 'agent' } = {}) {
+  const p = normalizePhone(phone)
+  if (p.replace(/\D/g, '').length < 10) fail('Enter a valid WhatsApp number for the invite', 'INVALID_PHONE')
+  if (!['manager', 'agent'].includes(role)) fail('Role must be manager or agent')
+  const onTeam = (
+    await q(
+      'SELECT 1 FROM team_members tm JOIN agents a ON a.id = tm.agent_id WHERE tm.team_id = $1 AND a.phone = $2',
+      [teamId, p],
+    )
+  ).rows[0]
+  if (onTeam) fail('That number is already on your team', 'ALREADY_MEMBER')
+  const elsewhere = (
+    await q('SELECT 1 FROM team_members tm JOIN agents a ON a.id = tm.agent_id WHERE a.phone = $1', [p])
+  ).rows[0]
+  if (elsewhere) fail('That agent already belongs to another team', 'IN_OTHER_TEAM')
+  try {
+    const { rows } = await q(
+      'INSERT INTO team_invites (team_id, phone, role, invited_by) VALUES ($1, $2, $3, $4) RETURNING *',
+      [teamId, p, role, invitedBy],
+    )
+    return rows[0]
+  } catch (e) {
+    if (e.code === '23505') fail('There is already a pending invite for that number', 'DUP_INVITE')
+    throw e
+  }
+}
+
+export async function listTeamInvites(teamId) {
+  return (
+    await q(
+      `SELECT ti.*, a.name AS invited_by_name FROM team_invites ti
+       LEFT JOIN agents a ON a.id = ti.invited_by
+       WHERE ti.team_id = $1 AND ti.status = 'pending' ORDER BY ti.created_at DESC`,
+      [teamId],
+    )
+  ).rows
+}
+
+// Pending invites addressed to an agent's login number (shown to the invitee).
+export async function listIncomingInvites(phone) {
+  return (
+    await q(
+      `SELECT ti.id, ti.team_id, ti.role, ti.created_at, t.name AS team_name, a.name AS invited_by_name
+       FROM team_invites ti JOIN teams t ON t.id = ti.team_id
+       LEFT JOIN agents a ON a.id = ti.invited_by
+       WHERE ti.phone = $1 AND ti.status = 'pending' ORDER BY ti.created_at DESC`,
+      [normalizePhone(phone)],
+    )
+  ).rows
+}
+
+export async function respondToInvite(inviteId, agent, accept) {
+  const invite = (await q('SELECT * FROM team_invites WHERE id = $1', [inviteId])).rows[0]
+  if (!invite || invite.status !== 'pending') fail('Invite not found or already handled', 'NOT_FOUND')
+  if (normalizePhone(agent.phone) !== invite.phone) fail('This invite is for a different number', 'WRONG_INVITEE')
+  if (!accept) {
+    await q("UPDATE team_invites SET status = 'declined', responded_at = now() WHERE id = $1", [inviteId])
+    return { declined: true }
+  }
+  if (await agentTeamId(agent.id)) fail('You are already in a team', 'ALREADY_IN_TEAM')
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    await client.query('INSERT INTO team_members (team_id, agent_id, role) VALUES ($1, $2, $3)', [
+      invite.team_id,
+      agent.id,
+      invite.role,
+    ])
+    await client.query("UPDATE team_invites SET status = 'accepted', responded_at = now() WHERE id = $1", [inviteId])
+    // Any other pending invites to this number are now moot.
+    await client.query(
+      "UPDATE team_invites SET status = 'revoked', responded_at = now() WHERE phone = $1 AND status = 'pending' AND id <> $2",
+      [invite.phone, inviteId],
+    )
+    await client.query('COMMIT')
+  } catch (e) {
+    await client.query('ROLLBACK')
+    if (e.code === '23505') fail('You are already in a team', 'ALREADY_IN_TEAM')
+    throw e
+  } finally {
+    client.release()
+  }
+  return { accepted: true, team_id: invite.team_id, role: invite.role }
+}
+
+export async function revokeInvite(inviteId, teamId) {
+  return (
+    await q(
+      "UPDATE team_invites SET status = 'revoked', responded_at = now() WHERE id = $1 AND team_id = $2 AND status = 'pending'",
+      [inviteId, teamId],
+    )
+  ).rowCount > 0
+}
+
+// --- Roles & membership ---
+
+export async function setMemberRole(teamId, targetAgentId, role) {
+  if (!['manager', 'agent'].includes(role)) fail('Role must be manager or agent')
+  const team = await getTeamById(teamId)
+  if (!team) fail('Team not found', 'NOT_FOUND')
+  if (Number(team.owner_agent_id) === Number(targetAgentId)) fail("The owner's role cannot be changed", 'OWNER_ROLE')
+  const { rows } = await q(
+    'UPDATE team_members SET role = $1 WHERE team_id = $2 AND agent_id = $3 RETURNING *',
+    [role, teamId, targetAgentId],
+  )
+  if (!rows[0]) fail('That agent is not on this team', 'NOT_MEMBER')
+  return rows[0]
+}
+
+export async function updateMember(teamId, targetAgentId, fields = {}) {
+  const sets = []
+  const params = []
+  if (fields.localities !== undefined) {
+    params.push(JSON.stringify(Array.isArray(fields.localities) ? fields.localities : []))
+    sets.push(`localities = $${params.length}`)
+  }
+  if (fields.accepts_leads !== undefined) {
+    params.push(fields.accepts_leads ? 1 : 0)
+    sets.push(`accepts_leads = $${params.length}`)
+  }
+  if (!sets.length) {
+    return (await q('SELECT * FROM team_members WHERE team_id = $1 AND agent_id = $2', [teamId, targetAgentId])).rows[0]
+  }
+  params.push(teamId, targetAgentId)
+  const { rows } = await q(
+    `UPDATE team_members SET ${sets.join(', ')} WHERE team_id = $${params.length - 1} AND agent_id = $${params.length} RETURNING *`,
+    params,
+  )
+  if (!rows[0]) fail('That agent is not on this team', 'NOT_MEMBER')
+  return rows[0]
+}
+
+export async function removeMember(teamId, targetAgentId) {
+  const team = await getTeamById(teamId)
+  if (!team) fail('Team not found', 'NOT_FOUND')
+  if (Number(team.owner_agent_id) === Number(targetAgentId)) {
+    fail('The team owner cannot be removed — transfer ownership or delete the team', 'OWNER_REMOVE')
+  }
+  const { rowCount } = await q('DELETE FROM team_members WHERE team_id = $1 AND agent_id = $2', [teamId, targetAgentId])
+  if (!rowCount) fail('That agent is not on this team', 'NOT_MEMBER')
+  // Their leads leave the team scope but stay assigned to them.
+  await q('UPDATE leads SET team_id = NULL WHERE team_id = $1 AND agent_id = $2', [teamId, targetAgentId])
+  return true
+}
+
+// --- Lead assignment ---
+
+// Members who accept leads, in stable order (round-robin / locality candidates).
+async function assignableMembers(teamId) {
+  return (
+    await q('SELECT agent_id, localities FROM team_members WHERE team_id = $1 AND accepts_leads = 1 ORDER BY id', [
+      teamId,
+    ])
+  ).rows
+}
+
+// Next member by round-robin. Advances the team cursor atomically so concurrent
+// inbound messages don't hand the same member two leads in a row.
+export async function pickRoundRobin(teamId) {
+  const members = await assignableMembers(teamId)
+  if (!members.length) return null
+  const { rows } = await q(
+    'UPDATE teams SET rr_cursor = rr_cursor + 1, updated_at = now() WHERE id = $1 RETURNING rr_cursor',
+    [teamId],
+  )
+  return members[(rows[0].rr_cursor - 1) % members.length].agent_id
+}
+
+// Member whose localities overlap the lead's locality; falls back to round-robin.
+export async function pickByLocality(teamId, locality) {
+  if (!locality) return pickRoundRobin(teamId)
+  const loc = String(locality).toLowerCase().trim()
+  const members = await assignableMembers(teamId)
+  const match = members.find((m) =>
+    (m.localities || []).some((x) => {
+      const s = String(x).toLowerCase().trim()
+      return s && (s.includes(loc) || loc.includes(s))
+    }),
+  )
+  return match ? match.agent_id : pickRoundRobin(teamId)
+}
+
+// Assign (or reassign) a team lead to a member. Guards against cross-team leaks:
+// only leads already tagged to this team can be moved.
+export async function assignTeamLead(teamId, leadId, targetAgentId) {
+  if (!(await isTeamMember(teamId, targetAgentId))) fail('That agent is not on this team', 'NOT_MEMBER')
+  const { rows } = await q(
+    `UPDATE leads SET agent_id = $1, team_id = $2, assigned_at = now(), updated_at = now()
+     WHERE id = $3 AND team_id = $2 RETURNING *`,
+    [targetAgentId, teamId, leadId],
+  )
+  return rows[0] || null
+}
+
+// Apply the team's configured strategy to route one lead. Returns the updated lead,
+// or null for manual/pool strategies (which leave the lead for a human to place).
+export async function autoAssignTeamLead(teamId, leadId, { locality = null } = {}) {
+  const team = await getTeamById(teamId)
+  if (!team) return null
+  let target = null
+  if (team.assignment_strategy === 'round_robin') target = await pickRoundRobin(teamId)
+  else if (team.assignment_strategy === 'locality') target = await pickByLocality(teamId, locality)
+  else return null
+  return target ? assignTeamLead(teamId, leadId, target) : null
+}
+
+// Distribute every unclaimed lead in the team pool by the team's strategy. Returns
+// how many were placed. For manual/pool strategies nothing is auto-placed.
+export async function distributeTeamPool(teamId) {
+  const team = await getTeamById(teamId)
+  if (!team || !['round_robin', 'locality'].includes(team.assignment_strategy)) return { assigned: 0 }
+  const leads = (await q('SELECT id, locality FROM leads WHERE team_id = $1 AND agent_id IS NULL', [teamId])).rows
+  let assigned = 0
+  for (const lead of leads) {
+    if (await autoAssignTeamLead(teamId, lead.id, { locality: lead.locality })) assigned++
+  }
+  return { assigned }
+}
+
+// A member claims an unassigned lead from the shared team inbox.
+export async function claimTeamLead(teamId, agentId, leadId) {
+  if (!(await isTeamMember(teamId, agentId))) fail('You are not on this team', 'NOT_MEMBER')
+  const { rows } = await q(
+    `UPDATE leads SET agent_id = $1, assigned_at = now(), updated_at = now()
+     WHERE id = $2 AND team_id = $3 AND agent_id IS NULL RETURNING *`,
+    [agentId, leadId, teamId],
+  )
+  return rows[0] || null
+}
+
+// Which team member already owns a lead from this sender? Inbound routing uses
+// this so a returning buyer stays with their agent instead of being re-shuffled
+// by round-robin on every message.
+export async function teamLeadOwnerForWaId(teamId, waId) {
+  return (
+    await q(
+      'SELECT agent_id FROM leads WHERE team_id = $1 AND wa_id = $2 AND agent_id IS NOT NULL ORDER BY id LIMIT 1',
+      [teamId, waId],
+    )
+  ).rows[0]?.agent_id ?? null
+}
+
+// Denormalize team_id onto a lead its agent owns. Called from the inbound path so
+// a team member's new leads immediately show up in the team's manager views.
+export async function stampLeadTeam(leadId, agentId) {
+  const teamId = await agentTeamId(agentId)
+  if (!teamId) return
+  await q('UPDATE leads SET team_id = $1 WHERE id = $2 AND team_id IS DISTINCT FROM $1', [teamId, leadId])
+}
+
+// --- Manager views (privacy wall: these are gated to managers/owners in routes) ---
+
+// Shared team inbox: every lead in the team, optionally filtered to one member,
+// to the unassigned pool, or by stage/pipeline.
+export async function teamLeads(teamId, { memberId = null, stage = '', pipelineType = '', unassigned = false } = {}) {
+  const where = ['l.team_id = $1']
+  const params = [teamId]
+  if (unassigned) where.push('l.agent_id IS NULL')
+  else if (memberId) {
+    params.push(memberId)
+    where.push(`l.agent_id = $${params.length}`)
+  }
+  if (pipelineType) {
+    params.push(pipelineType)
+    where.push(`COALESCE(l.pipeline_type, 'buy_primary') = $${params.length}`)
+  }
+  if (stage) {
+    params.push(stage)
+    where.push(`COALESCE(l.stage, 'New') = $${params.length}`)
+  }
+  return (
+    await q(
+      `SELECT l.*, a.name AS agent_name, (l.agent_id IS NULL)::int AS unassigned,
+              (SELECT text FROM messages m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) AS last_msg,
+              (SELECT created_at FROM messages m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) AS last_at
+       FROM leads l LEFT JOIN agents a ON a.id = l.agent_id
+       WHERE ${where.join(' AND ')} ORDER BY l.updated_at DESC`,
+      params,
+    )
+  ).rows
+}
+
+// Team pipeline: stage funnel across all members, plus each member's stage split
+// and the size of the unassigned pool.
+export async function teamPipeline(teamId, pipelineType = 'buy_primary') {
+  const stages = await listPipelineStages(pipelineType)
+  const dist = (
+    await q(
+      `SELECT COALESCE(stage, 'New') AS stage, COUNT(*)::int AS n
+       FROM leads WHERE team_id = $1 AND COALESCE(pipeline_type, 'buy_primary') = $2
+       GROUP BY COALESCE(stage, 'New')`,
+      [teamId, pipelineType],
+    )
+  ).rows
+  const byStage = Object.fromEntries(dist.map((r) => [r.stage, r.n]))
+  const byMember = (
+    await q(
+      `SELECT l.agent_id, a.name, COALESCE(l.stage, 'New') AS stage, COUNT(*)::int AS n
+       FROM leads l JOIN agents a ON a.id = l.agent_id
+       WHERE l.team_id = $1 AND COALESCE(l.pipeline_type, 'buy_primary') = $2 AND l.agent_id IS NOT NULL
+       GROUP BY l.agent_id, a.name, COALESCE(l.stage, 'New')`,
+      [teamId, pipelineType],
+    )
+  ).rows
+  const pooled = (await q('SELECT COUNT(*)::int AS n FROM leads WHERE team_id = $1 AND agent_id IS NULL', [teamId]))
+    .rows[0].n
+  return {
+    pipeline_type: pipelineType,
+    stages: stages.map((s) => ({ stage: s.stage_name, count: byStage[s.stage_name] || 0 })),
+    by_member: byMember,
+    pooled,
+  }
+}
+
+// Response-time leaderboard: per member, first-response speed and lead outcomes.
+// Ordered fastest-first; a member with no measured responses sorts last.
+export async function teamLeaderboard(teamId) {
+  return (
+    await q(
+      `SELECT tm.agent_id, a.name, tm.role,
+              COUNT(l.id)::int AS total_leads,
+              COUNT(l.id) FILTER (WHERE COALESCE(l.effective_temp, l.temp) = 'Hot')::int AS hot_leads,
+              COUNT(l.id) FILTER (WHERE l.closed_at IS NOT NULL AND COALESCE(l.stage, '') <> 'Lost')::int AS won_leads,
+              COUNT(l.id) FILTER (WHERE l.updated_at < now() - interval '3 days' AND l.closed_at IS NULL)::int AS stale_leads,
+              AVG(l.first_response_s) FILTER (WHERE l.first_response_s IS NOT NULL) AS avg_first_response_s
+       FROM team_members tm JOIN agents a ON a.id = tm.agent_id
+       LEFT JOIN leads l ON l.agent_id = tm.agent_id AND l.team_id = $1
+       WHERE tm.team_id = $1
+       GROUP BY tm.agent_id, a.name, tm.role
+       ORDER BY avg_first_response_s ASC NULLS LAST`,
+      [teamId],
+    )
+  ).rows
+}
+
+// Stale leads across the team (idle longer than `days`, still open) for a manager
+// to reassign. Ordered most-neglected first.
+export async function teamStaleLeads(teamId, days = 3) {
+  const d = Math.max(1, Number(days) || 3)
+  return (
+    await q(
+      `SELECT l.*, a.name AS agent_name,
+              EXTRACT(EPOCH FROM (now() - l.updated_at))::bigint AS idle_s
+       FROM leads l LEFT JOIN agents a ON a.id = l.agent_id
+       WHERE l.team_id = $1 AND l.closed_at IS NULL AND l.updated_at < now() - ($2::int * interval '1 day')
+       ORDER BY l.updated_at ASC`,
+      [teamId, d],
+    )
+  ).rows
+}
+
 export { pool, q as query }
 export default pool

@@ -154,6 +154,8 @@ import { setupGuidePage } from './setupGuide.js'
 import { signup, login, changePhone, changePassword, requireAuth } from './auth.js'
 import { handleAgentCommand } from './agentCommands.js'
 import adminRouter from './adminRoutes.js'
+import teamRouter from './teamRoutes.js'
+import { getAgentTeam, pickRoundRobin, stampLeadTeam, teamLeadOwnerForWaId } from './db.js'
 import {
   ingestAddress,
   parsePortalEmail,
@@ -263,6 +265,9 @@ async function handleInbound({ agentId = null, brokerName, waId, name, text, sou
   if (agentId) {
     const contact = await getContactByPhone(waId)
     if (contact?.agent_id === agentId) await attachLeadContact(lead.id, contact.id)
+    // Team members: tag the lead so it shows up in the team's shared inbox and
+    // manager views. Only needed once, when the lead is first created.
+    if (isNewLead) await stampLeadTeam(lead.id, agentId)
   }
   if (isNewLead) {
     await logActivity(agentId, lead.id, 'lead', agentId
@@ -314,6 +319,19 @@ async function handleInbound({ agentId = null, brokerName, waId, name, text, sou
   }
 
   return { lead: await getLead(lead.id), reply }
+}
+
+// Decide which agent handles an inbound on a team member's line. Solo agents (and
+// any strategy other than round-robin) always keep their own line. For a round-robin
+// team, a returning sender stays with their existing owner; a new sender goes to the
+// next member in rotation. Returns the resolved agent record.
+async function resolveTeamLineAgent(lineOwner, waId) {
+  const team = await getAgentTeam(lineOwner.id)
+  if (!team || team.assignment_strategy !== 'round_robin') return lineOwner
+  const existingOwnerId = await teamLeadOwnerForWaId(team.id, waId)
+  if (existingOwnerId) return (await getAgent(existingOwnerId)) || lineOwner
+  const pickedId = await pickRoundRobin(team.id)
+  return pickedId && pickedId !== lineOwner.id ? (await getAgent(pickedId)) || lineOwner : lineOwner
 }
 
 // Attribute a Meta Lead Ads leadgen to an agent: a form_id→agent map (set via the
@@ -414,15 +432,19 @@ app.post('/webhook', (req, res) => {
           const referral = extractReferral(msg)
 
           // Per-agent line: if this number belongs to a specific agent, route directly
-          // to them. The sender is auto-remembered as a contact for future reference.
+          // to them. When that agent runs a round-robin team, a brand-new sender is
+          // handed to the next member instead; a returning sender stays with whoever
+          // already owns them. The sender is auto-remembered as a contact of whoever
+          // ends up handling them.
           if (lineOwner) {
+            const assignee = await resolveTeamLineAgent(lineOwner, msg.from)
             try {
-              await addContact(lineOwner.id, msg.from, waProfileName || msg.from)
-              await logActivity(lineOwner.id, null, 'lead', `Auto-added client: ${waProfileName || msg.from} (${msg.from})`)
+              await addContact(assignee.id, msg.from, waProfileName || msg.from)
+              await logActivity(assignee.id, null, 'lead', `Auto-added client: ${waProfileName || msg.from} (${msg.from})`)
             } catch { /* already exists */ }
             await handleInbound({
-              agentId: lineOwner.id,
-              brokerName: lineOwner.name,
+              agentId: assignee.id,
+              brokerName: assignee.name,
               waId: msg.from,
               name: waProfileName,
               text: msg.text.body,
@@ -1655,6 +1677,10 @@ app.post('/api/properties/:id/syndicate', ah(async (req, res) => {
   await logActivity(req.agent.id, null, 'agent', `Exported "${property.title}" to ${portal}`)
   res.json(row)
 }))
+
+// --- Team API (§5.3): team CRUD, roles, assignment, manager views. Privacy walls
+// are enforced inside the router (see teamRoutes.js). ---
+app.use('/api/team', teamRouter)
 
 // --- Admin API (requires admin privileges; see adminRoutes.js) ---
 app.use('/api/admin', adminRouter)
