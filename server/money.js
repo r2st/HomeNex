@@ -36,3 +36,24 @@ export function paiseToLakhs(paise) {
   if (paise == null) return null
   return Number(paise) / PAISE_PER_LAKH
 }
+
+// GST on Indian SaaS/brokerage invoices is 18% by default. Compute the split in
+// paise so an invoice's subtotal + gst = total is exact and never re-derived from
+// a float. Returns integer paise for every field.
+export const GST_RATE = 18
+
+export function gstBreakdown(subtotalPaise, rate = GST_RATE) {
+  const subtotal = Math.round(Number(subtotalPaise) || 0)
+  const r = Number(rate)
+  const gst = Math.round((subtotal * r) / 100)
+  return { subtotal_paise: subtotal, gst_rate: r, gst_paise: gst, total_paise: subtotal + gst }
+}
+
+// "₹1,234.00" — plain rupee amount with paise, for invoice line items and totals.
+export function paiseToRupees(paise) {
+  if (paise == null || Number.isNaN(Number(paise))) return null
+  return `₹${(Number(paise) / PAISE_PER_RUPEE).toLocaleString('en-IN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`
+}

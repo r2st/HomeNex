@@ -6,6 +6,10 @@ import Agents from './pages/Agents.jsx'
 import AgentDetail from './pages/AgentDetail.jsx'
 import Waba from './pages/Waba.jsx'
 import Templates from './pages/Templates.jsx'
+import Onboarding from './pages/Onboarding.jsx'
+import Billing from './pages/Billing.jsx'
+import Tickets from './pages/Tickets.jsx'
+import Analytics from './pages/Analytics.jsx'
 
 // Tiny hash router: '#/agents/12' -> ['agents', '12']. Keeps the site
 // dependency-free and works when served statically at /admin.
@@ -23,8 +27,12 @@ function useHashRoute() {
 const NAV = [
   { hash: '#/', label: 'Dashboard', match: (r) => r.length === 0 },
   { hash: '#/agents', label: 'Agents', match: (r) => r[0] === 'agents' },
+  { hash: '#/onboarding', label: 'Onboarding', match: (r) => r[0] === 'onboarding' },
   { hash: '#/waba', label: 'WABA Management', match: (r) => r[0] === 'waba' },
-  { hash: '#/templates', label: 'Templates', match: (r) => r[0] === 'templates' },
+  { hash: '#/templates', label: 'Template Approvals', match: (r) => r[0] === 'templates' },
+  { hash: '#/billing', label: 'Billing & Usage', match: (r) => r[0] === 'billing' },
+  { hash: '#/tickets', label: 'Support Tickets', match: (r) => r[0] === 'tickets' },
+  { hash: '#/analytics', label: 'Analytics', match: (r) => r[0] === 'analytics' },
 ]
 
 export default function App() {
@@ -62,8 +70,12 @@ export default function App() {
   if (route.length === 0) page = <Dashboard />
   else if (route[0] === 'agents' && route[1]) page = <AgentDetail id={route[1]} />
   else if (route[0] === 'agents') page = <Agents />
+  else if (route[0] === 'onboarding') page = <Onboarding />
   else if (route[0] === 'waba') page = <Waba />
   else if (route[0] === 'templates') page = <Templates />
+  else if (route[0] === 'billing') page = <Billing />
+  else if (route[0] === 'tickets') page = <Tickets />
+  else if (route[0] === 'analytics') page = <Analytics />
   else page = <Dashboard />
 
   return (

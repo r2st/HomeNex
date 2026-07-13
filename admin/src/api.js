@@ -48,6 +48,37 @@ export const api = {
   agent: (id) => get(`/api/admin/agents/${id}`),
   updateAgent: (id, body) => put(`/api/admin/agents/${id}`, body),
   updateWaba: (id, body) => put(`/api/admin/agents/${id}/waba`, body),
+  auditLogs: (limit) => get(`/api/admin/audit-logs${qs({ limit })}`),
+  // §7.1 Onboarding, KYC/RERA, WABA health, impersonation
+  onboarding: () => get('/api/admin/onboarding'),
+  setKyc: (id, body) => put(`/api/admin/agents/${id}/kyc`, body),
+  verifyRera: (id, verified) => put(`/api/admin/agents/${id}/rera-verify`, { verified }),
+  wabaHealth: () => get('/api/admin/waba-health'),
+  impersonate: (id) => post(`/api/admin/agents/${id}/impersonate`, {}),
+  // §7.2 Template approval workflow
+  pendingTemplates: () => get('/api/admin/templates/pending'),
+  reviewTemplate: (id, action, note) => put(`/api/admin/templates/${id}/review`, { action, note }),
+  // §7.3 Billing & usage
+  plans: () => get('/api/admin/plans'),
+  createPlan: (body) => post('/api/admin/plans', body),
+  updatePlan: (id, body) => put(`/api/admin/plans/${id}`, body),
+  agentBilling: (id) => get(`/api/admin/agents/${id}/billing`),
+  setSubscription: (id, planId, status) => put(`/api/admin/agents/${id}/subscription`, { plan_id: planId, status }),
+  generateInvoice: (id, body) => post(`/api/admin/agents/${id}/invoices`, body),
+  setInvoiceStatus: (id, status) => put(`/api/admin/invoices/${id}/status`, { status }),
+  // §7.4 Support tickets
+  tickets: (status) => get(`/api/admin/tickets${qs({ status })}`),
+  ticket: (id) => get(`/api/admin/tickets/${id}`),
+  replyTicket: (id, body) => post(`/api/admin/tickets/${id}/reply`, { body }),
+  updateTicket: (id, body) => put(`/api/admin/tickets/${id}`, body),
+  // §7.5 Platform analytics
+  analytics: () => get('/api/admin/analytics'),
+}
+
+// Paise (BIGINT) → "₹1,234.00".
+export function fmtPaise(paise) {
+  if (paise == null) return '—'
+  return `₹${(Number(paise) / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
 // SQLite stores UTC "YYYY-MM-DD HH:MM:SS"; render as local.

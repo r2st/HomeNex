@@ -221,6 +221,13 @@ export const api = {
   autoAssignTeamLead: (id) => post(`/api/team/leads/${id}/auto-assign`, {}),
   distributeTeamPool: () => post('/api/team/pool/distribute', {}),
   claimTeamLead: (id) => post(`/api/team/leads/${id}/claim`, {}),
+  // Support tickets + billing (§7.3/§7.4 agent side) + template review request (§7.2)
+  supportTickets: (status) => get(`/api/support/tickets${qs({ status })}`),
+  supportTicket: (id) => get(`/api/support/tickets/${id}`),
+  createSupportTicket: (body) => post('/api/support/tickets', body),
+  replySupportTicket: (id, body) => post(`/api/support/tickets/${id}/reply`, { body }),
+  billing: () => get('/api/billing'),
+  requestTemplateReview: (id) => post(`/api/templates/${id}/request-review`, {}),
   // Lead Source Integrations (§1.7, §3.1, §5.2)
   quickAddLead: (body) => post('/api/leads/quick-add', body),
   leadSources: (channel) => get(`/api/lead-sources${qs({ channel })}`),

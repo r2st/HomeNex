@@ -12,6 +12,29 @@ import {
   listAllAuditLogs,
   logAudit,
 } from './db.js'
+import { issueToken } from './auth.js'
+import {
+  onboardingQueue,
+  setAgentKyc,
+  setAgentReraVerified,
+  wabaHealthBoard,
+  pendingReviewTemplates,
+  reviewTemplate,
+  listPlans,
+  createPlan,
+  updatePlan,
+  getSubscription,
+  setSubscription,
+  billingOverview,
+  generateInvoice,
+  getInvoice,
+  setInvoiceStatus,
+  listTickets,
+  getTicket,
+  addTicketMessage,
+  updateTicket,
+  platformAnalytics,
+} from './adminPortal.js'
 
 // Express 4 doesn't forward rejected-promise errors from async handlers; wrap them.
 const ah = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next)
@@ -130,5 +153,180 @@ router.put('/agents/:id/waba', ah(async (req, res) => {
     res.status(400).json({ error: err.message })
   }
 }))
+
+// A coded error from the portal layer → HTTP status.
+const portalErr = (res, err) => {
+  const status = err.code === 'NOT_FOUND' ? 404 : 400
+  res.status(status).json({ error: err.message, code: err.code })
+}
+
+// ===========================================================================
+// §7.1 Onboarding, KYC/RERA verification, WABA health, impersonation
+// ===========================================================================
+
+router.get('/onboarding', ah(async (_req, res) => res.json(await onboardingQueue())))
+
+router.put('/agents/:id/kyc', ah(async (req, res) => {
+  try {
+    const result = await setAgentKyc(req.agent.id, Number(req.params.id), {
+      status: req.body?.status,
+      note: req.body?.note,
+    })
+    await logAudit(req.agent.id, 'agent', Number(req.params.id), 'kyc_reviewed', { status: result.kyc_status })
+    res.json(result)
+  } catch (err) {
+    portalErr(res, err)
+  }
+}))
+
+router.put('/agents/:id/rera-verify', ah(async (req, res) => {
+  try {
+    const result = await setAgentReraVerified(Number(req.params.id), Boolean(req.body?.verified))
+    await logAudit(req.agent.id, 'agent', Number(req.params.id), 'rera_verified', { verified: result.rera_verified })
+    res.json(result)
+  } catch (err) {
+    portalErr(res, err)
+  }
+}))
+
+router.get('/waba-health', ah(async (_req, res) => res.json(await wabaHealthBoard())))
+
+// Impersonation: mint a normal agent session for the target, audited. Staff use
+// this to reproduce an agent's view; the token is an ordinary login token.
+router.post('/agents/:id/impersonate', ah(async (req, res) => {
+  const target = await getAgent(Number(req.params.id))
+  if (!target) return res.status(404).json({ error: 'Agent not found' })
+  if (target.is_active !== 1) return res.status(409).json({ error: 'Cannot impersonate a deactivated agent' })
+  await logAudit(req.agent.id, 'agent', target.id, 'impersonation_started', { target: target.name })
+  res.json({ token: await issueToken(target.id), agent: target })
+}))
+
+// ===========================================================================
+// §7.2 Template approval workflow
+// ===========================================================================
+
+router.get('/templates/pending', ah(async (_req, res) => res.json(await pendingReviewTemplates())))
+
+router.put('/templates/:id/review', ah(async (req, res) => {
+  try {
+    const tpl = await reviewTemplate(req.agent.id, Number(req.params.id), {
+      action: req.body?.action,
+      note: req.body?.note,
+    })
+    await logAudit(req.agent.id, 'template', tpl.id, `template_${tpl.review_status}`, { name: tpl.name })
+    res.json(tpl)
+  } catch (err) {
+    portalErr(res, err)
+  }
+}))
+
+// ===========================================================================
+// §7.3 Billing & usage
+// ===========================================================================
+
+router.get('/plans', ah(async (_req, res) => res.json(await listPlans())))
+
+router.post('/plans', ah(async (req, res) => {
+  try {
+    res.json(await createPlan(req.body ?? {}))
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'A plan with that code exists' })
+    portalErr(res, err)
+  }
+}))
+
+router.put('/plans/:id', ah(async (req, res) => res.json(await updatePlan(Number(req.params.id), req.body ?? {}))))
+
+router.get('/agents/:id/billing', ah(async (req, res) => {
+  if (!(await getAgent(Number(req.params.id)))) return res.status(404).json({ error: 'Agent not found' })
+  res.json(await billingOverview(Number(req.params.id)))
+}))
+
+router.put('/agents/:id/subscription', ah(async (req, res) => {
+  try {
+    const sub = await setSubscription(Number(req.params.id), Number(req.body?.plan_id), req.body?.status || 'active')
+    await logAudit(req.agent.id, 'agent', Number(req.params.id), 'subscription_set', { plan_id: sub.plan_id })
+    res.json(sub)
+  } catch (err) {
+    portalErr(res, err)
+  }
+}))
+
+router.post('/agents/:id/invoices', ah(async (req, res) => {
+  if (!(await getAgent(Number(req.params.id)))) return res.status(404).json({ error: 'Agent not found' })
+  try {
+    const invoice = await generateInvoice(Number(req.params.id), {
+      periodStart: req.body?.period_start,
+      periodEnd: req.body?.period_end,
+      note: req.body?.note,
+    })
+    await logAudit(req.agent.id, 'invoice', invoice.id, 'invoice_generated', { number: invoice.number })
+    res.json(invoice)
+  } catch (err) {
+    portalErr(res, err)
+  }
+}))
+
+router.get('/invoices/:id', ah(async (req, res) => {
+  const invoice = await getInvoice(Number(req.params.id))
+  if (!invoice) return res.status(404).json({ error: 'Invoice not found' })
+  res.json(invoice)
+}))
+
+router.put('/invoices/:id/status', ah(async (req, res) => {
+  try {
+    const invoice = await setInvoiceStatus(Number(req.params.id), req.body?.status)
+    await logAudit(req.agent.id, 'invoice', invoice.id, 'invoice_status', { status: invoice.status })
+    res.json(invoice)
+  } catch (err) {
+    portalErr(res, err)
+  }
+}))
+
+// ===========================================================================
+// §7.4 Support tickets
+// ===========================================================================
+
+router.get('/tickets', ah(async (req, res) =>
+  res.json(await listTickets({ status: String(req.query.status || '').trim() })),
+))
+
+router.get('/tickets/:id', ah(async (req, res) => {
+  const ticket = await getTicket(Number(req.params.id))
+  if (!ticket) return res.status(404).json({ error: 'Ticket not found' })
+  res.json(ticket)
+}))
+
+router.post('/tickets/:id/reply', ah(async (req, res) => {
+  try {
+    const msg = await addTicketMessage(Number(req.params.id), {
+      authorAgentId: req.agent.id,
+      isStaff: true,
+      body: req.body?.body,
+    })
+    res.json(msg)
+  } catch (err) {
+    portalErr(res, err)
+  }
+}))
+
+router.put('/tickets/:id', ah(async (req, res) => {
+  try {
+    const ticket = await updateTicket(Number(req.params.id), {
+      status: req.body?.status,
+      priority: req.body?.priority,
+      assigned_to: req.body?.assigned_to,
+    })
+    res.json(ticket)
+  } catch (err) {
+    portalErr(res, err)
+  }
+}))
+
+// ===========================================================================
+// §7.5 Platform analytics
+// ===========================================================================
+
+router.get('/analytics', ah(async (_req, res) => res.json(await platformAnalytics())))
 
 export default router

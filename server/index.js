@@ -157,6 +157,15 @@ import adminRouter from './adminRoutes.js'
 import teamRouter from './teamRoutes.js'
 import { getAgentTeam, pickRoundRobin, stampLeadTeam, teamLeadOwnerForWaId } from './db.js'
 import {
+  createTicket,
+  listTickets,
+  getTicket,
+  addTicketMessage,
+  billingOverview,
+  getInvoice,
+  requestTemplateReview,
+} from './adminPortal.js'
+import {
   ingestAddress,
   parsePortalEmail,
   parseLeadgenFields,
@@ -1676,6 +1685,59 @@ app.post('/api/properties/:id/syndicate', ah(async (req, res) => {
   const row = await syndicateProperty(req.agent, property, portal)
   await logActivity(req.agent.id, null, 'agent', `Exported "${property.title}" to ${portal}`)
   res.json(row)
+}))
+
+// --- Support tickets (§7.4): in-app Help. The agent opens/reads/answers their own
+// tickets; staff handle them from the admin portal with full tenant context. ---
+app.get('/api/support/tickets', ah(async (req, res) =>
+  res.json(await listTickets({ agentId: req.agent.id, status: String(req.query.status || '').trim() })),
+))
+
+app.post('/api/support/tickets', ah(async (req, res) => {
+  try {
+    const ticket = await createTicket(req.agent.id, pick(req.body ?? {}, ['subject', 'body', 'category', 'priority']))
+    res.json(ticket)
+  } catch (err) {
+    if (!pgBadRequest(err)) return res.status(400).json({ error: err.message })
+    res.status(400).json({ error: err.message })
+  }
+}))
+
+app.get('/api/support/tickets/:id', ah(async (req, res) => {
+  const ticket = await getTicket(Number(req.params.id), { agentId: req.agent.id })
+  if (!ticket) return res.status(404).json({ error: 'not found' })
+  res.json(ticket)
+}))
+
+app.post('/api/support/tickets/:id/reply', ah(async (req, res) => {
+  try {
+    const msg = await addTicketMessage(
+      Number(req.params.id),
+      { authorAgentId: req.agent.id, isStaff: false, body: req.body?.body },
+      { agentId: req.agent.id },
+    )
+    res.json(msg)
+  } catch (err) {
+    res.status(err.code === 'NOT_FOUND' ? 404 : 400).json({ error: err.message })
+  }
+}))
+
+// --- Billing (§7.3): the agent sees their own plan, live usage and invoices. ---
+app.get('/api/billing', ah(async (req, res) => res.json(await billingOverview(req.agent.id))))
+
+app.get('/api/billing/invoices/:id', ah(async (req, res) => {
+  const invoice = await getInvoice(Number(req.params.id), { agentId: req.agent.id })
+  if (!invoice) return res.status(404).json({ error: 'not found' })
+  res.json(invoice)
+}))
+
+// --- Template review request (§7.2): agent submits a draft for staff approval. ---
+app.post('/api/templates/:id/request-review', ah(async (req, res) => {
+  try {
+    res.json(await requestTemplateReview(req.agent.id, Number(req.params.id)))
+  } catch (err) {
+    res.status(err.code === 'NOT_FOUND' ? 404 : 400).json({ error: err.message })
+  }
 }))
 
 // --- Team API (§5.3): team CRUD, roles, assignment, manager views. Privacy walls

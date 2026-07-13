@@ -9,6 +9,7 @@ import FestiveTab from './FestiveTab.jsx'
 import LeadSourcesScreen from './LeadSourcesScreen.jsx'
 import SnippetsMediaScreen from './SnippetsMediaScreen.jsx'
 import TeamScreen from './TeamScreen.jsx'
+import SupportScreen from './SupportScreen.jsx'
 
 function SubScreen({ title, onBack, children }) {
   return (
@@ -154,6 +155,7 @@ const MENU = [
   { id: 'snippets', icon: '⚡', label: 'Snippets & media', sub: 'Templates, quick replies, media library, labels' },
   { id: 'festive', icon: '🪔', label: 'Festive greetings', sub: 'Diwali, Holi, Eid & more — schedule wishes' },
   { id: 'insights', icon: '📊', label: 'Insights', sub: 'Performance and market network' },
+  { id: 'support', icon: '💬', label: 'Help & billing', sub: 'Support requests, your plan and invoices' },
   { id: 'settings', icon: '⚙️', label: 'Settings', sub: 'Profile, password, preferences, WhatsApp Business' },
 ]
 
@@ -182,6 +184,12 @@ export default function MoreTab({ agent, onAgentUpdate, onOpenConversation }) {
     return (
       <SubScreen title="Team" onBack={() => setScreen(null)}>
         <TeamScreen />
+      </SubScreen>
+    )
+  if (screen === 'support')
+    return (
+      <SubScreen title="Help & billing" onBack={() => setScreen(null)}>
+        <SupportScreen />
       </SubScreen>
     )
   if (screen === 'sources')
