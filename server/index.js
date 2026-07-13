@@ -59,6 +59,19 @@ import {
   listSiteVisits,
   updateSiteVisit,
   stampSiteVisitConfirmation,
+  createCommission,
+  listCommissions,
+  getCommission,
+  updateCommission,
+  builderReceivables,
+  createCommissionInvoice,
+  listCommissionInvoices,
+  updateCommissionInvoice,
+  createDeal,
+  listDeals,
+  getDeal,
+  updateDeal,
+  suggestRentalCommissionPaise,
   dashboard,
   logAudit,
   normalizePhone,
@@ -1240,6 +1253,119 @@ app.put('/api/site-visits/:id', ah(async (req, res) => {
     )
     if (!visit) return res.status(404).json({ error: 'not found' })
     res.json(visit)
+  } catch (err) {
+    if (!pgBadRequest(err)) throw err
+    res.status(400).json({ error: err.message })
+  }
+}))
+
+// --- §5.4: deals, commissions, builder receivables + aging, GST invoices ---
+
+// Deals are captured automatically at the booking stage, but can also be listed,
+// created, and edited by hand.
+app.get('/api/deals', ah(async (req, res) =>
+  res.json(await listDeals(req.agent.id, { status: req.query.status || '', dealType: req.query.type || '' })),
+))
+
+app.post('/api/deals', ah(async (req, res) => {
+  const body = req.body ?? {}
+  if (!body.lead_id) return res.status(400).json({ error: 'lead_id is required' })
+  const lead = await getLeadForAgent(body.lead_id, req.agent.id)
+  if (!lead) return res.status(404).json({ error: 'lead not found' })
+  try {
+    res.json(await createDeal(req.agent.id, pick(body, [
+      'lead_id', 'property_id', 'deal_type', 'builder_name', 'deal_value_paise',
+      'monthly_rent_paise', 'stage_captured', 'status', 'notes',
+    ])))
+  } catch (err) {
+    if (!pgBadRequest(err) && err.code !== '23505') throw err
+    res.status(400).json({ error: err.code === '23505' ? 'a deal already exists for this lead' : err.message })
+  }
+}))
+
+app.get('/api/deals/:id', ah(async (req, res) => {
+  const deal = await getDeal(req.params.id, req.agent.id)
+  if (!deal) return res.status(404).json({ error: 'not found' })
+  res.json({ ...deal, suggested_rental_commission_paise: suggestRentalCommissionPaise(deal) })
+}))
+
+app.put('/api/deals/:id', ah(async (req, res) => {
+  try {
+    const deal = await updateDeal(req.params.id, req.agent.id, pick(req.body ?? {}, [
+      'property_id', 'deal_type', 'builder_name', 'deal_value_paise', 'monthly_rent_paise', 'status', 'notes',
+    ]))
+    if (!deal) return res.status(404).json({ error: 'not found' })
+    res.json(deal)
+  } catch (err) {
+    if (!pgBadRequest(err)) throw err
+    res.status(400).json({ error: err.message })
+  }
+}))
+
+app.get('/api/commissions', ah(async (req, res) =>
+  res.json(await listCommissions(req.agent.id, { status: req.query.status || undefined })),
+))
+
+// Builder receivables ledger + aging report (0-30 / 31-60 / 61-90 / 90+ days).
+app.get('/api/commissions/receivables', ah(async (req, res) =>
+  res.json(await builderReceivables(req.agent.id)),
+))
+
+app.post('/api/commissions', ah(async (req, res) => {
+  const body = req.body ?? {}
+  if (!body.lead_id) return res.status(400).json({ error: 'lead_id is required' })
+  const lead = await getLeadForAgent(body.lead_id, req.agent.id)
+  if (!lead) return res.status(404).json({ error: 'lead not found' })
+  try {
+    res.json(await createCommission(req.agent.id, pick(body, [
+      'lead_id', 'deal_id', 'deal_value_paise', 'commission_pct', 'commission_flat_paise',
+      'payer_type', 'builder_name', 'expected_payout_date', 'status', 'notes',
+    ])))
+  } catch (err) {
+    if (!pgBadRequest(err)) throw err
+    res.status(400).json({ error: err.message })
+  }
+}))
+
+app.put('/api/commissions/:id', ah(async (req, res) => {
+  try {
+    const commission = await updateCommission(req.params.id, req.agent.id, pick(req.body ?? {}, [
+      'deal_id', 'deal_value_paise', 'commission_pct', 'commission_flat_paise', 'payer_type',
+      'builder_name', 'expected_payout_date', 'actual_payout_date', 'status', 'notes',
+    ]))
+    if (!commission) return res.status(404).json({ error: 'not found' })
+    res.json(commission)
+  } catch (err) {
+    if (!pgBadRequest(err)) throw err
+    res.status(400).json({ error: err.message })
+  }
+}))
+
+// Raise a GST-aware invoice for a commission (18% GST by default, split in paise).
+app.post('/api/commissions/:id/invoice', ah(async (req, res) => {
+  try {
+    const invoice = await createCommissionInvoice(req.agent.id, req.params.id, pick(req.body ?? {}, ['gst_rate', 'invoice_number', 'notes']))
+    if (!invoice) return res.status(404).json({ error: 'commission not found' })
+    res.json(invoice)
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'invoice number already exists' })
+    if (!pgBadRequest(err) && !/no amount to invoice/.test(err.message)) throw err
+    res.status(400).json({ error: err.message })
+  }
+}))
+
+app.get('/api/commission-invoices', ah(async (req, res) =>
+  res.json(await listCommissionInvoices(req.agent.id, {
+    commissionId: req.query.commission_id || null,
+    status: req.query.status || '',
+  })),
+))
+
+app.put('/api/commission-invoices/:id', ah(async (req, res) => {
+  try {
+    const invoice = await updateCommissionInvoice(req.params.id, req.agent.id, pick(req.body ?? {}, ['status', 'notes']))
+    if (!invoice) return res.status(404).json({ error: 'not found' })
+    res.json(invoice)
   } catch (err) {
     if (!pgBadRequest(err)) throw err
     res.status(400).json({ error: err.message })

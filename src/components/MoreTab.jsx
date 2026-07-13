@@ -10,6 +10,7 @@ import LeadSourcesScreen from './LeadSourcesScreen.jsx'
 import SnippetsMediaScreen from './SnippetsMediaScreen.jsx'
 import TeamScreen from './TeamScreen.jsx'
 import SupportScreen from './SupportScreen.jsx'
+import CommissionsScreen from './CommissionsScreen.jsx'
 
 function SubScreen({ title, onBack, children }) {
   return (
@@ -151,6 +152,7 @@ const MENU = [
   { id: 'sources', icon: '🎯', label: 'Lead sources', sub: 'Portals, Lead Ads, click-to-WhatsApp' },
   { id: 'followups', icon: '⏰', label: 'Follow-ups', sub: 'Reminders and overdue nudges' },
   { id: 'sitevisits', icon: '🏗️', label: 'Site visits', sub: "Today's and upcoming visits" },
+  { id: 'commissions', icon: '💰', label: 'Deals & commissions', sub: 'Receivables, aging, GST invoices' },
   { id: 'contacts', icon: '👥', label: 'Contacts', sub: 'Auto-captured from WhatsApp' },
   { id: 'snippets', icon: '⚡', label: 'Snippets & media', sub: 'Templates, quick replies, media library, labels' },
   { id: 'festive', icon: '🪔', label: 'Festive greetings', sub: 'Diwali, Holi, Eid & more — schedule wishes' },
@@ -168,6 +170,15 @@ export default function MoreTab({ agent, onAgentUpdate, onOpenConversation }) {
 
   if (screen === 'followups') return <FollowupsWrap onBack={() => setScreen(null)} openLead={openLead} leadId={leadId} setLeadId={setLeadId} onOpenConversation={onOpenConversation} />
   if (screen === 'sitevisits') return <SiteVisitsWrap onBack={() => setScreen(null)} openLead={openLead} leadId={leadId} setLeadId={setLeadId} onOpenConversation={onOpenConversation} />
+  if (screen === 'commissions')
+    return (
+      <div>
+        <SubScreen title="Deals & commissions" onBack={() => setScreen(null)}>
+          <CommissionsScreen onOpenLead={openLead} />
+        </SubScreen>
+        {leadId && <LeadDetail leadId={leadId} onClose={() => setLeadId(null)} onOpenConversation={onOpenConversation} />}
+      </div>
+    )
   if (screen === 'contacts')
     return (
       <div>

@@ -4,6 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { decayLead, hybridScore } from './scoring.js'
 import { worklistItem, rankWorklist, worklistCounts } from './worklist.js'
+import { gstBreakdown, GST_RATE } from './money.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -1317,6 +1318,11 @@ export async function setLeadStage(leadId, agentId, { stage, lost_reason } = {})
     // a visit tags it Site Visit Scheduled (also fired from createSiteVisit).
     if (stage === 'Lost') await applyAutoLabel(leadId, agentId, 'lost')
     if (stage === 'Site Visit Scheduled') await applyAutoLabel(leadId, agentId, 'site_visit_scheduled')
+    // §5.4: reaching the booking stage captures a deal (idempotent). Best-effort —
+    // a capture hiccup must never block the stage move itself.
+    if (BOOKING_STAGES.has(stage)) {
+      await captureDealForLead(rows[0]).catch((e) => console.error('deal capture failed', e.message))
+    }
   }
   return rows[0]
 }
@@ -1869,46 +1875,67 @@ export async function completeFollowup(id, agentId) {
 
 // --- CRM: commissions ---
 
+// The canonical rupee-value (in paise) of a commission: an explicit flat amount wins,
+// otherwise it's deal_value × pct. Returns 0 when neither is known. Used for the
+// receivables ledger and for the GST invoice subtotal so both agree on one number.
+export function commissionAmountPaise(c) {
+  if (c.commission_flat_paise != null) return Number(c.commission_flat_paise)
+  if (c.deal_value_paise != null && c.commission_pct != null) {
+    return Math.round((Number(c.deal_value_paise) * Number(c.commission_pct)) / 100)
+  }
+  return 0
+}
+
+const withAmount = (c) => (c ? { ...c, amount_paise: commissionAmountPaise(c) } : c)
+
 export async function createCommission(agentId, c) {
   if (!c.lead_id) throw new Error('lead_id is required')
   const { rows } = await q(
-    `INSERT INTO commissions (lead_id, agent_id, deal_value_paise, commission_pct, commission_flat_paise,
-                              payer_type, expected_payout_date, status, notes)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+    `INSERT INTO commissions (lead_id, agent_id, deal_id, deal_value_paise, commission_pct, commission_flat_paise,
+                              payer_type, builder_name, expected_payout_date, status, notes)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
     [
       c.lead_id,
       agentId,
+      c.deal_id ?? null,
       c.deal_value_paise ?? null,
       c.commission_pct ?? null,
       c.commission_flat_paise ?? null,
       c.payer_type ?? null,
+      c.builder_name ?? null,
       c.expected_payout_date ?? null,
       c.status || 'expected',
       c.notes ?? null,
     ],
   )
-  return rows[0]
+  return withAmount(rows[0])
 }
 
 export async function listCommissions(agentId, { status } = {}) {
-  if (status) {
-    return (
-      await q('SELECT * FROM commissions WHERE agent_id = $1 AND status = $2 ORDER BY created_at DESC', [
-        agentId,
-        status,
-      ])
-    ).rows
-  }
-  return (await q('SELECT * FROM commissions WHERE agent_id = $1 ORDER BY created_at DESC', [agentId])).rows
+  const rows = status
+    ? (
+        await q('SELECT * FROM commissions WHERE agent_id = $1 AND status = $2 ORDER BY created_at DESC', [
+          agentId,
+          status,
+        ])
+      ).rows
+    : (await q('SELECT * FROM commissions WHERE agent_id = $1 ORDER BY created_at DESC', [agentId])).rows
+  return rows.map(withAmount)
+}
+
+export async function getCommission(id, agentId) {
+  return withAmount((await q('SELECT * FROM commissions WHERE id = $1 AND agent_id = $2', [id, agentId])).rows[0])
 }
 
 export async function updateCommission(id, agentId, fields) {
   const { sets, params } = buildSet(
     {
+      deal_id: 'bigint',
       deal_value_paise: 'bigint',
       commission_pct: 'numeric',
       commission_flat_paise: 'bigint',
       payer_type: 'text',
+      builder_name: 'text',
       expected_payout_date: 'date',
       actual_payout_date: 'date',
       status: 'text',
@@ -1916,14 +1943,269 @@ export async function updateCommission(id, agentId, fields) {
     },
     fields,
   )
-  if (!sets.length)
-    return (await q('SELECT * FROM commissions WHERE id = $1 AND agent_id = $2', [id, agentId])).rows[0]
+  if (!sets.length) return getCommission(id, agentId)
   const { rows } = await q(
     `UPDATE commissions SET ${sets.join(', ')}, updated_at = now()
      WHERE id = $${params.length + 1} AND agent_id = $${params.length + 2} RETURNING *`,
     [...params, id, agentId],
   )
+  return withAmount(rows[0])
+}
+
+// --- §5.4: deals, builder receivables ledger + aging, GST invoices ---
+
+const BOOKING_STAGES = new Set(['Token/Booking', 'Deposit/Token'])
+
+// One month's rent is the standard rental brokerage in India — the auto-suggested
+// commission for a rental deal.
+export function suggestRentalCommissionPaise(deal) {
+  if (!deal || deal.deal_type !== 'rental') return null
+  return deal.monthly_rent_paise != null ? Number(deal.monthly_rent_paise) : null
+}
+
+// Capture a deal when a lead first reaches its booking stage. Idempotent
+// (UNIQUE(lead_id)); returns the new deal, or null if one already existed. For a
+// rental deal it also auto-creates the expected 1-month-rent commission so the
+// receivable lands in the ledger immediately.
+export async function captureDealForLead(lead) {
+  const isRental = (lead.pipeline_type || 'buy_primary') === 'rental'
+  const dealType = isRental ? 'rental' : 'sale'
+  // Best guess at the deal's property: the most recent site visit this lead had.
+  const prop =
+    (
+      await q(
+        `SELECT p.* FROM properties p
+           JOIN site_visits sv ON sv.property_id = p.id
+          WHERE sv.lead_id = $1 AND sv.agent_id = $2
+          ORDER BY sv.scheduled_at DESC LIMIT 1`,
+        [lead.id, lead.agent_id],
+      )
+    ).rows[0] || null
+  // Rental listings price in monthly rent; sale listings in flat value. Fall back to
+  // the lead's own budget when no property is attached.
+  const dealValue = isRental ? null : prop?.price_paise ?? lead.budget_max ?? null
+  const monthlyRent = isRental ? prop?.price_paise ?? lead.budget_max ?? null : null
+  const { rows } = await q(
+    `INSERT INTO deals (agent_id, lead_id, property_id, deal_type, builder_name,
+                        deal_value_paise, monthly_rent_paise, stage_captured, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'open')
+     ON CONFLICT (lead_id) DO NOTHING RETURNING *`,
+    [lead.agent_id, lead.id, prop?.id ?? null, dealType, prop?.builder_name ?? null, dealValue, monthlyRent, lead.stage],
+  )
+  const deal = rows[0]
+  if (!deal) return null // already captured on an earlier move
+  const suggested = suggestRentalCommissionPaise(deal)
+  if (suggested) {
+    await createCommission(lead.agent_id, {
+      lead_id: lead.id,
+      deal_id: deal.id,
+      deal_value_paise: suggested,
+      commission_flat_paise: suggested,
+      payer_type: 'buyer', // rental brokerage is paid by the tenant
+      notes: 'Auto-suggested: 1 month rent',
+    })
+  }
+  return deal
+}
+
+export async function createDeal(agentId, d) {
+  if (!d.lead_id) throw new Error('lead_id is required')
+  const { rows } = await q(
+    `INSERT INTO deals (agent_id, lead_id, property_id, deal_type, builder_name,
+                        deal_value_paise, monthly_rent_paise, stage_captured, status, notes)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+    [
+      agentId,
+      d.lead_id,
+      d.property_id ?? null,
+      d.deal_type || 'sale',
+      d.builder_name ?? null,
+      d.deal_value_paise ?? null,
+      d.monthly_rent_paise ?? null,
+      d.stage_captured || 'manual',
+      d.status || 'open',
+      d.notes ?? null,
+    ],
+  )
   return rows[0]
+}
+
+export async function listDeals(agentId, { status = '', dealType = '' } = {}) {
+  const clauses = ['d.agent_id = $1']
+  const params = [agentId]
+  if (status) {
+    params.push(status)
+    clauses.push(`d.status = $${params.length}`)
+  }
+  if (dealType) {
+    params.push(dealType)
+    clauses.push(`d.deal_type = $${params.length}`)
+  }
+  return (
+    await q(
+      `SELECT d.*, l.name AS lead_name, l.wa_id AS lead_wa_id, p.title AS property_title
+       FROM deals d
+       JOIN leads l ON l.id = d.lead_id
+       LEFT JOIN properties p ON p.id = d.property_id
+       WHERE ${clauses.join(' AND ')}
+       ORDER BY d.created_at DESC`,
+      params,
+    )
+  ).rows
+}
+
+export async function getDeal(id, agentId) {
+  return (
+    await q(
+      `SELECT d.*, l.name AS lead_name, l.wa_id AS lead_wa_id, p.title AS property_title
+       FROM deals d
+       JOIN leads l ON l.id = d.lead_id
+       LEFT JOIN properties p ON p.id = d.property_id
+       WHERE d.id = $1 AND d.agent_id = $2`,
+      [id, agentId],
+    )
+  ).rows[0]
+}
+
+export async function updateDeal(id, agentId, fields) {
+  const { sets, params } = buildSet(
+    {
+      property_id: 'bigint',
+      deal_type: 'text',
+      builder_name: 'text',
+      deal_value_paise: 'bigint',
+      monthly_rent_paise: 'bigint',
+      status: 'text',
+      notes: 'text',
+    },
+    fields,
+  )
+  if (!sets.length) return getDeal(id, agentId)
+  const { rows } = await q(
+    `UPDATE deals SET ${sets.join(', ')}, updated_at = now()
+     WHERE id = $${params.length + 1} AND agent_id = $${params.length + 2} RETURNING id`,
+    [...params, id, agentId],
+  )
+  return rows[0] ? getDeal(id, agentId) : undefined
+}
+
+// Builder receivables ledger with an aging report. Groups every outstanding
+// builder-owed commission (expected / invoiced / overdue) by builder, and buckets
+// each amount by how long it has been outstanding past its expected payout date
+// (or, if none, since it was created): 0-30, 31-60, 61-90, 90+ days.
+export async function builderReceivables(agentId) {
+  const amountExpr = `COALESCE(c.commission_flat_paise, ROUND(c.deal_value_paise * c.commission_pct / 100.0), 0)::bigint`
+  const daysExpr = `GREATEST(0, (CURRENT_DATE - COALESCE(c.expected_payout_date, c.created_at::date)))::int`
+  const { rows } = await q(
+    `WITH rec AS (
+       SELECT COALESCE(NULLIF(c.builder_name, ''), NULLIF(d.builder_name, ''), 'Unknown') AS builder_name,
+              ${amountExpr} AS amount,
+              ${daysExpr} AS days
+       FROM commissions c
+       LEFT JOIN deals d ON d.id = c.deal_id
+       WHERE c.agent_id = $1 AND c.payer_type = 'builder' AND c.status IN ('expected','invoiced','overdue')
+     )
+     SELECT builder_name,
+            COUNT(*)::int AS count,
+            SUM(amount)::bigint AS total_paise,
+            SUM(CASE WHEN days <= 30 THEN amount ELSE 0 END)::bigint AS b_0_30,
+            SUM(CASE WHEN days BETWEEN 31 AND 60 THEN amount ELSE 0 END)::bigint AS b_31_60,
+            SUM(CASE WHEN days BETWEEN 61 AND 90 THEN amount ELSE 0 END)::bigint AS b_61_90,
+            SUM(CASE WHEN days > 90 THEN amount ELSE 0 END)::bigint AS b_90_plus
+     FROM rec
+     GROUP BY builder_name
+     ORDER BY total_paise DESC`,
+    [agentId],
+  )
+  const totals = { count: 0, total_paise: 0, b_0_30: 0, b_31_60: 0, b_61_90: 0, b_90_plus: 0 }
+  for (const r of rows) {
+    for (const k of Object.keys(totals)) totals[k] += Number(r[k]) || 0
+  }
+  const received_paise = Number(
+    (
+      await q(
+        `SELECT COALESCE(SUM(COALESCE(commission_flat_paise, ROUND(deal_value_paise * commission_pct / 100.0), 0)), 0)::bigint AS s
+         FROM commissions WHERE agent_id = $1 AND payer_type = 'builder' AND status = 'received'`,
+        [agentId],
+      )
+    ).rows[0].s,
+  )
+  return { builders: rows, totals, received_paise }
+}
+
+// Raise a GST-aware invoice for a commission. The subtotal is the commission's
+// canonical amount; GST (18% by default) is split in paise so subtotal + gst =
+// total exactly. Marks the commission 'invoiced'. Idempotent-ish: throws if the
+// commission has no amount to bill.
+export async function createCommissionInvoice(agentId, commissionId, { gst_rate, invoice_number, notes } = {}) {
+  const commission = await getCommission(commissionId, agentId)
+  if (!commission) return null
+  const subtotal = commissionAmountPaise(commission)
+  if (subtotal <= 0) throw new Error('commission has no amount to invoice')
+  const rate = gst_rate ?? GST_RATE
+  const breakdown = gstBreakdown(subtotal, rate)
+  const number =
+    invoice_number ||
+    `INV-${agentId}-${String(
+      (await q('SELECT COUNT(*)::int AS n FROM commission_invoices WHERE agent_id = $1', [agentId])).rows[0].n + 1,
+    ).padStart(4, '0')}`
+  const { rows } = await q(
+    `INSERT INTO commission_invoices (agent_id, commission_id, invoice_number, subtotal_paise, gst_rate, gst_paise, total_paise, notes)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+    [agentId, commissionId, number, breakdown.subtotal_paise, breakdown.gst_rate, breakdown.gst_paise, breakdown.total_paise, notes ?? null],
+  )
+  // Advance the commission to 'invoiced' (leave 'received'/'overdue' alone).
+  await q(
+    `UPDATE commissions SET status = 'invoiced', updated_at = now()
+     WHERE id = $1 AND agent_id = $2 AND status = 'expected'`,
+    [commissionId, agentId],
+  )
+  return rows[0]
+}
+
+export async function listCommissionInvoices(agentId, { commissionId = null, status = '' } = {}) {
+  const clauses = ['ci.agent_id = $1']
+  const params = [agentId]
+  if (commissionId) {
+    params.push(commissionId)
+    clauses.push(`ci.commission_id = $${params.length}`)
+  }
+  if (status) {
+    params.push(status)
+    clauses.push(`ci.status = $${params.length}`)
+  }
+  return (
+    await q(
+      `SELECT ci.*, l.name AS lead_name, l.wa_id AS lead_wa_id
+       FROM commission_invoices ci
+       JOIN commissions c ON c.id = ci.commission_id
+       JOIN leads l ON l.id = c.lead_id
+       WHERE ${clauses.join(' AND ')}
+       ORDER BY ci.issued_at DESC`,
+      params,
+    )
+  ).rows
+}
+
+export async function updateCommissionInvoice(id, agentId, fields) {
+  const { sets, params } = buildSet({ status: 'text', notes: 'text' }, fields)
+  if (!sets.length)
+    return (await q('SELECT * FROM commission_invoices WHERE id = $1 AND agent_id = $2', [id, agentId])).rows[0]
+  const { rows } = await q(
+    `UPDATE commission_invoices SET ${sets.join(', ')}, updated_at = now()
+     WHERE id = $${params.length + 1} AND agent_id = $${params.length + 2} RETURNING *`,
+    [...params, id, agentId],
+  )
+  const invoice = rows[0]
+  // Paying an invoice settles its commission.
+  if (invoice && fields.status === 'paid') {
+    await q(
+      `UPDATE commissions SET status = 'received', actual_payout_date = COALESCE(actual_payout_date, CURRENT_DATE), updated_at = now()
+       WHERE id = $1 AND agent_id = $2`,
+      [invoice.commission_id, agentId],
+    )
+  }
+  return invoice
 }
 
 // --- CRM: message templates ---
