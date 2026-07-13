@@ -1,5 +1,7 @@
+import { useState } from 'react'
 import { api, usePoll, fmtAgo, fmtTime, fmtWait } from '../api.js'
 import ShareNumberCard from './ShareNumberCard.jsx'
+import { onboardingSteps, shouldShowOnboarding, ONBOARDING_DISMISS_KEY } from '../lib/onboarding.js'
 
 const DOT = {
   hot: 'bg-hot',
@@ -25,6 +27,57 @@ function greeting() {
   return 'Good evening'
 }
 
+// First-run checklist for a brand-new agent: the two things to do before HomeNex
+// is useful. Auto-hides once the agent has real leads; dismissible.
+function OnboardingBanner({ steps, onGoTo, onDismiss }) {
+  return (
+    <section className="mt-5 bg-brand-wash border border-brand/25 rounded-2xl p-4 rise rise-1">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-bold tracking-[0.18em] text-brand-deep">GET STARTED</p>
+          <p className="text-[13.5px] font-bold text-ink mt-1 leading-snug">
+            Two quick steps to start getting leads
+          </p>
+        </div>
+        <button
+          onClick={onDismiss}
+          aria-label="Dismiss getting started"
+          className="shrink-0 text-ink-faint text-[16px] leading-none active:scale-90 transition"
+        >
+          ×
+        </button>
+      </div>
+      <div className="mt-3 space-y-2">
+        {steps.map((s) => (
+          <div key={s.id} className="flex items-start gap-3 bg-card/70 rounded-xl px-3 py-2.5">
+            <span
+              className={`shrink-0 mt-0.5 w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-bold ${
+                s.done ? 'bg-brand text-white' : 'border-2 border-brand/40 text-transparent'
+              }`}
+            >
+              ✓
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className={`text-[13px] font-bold ${s.done ? 'text-ink-faint line-through' : 'text-ink'}`}>
+                {s.label}
+              </p>
+              {!s.done && <p className="text-[11.5px] text-ink-soft leading-snug mt-0.5">{s.hint}</p>}
+            </div>
+            {!s.done && (
+              <button
+                onClick={() => onGoTo(s.target)}
+                className="shrink-0 self-center text-[11.5px] font-bold rounded-full px-3 py-1.5 bg-brand text-white active:scale-95 transition"
+              >
+                {s.cta}
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
 function SectionHeader({ children, badge }) {
   return (
     <div className="flex items-center gap-2">
@@ -42,6 +95,35 @@ export default function DashboardTab({ agent, onGoTo, onOpenConversation, onOpen
   const { data: stats } = usePoll(api.stats, 10000)
   const { data: work } = usePoll(api.worklist, 15000)
   const { data: notif } = usePoll(() => api.notifications(), 20000)
+  const { data: propsList } = usePoll(() => api.properties(), 30000)
+
+  const [onbDismissed, setOnbDismissed] = useState(() => {
+    try {
+      return localStorage.getItem(ONBOARDING_DISMISS_KEY) === '1'
+    } catch {
+      return false
+    }
+  })
+  const dismissOnboarding = () => {
+    try {
+      localStorage.setItem(ONBOARDING_DISMISS_KEY, '1')
+    } catch {
+      // ignore storage failures — banner simply stays this session
+    }
+    setOnbDismissed(true)
+  }
+
+  const hasWhatsApp = Boolean(agent?.wa_phone_number)
+  const showOnboarding =
+    stats &&
+    propsList !== undefined &&
+    shouldShowOnboarding({
+      hasWhatsApp,
+      propertyCount: propsList?.length ?? 0,
+      leadCount: stats.total,
+      dismissed: onbDismissed,
+    })
+  const steps = onboardingSteps({ hasWhatsApp, propertyCount: propsList?.length ?? 0 })
 
   const complete = async (id) => {
     await api.updateFollowup(id, { completed: true })
@@ -96,6 +178,13 @@ export default function DashboardTab({ agent, onGoTo, onOpenConversation, onOpen
           Can't reach the HomeNex server: {error.message}
         </p>
       )}
+
+      {showOnboarding && (
+        <OnboardingBanner steps={steps} onGoTo={onGoTo} onDismiss={dismissOnboarding} />
+      )}
+
+      {/* Connected WhatsApp number as a small chip instead of a dominating card. */}
+      <ShareNumberCard agent={agent} compact />
 
       {kpis && (
         <div className="grid grid-cols-2 gap-2.5 mt-5">
@@ -304,10 +393,6 @@ export default function DashboardTab({ agent, onGoTo, onOpenConversation, onOpen
             ))}
           </div>
         </section>
-      )}
-
-      {d && d.unanswered.length === 0 && d.followupsToday.length === 0 && d.siteVisitsToday.length === 0 && (
-        <ShareNumberCard agent={agent} />
       )}
 
       {d && d.activity.length > 0 && (

@@ -8,7 +8,8 @@ import MoreTab from './components/MoreTab.jsx'
 import AdminPanel from './components/AdminPanel.jsx'
 import BottomNav from './components/BottomNav.jsx'
 import AuthScreen from './components/AuthScreen.jsx'
-import { api, getToken, setToken, offlineQueueSize, flushOfflineQueue } from './api.js'
+import { api, usePoll, getToken, setToken, offlineQueueSize, flushOfflineQueue } from './api.js'
+import { actionableFollowupCount, badgeText } from './lib/followups.js'
 
 // Offline status strip: shows when the network is gone and how many actions
 // are queued for sync. Queued follow-ups/stage moves replay automatically.
@@ -88,6 +89,15 @@ export default function App() {
     return () => window.removeEventListener('homenex-navigate', onNav)
   }, [])
 
+  // Pending follow-ups drive the "act now" badge on the More tab + Follow-ups row.
+  // Only poll once authed (an anonymous call would 401); usePoll swallows errors.
+  const { data: pendingFollowups } = usePoll(
+    () => (agent ? api.followups({ pending: '1' }) : Promise.resolve([])),
+    30000,
+    [Boolean(agent)],
+  )
+  const followupBadge = badgeText(actionableFollowupCount(pendingFollowups || []))
+
   const signOut = () => {
     setToken(null)
     setAgent(null)
@@ -135,7 +145,12 @@ export default function App() {
         {tab === 'inbox' && <InboxTab leadId={inboxLeadId} onSelectLead={setInboxLeadId} />}
         {tab === 'properties' && <PropertiesTab onOpenLead={setDetailLeadId} />}
         {tab === 'more' && (
-          <MoreTab agent={agent} onAgentUpdate={setAgent} onOpenConversation={openConversation} />
+          <MoreTab
+            agent={agent}
+            onAgentUpdate={setAgent}
+            onOpenConversation={openConversation}
+            followupBadge={followupBadge}
+          />
         )}
         {tab === 'admin' && agent?.is_admin === 1 && (
           <AdminPanel agent={agent} onBack={() => setTab('more')} />
@@ -150,7 +165,7 @@ export default function App() {
         />
       )}
 
-      {tab !== 'admin' && <BottomNav tab={tab} setTab={setTab} />}
+      {tab !== 'admin' && <BottomNav tab={tab} setTab={setTab} moreBadge={followupBadge} />}
     </div>
   )
 }

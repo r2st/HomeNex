@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { api, usePoll, fmtAgo, fmtTime } from '../api.js'
 import { paiseRangeToDisplay, paiseToDisplay, lakhsToPaise, paiseToLakhs } from '../money.js'
 import { ScoreRing, SlideOver, Sheet, Chip, Field, inputCls } from './ui.jsx'
+import { buyerProfileIsEmpty } from '../lib/buyerProfile.js'
+import { shouldShowScoreBreakdown } from '../lib/scoreDisplay.js'
 
 const LOST_REASONS = [
   'Bought elsewhere',
@@ -243,24 +245,37 @@ function CrmEditor({ lead, onSaved }) {
   ]
 
   if (!form) {
+    const empty = buyerProfileIsEmpty(lead)
     return (
       <section className="bg-card rounded-2xl border border-line shadow-card p-4">
         <div className="flex items-center justify-between mb-3">
           <p className="text-[10.5px] font-bold tracking-[0.18em] text-brand">BUYER PROFILE</p>
           <button onClick={startEdit} className="text-[11.5px] font-bold text-brand underline underline-offset-2">
-            Edit
+            {empty ? 'Add details' : 'Edit'}
           </button>
         </div>
-        <dl className="space-y-2.5">
-          {rows.map(([k, v]) => (
-            <div key={k} className="flex gap-3">
-              <dt className="shrink-0 w-[92px] text-[12px] font-bold text-ink-soft">{k}</dt>
-              <dd className="text-[12.5px] text-ink leading-snug">
-                {v || <span className="text-ink-faint">not set</span>}
-              </dd>
-            </div>
-          ))}
-        </dl>
+        {empty ? (
+          <div className="rounded-xl bg-brand-wash/60 border border-brand/15 px-3.5 py-3">
+            <p className="text-[12.5px] text-ink leading-snug">
+              <span className="mr-1">✨</span>
+              Budget, location and configuration will be captured automatically as this buyer chats.
+            </p>
+            <p className="text-[11.5px] text-ink-soft leading-snug mt-1">
+              You can also tap <strong className="text-brand">Add details</strong> to fill them in now.
+            </p>
+          </div>
+        ) : (
+          <dl className="space-y-2.5">
+            {rows.map(([k, v]) => (
+              <div key={k} className="flex gap-3">
+                <dt className="shrink-0 w-[92px] text-[12px] font-bold text-ink-soft">{k}</dt>
+                <dd className="text-[12.5px] text-ink leading-snug">
+                  {v || <span className="text-ink-faint">not set</span>}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        )}
       </section>
     )
   }
@@ -801,7 +816,17 @@ export default function LeadDetail({ leadId, onClose, onOpenConversation, onChan
         {!unassigned && <FollowupsSection lead={lead} refresh={refresh} />}
         {!unassigned && <SiteVisitsSection lead={lead} refresh={refresh} />}
 
-        {breakdown.length > 0 && (
+        {breakdown.length > 0 && !shouldShowScoreBreakdown(lead.score, breakdown) && (
+          <section className="bg-card rounded-2xl border border-line shadow-card p-4">
+            <p className="text-[10.5px] font-bold tracking-[0.18em] text-ink-soft mb-1.5">LEAD SCORE</p>
+            <p className="text-[12.5px] text-ink leading-snug">
+              Not enough data yet — the score sharpens as {lead.name || 'this buyer'} shares budget,
+              location and timeline.
+            </p>
+          </section>
+        )}
+
+        {shouldShowScoreBreakdown(lead.score, breakdown) && (
           <section className="bg-card rounded-2xl border border-line shadow-card p-4">
             <p className="text-[10.5px] font-bold tracking-[0.18em] text-ink-soft mb-3">
               SCORE BREAKDOWN · {lead.score}/100

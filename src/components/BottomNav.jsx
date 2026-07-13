@@ -46,7 +46,7 @@ const TABS = [
   },
 ]
 
-export default function BottomNav({ tab, setTab }) {
+export default function BottomNav({ tab, setTab, moreBadge }) {
   return (
     <nav className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[480px] bg-card/95 backdrop-blur border-t border-line z-40">
       <div className="grid grid-cols-5 items-end pb-[max(env(safe-area-inset-bottom),8px)] pt-2">
@@ -70,15 +70,21 @@ export default function BottomNav({ tab, setTab }) {
               </button>
             )
           }
+          const badge = t.id === 'more' ? moreBadge : null
           return (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
-              className={`flex flex-col items-center gap-1 py-1 transition ${
+              className={`relative flex flex-col items-center gap-1 py-1 transition ${
                 active ? 'text-brand-deep' : 'text-ink-faint'
               }`}
             >
               {t.icon}
+              {badge && (
+                <span className="absolute top-0 right-[22%] min-w-[16px] h-[16px] px-1 rounded-full bg-hot text-white text-[9.5px] font-bold flex items-center justify-center leading-none">
+                  {badge}
+                </span>
+              )}
               <span className={`text-[10px] ${active ? 'font-bold' : 'font-medium'}`}>{t.label}</span>
             </button>
           )

@@ -1,4 +1,56 @@
 // Small shared UI primitives for the dashboard tabs.
+import { useState } from 'react'
+
+// Tappable ⓘ that reveals a one-sentence plain-language explanation. Used to
+// demystify jargon (RERA, WhatsApp Business / WABA) for first-time agents without
+// cluttering the layout. `label` is optional text shown next to the icon.
+export function InfoTip({ text, label, className = '', align = 'center' }) {
+  const [open, setOpen] = useState(false)
+  const pos =
+    align === 'right'
+      ? 'right-0'
+      : align === 'left'
+        ? 'left-0'
+        : 'left-1/2 -translate-x-1/2'
+  // Rendered as a role="button" span (not a <button>) so it can be safely nested
+  // inside the card/list buttons where jargon like RERA appears.
+  const toggle = (e) => {
+    e.stopPropagation()
+    e.preventDefault()
+    setOpen((v) => !v)
+  }
+  return (
+    <span className={`relative inline-flex items-center ${className}`}>
+      <span
+        role="button"
+        tabIndex={0}
+        onClick={toggle}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') toggle(e)
+        }}
+        aria-label={label ? `What is ${label}?` : 'More info'}
+        aria-expanded={open}
+        className="inline-flex items-center gap-1 text-ink-faint active:scale-90 transition cursor-pointer"
+      >
+        {label && <span className="text-[11px] font-bold">{label}</span>}
+        <span className="w-[15px] h-[15px] rounded-full border border-current text-[10px] font-bold leading-none flex items-center justify-center">
+          i
+        </span>
+      </span>
+      {open && (
+        <>
+          <span className="fixed inset-0 z-[70]" onClick={(e) => { e.stopPropagation(); setOpen(false) }} />
+          <span
+            role="tooltip"
+            className={`absolute ${pos} top-[120%] z-[71] w-52 max-w-[78vw] bg-ink text-cream text-[11.5px] leading-snug font-medium rounded-xl px-3 py-2 shadow-float`}
+          >
+            {text}
+          </span>
+        </>
+      )}
+    </span>
+  )
+}
 
 export function ScoreRing({ score, size = 44 }) {
   const r = (size - 6) / 2

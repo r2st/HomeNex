@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "server": "node server/index.js",
+    "test": "node --test 'src/lib/**/*.test.js'",
     "dev:admin": "vite --config admin/vite.config.js --port ${ADMIN_PORT:-5174}",
     "build:admin": "vite build --config admin/vite.config.js"
   },

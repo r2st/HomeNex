@@ -148,21 +148,21 @@ function SiteVisitsScreen({ onBack, onOpenLead }) {
 }
 
 const MENU = [
-  { id: 'team', icon: '🤝', label: 'Team', sub: 'Roles, lead assignment, shared inbox' },
-  { id: 'sources', icon: '🎯', label: 'Lead sources', sub: 'Portals, Lead Ads, click-to-WhatsApp' },
-  { id: 'followups', icon: '⏰', label: 'Follow-ups', sub: 'Reminders and overdue nudges' },
-  { id: 'sitevisits', icon: '🏗️', label: 'Site visits', sub: "Today's and upcoming visits" },
-  { id: 'commissions', icon: '💰', label: 'Deals & commissions', sub: 'Receivables, aging, GST invoices' },
-  { id: 'contacts', icon: '👥', label: 'Contacts', sub: 'Auto-captured from WhatsApp' },
-  { id: 'snippets', icon: '⚡', label: 'Snippets & media', sub: 'Templates, quick replies, media library, labels' },
-  { id: 'festive', icon: '🪔', label: 'Festive greetings', sub: 'Diwali, Holi, Eid & more — schedule wishes' },
-  { id: 'insights', icon: '📊', label: 'Insights', sub: 'Performance and market network' },
-  { id: 'support', icon: '💬', label: 'Help & billing', sub: 'Support requests, your plan and invoices' },
-  { id: 'settings', icon: '⚙️', label: 'Settings', sub: 'Profile, password, preferences, WhatsApp Business' },
+  { id: 'followups', icon: '⏰', label: 'Follow-ups', sub: 'Reminders to call leads back — never miss one' },
+  { id: 'sitevisits', icon: '🏗️', label: 'Site visits', sub: 'Schedule and track property tours' },
+  { id: 'team', icon: '🤝', label: 'Team', sub: 'Add teammates and share leads' },
+  { id: 'sources', icon: '🎯', label: 'Lead sources', sub: 'Connect portals, Lead Ads and click-to-WhatsApp' },
+  { id: 'commissions', icon: '💰', label: 'Deals & commissions', sub: 'Track earnings, payments due and invoices' },
+  { id: 'contacts', icon: '👥', label: 'Contacts', sub: 'Everyone who has messaged you, saved automatically' },
+  { id: 'snippets', icon: '⚡', label: 'Snippets & media', sub: 'Saved replies, message templates and files to send' },
+  { id: 'festive', icon: '🪔', label: 'Festive greetings', sub: 'Schedule Diwali, Holi, Eid & other wishes' },
+  { id: 'insights', icon: '📊', label: 'Insights', sub: 'See how you and your leads are performing' },
+  { id: 'support', icon: '💬', label: 'Help & billing', sub: 'Get support and manage your plan' },
+  { id: 'settings', icon: '⚙️', label: 'Settings', sub: 'Profile, password and your WhatsApp Business number' },
 ]
 
 // The "More" tab: follow-ups, site visits, contacts, insights, and settings.
-export default function MoreTab({ agent, onAgentUpdate, onOpenConversation }) {
+export default function MoreTab({ agent, onAgentUpdate, onOpenConversation, followupBadge }) {
   const [screen, setScreen] = useState(null)
   const [leadId, setLeadId] = useState(null)
 
@@ -256,7 +256,14 @@ export default function MoreTab({ agent, onAgentUpdate, onOpenConversation }) {
             <div className="flex items-center gap-3">
               <span className="text-[22px]">{m.icon}</span>
               <div className="min-w-0 flex-1">
-                <p className="font-bold text-[14.5px] text-ink">{m.label}</p>
+                <div className="flex items-center gap-2">
+                  <p className="font-bold text-[14.5px] text-ink">{m.label}</p>
+                  {m.id === 'followups' && followupBadge && (
+                    <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-hot text-white text-[10px] font-bold flex items-center justify-center leading-none">
+                      {followupBadge}
+                    </span>
+                  )}
+                </div>
                 <p className="text-[12px] text-ink-soft mt-0.5">{m.sub}</p>
               </div>
               <span className="text-ink-faint text-lg">→</span>

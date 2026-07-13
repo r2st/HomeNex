@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, usePoll, fmtTime, fmtAgo, parseTs } from '../api.js'
-import { Sheet, Field, inputCls } from './ui.jsx'
+import { Sheet, Field, inputCls, InfoTip } from './ui.jsx'
+import { replyModeBadge, REPLY_MODE_HELP } from '../lib/replyMode.js'
+
+// Colour classes for the reply-mode badge tones (keeps green/white theme).
+const REPLY_TONE = {
+  brand: 'bg-brand-wash text-brand-deep',
+  amber: 'bg-amber-wash text-gold',
+}
 
 const ROLE_LABEL = { ai: 'HomeNex AI', agent: 'You' }
 
@@ -272,8 +279,14 @@ function TemplateComposer({ lead, onSent, onError }) {
                 <div className="flex items-center gap-2">
                   <p className="text-[12px] font-bold text-ink flex-1">{t.name}</p>
                   {t.category === 'marketing' && (
-                    <span className="text-[9px] font-bold bg-brand-wash text-brand-deep rounded-full px-1.5 py-0.5">
-                      RERA auto
+                    <span className="inline-flex items-center gap-1">
+                      <span className="text-[9px] font-bold bg-brand-wash text-brand-deep rounded-full px-1.5 py-0.5">
+                        RERA auto
+                      </span>
+                      <InfoTip
+                        label=""
+                        text="RERA is the real-estate regulator. Marketing messages must carry your RERA registration number — HomeNex adds it automatically."
+                      />
                     </span>
                   )}
                   {(t.is_locked || t.meta_status === 'approved') && <span className="text-[10px]">🔒</span>}
@@ -557,6 +570,7 @@ export default function InboxTab({ leadId, onSelectLead }) {
         <p className="text-[13px] text-ink-soft mt-0.5">
           Real WhatsApp conversations · AI answers, you take over anytime
         </p>
+        <p className="text-[11.5px] text-ink-faint mt-2 leading-snug">{REPLY_MODE_HELP}</p>
       </header>
 
       {error && (
@@ -610,11 +624,16 @@ export default function InboxTab({ leadId, onSelectLead }) {
                   </div>
                 )}
               </div>
-              {!l.ai_enabled && (
-                <span className="shrink-0 text-[9.5px] font-bold bg-amber-wash text-gold rounded-full px-2 py-0.5">
-                  MANUAL
-                </span>
-              )}
+              {(() => {
+                const badge = replyModeBadge(l)
+                return (
+                  <span
+                    className={`shrink-0 text-[9.5px] font-bold rounded-full px-2 py-0.5 whitespace-nowrap ${REPLY_TONE[badge.tone]}`}
+                  >
+                    {badge.icon} {badge.label}
+                  </span>
+                )
+              })()}
             </div>
           </button>
         ))}

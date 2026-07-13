@@ -4,6 +4,8 @@ import { paiseRangeToDisplay } from '../money.js'
 import { Avatar, Chip, Sheet, TEMP_STYLE, inputCls } from './ui.jsx'
 import LeadDetail from './LeadDetail.jsx'
 import QuickAddLead from './QuickAddLead.jsx'
+import { pipelineCounts } from '../lib/pipelineCounts.js'
+import { stageEmptyText, stageEmptyIcon } from '../lib/stageEmpty.js'
 
 const PIPELINES = [
   { id: 'buy_primary', label: 'Buy (Primary)' },
@@ -185,6 +187,7 @@ export default function LeadsTab({ onOpenConversation }) {
   }, [leads])
 
   const openCount = leads.filter((l) => !TERMINAL.includes(l.stage || 'New')).length
+  const counts = pipelineCounts(allLeads || [])
 
   const move = async (leadId, stage, lostReason) => {
     setMoveError(null)
@@ -229,6 +232,15 @@ export default function LeadsTab({ onOpenConversation }) {
         {PIPELINES.map((p) => (
           <Chip key={p.id} active={pipeline === p.id} onClick={() => setPipeline(p.id)}>
             {p.label}
+            {counts[p.id] > 0 && (
+              <span
+                className={`ml-1.5 text-[10.5px] font-bold tabular-nums rounded-full px-1.5 py-0.5 ${
+                  pipeline === p.id ? 'bg-cream/25 text-cream' : 'bg-ink/10 text-ink-soft'
+                }`}
+              >
+                {counts[p.id]}
+              </span>
+            )}
           </Chip>
         ))}
         <span className="flex-1" />
@@ -294,8 +306,15 @@ export default function LeadsTab({ onOpenConversation }) {
                     />
                   ))}
                   {col.length === 0 && (
-                    <div className="border border-dashed border-line rounded-2xl h-[52px] flex items-center justify-center text-[11px] text-ink-faint">
-                      {isTarget ? 'Drop here' : 'empty'}
+                    <div className="border border-dashed border-line rounded-2xl min-h-[64px] flex flex-col items-center justify-center gap-1 px-3 py-3 text-center">
+                      {isTarget ? (
+                        <span className="text-[12px] font-bold text-brand">Drop here</span>
+                      ) : (
+                        <>
+                          <span className="text-[16px] leading-none opacity-70">{stageEmptyIcon(s.stage_name)}</span>
+                          <span className="text-[11px] text-ink-faint leading-snug">{stageEmptyText(s.stage_name)}</span>
+                        </>
+                      )}
                     </div>
                   )}
                 </div>

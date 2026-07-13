@@ -3,6 +3,10 @@ import { api, usePoll } from '../api.js'
 import { paiseToDisplay, lakhsToPaise } from '../money.js'
 import { Chip, Sheet, inputCls } from './ui.jsx'
 import PropertyDetail, { PropertyForm, STATUS_LABEL } from './PropertyDetail.jsx'
+import { activeFilterCount, clearedFilters } from '../lib/propertyFilters.js'
+
+const BHK_FILTERS = ['', '1', '2', '3', '4']
+const STATUS_FILTERS = ['', 'available', 'token', 'sold']
 
 const TYPE_FILTERS = [
   { id: '', label: 'All' },
@@ -22,8 +26,19 @@ const PRICE_BANDS = [
 
 const STATUS_ICON = { available: '🟢', token: '🟡', sold: '⚪', rented: '⚪' }
 
+// A labelled row of filter chips inside the Filters sheet.
+function FilterGroup({ label, children }) {
+  return (
+    <div>
+      <p className="text-[11.5px] font-bold text-ink-soft mb-2">{label}</p>
+      <div className="flex gap-2 flex-wrap">{children}</div>
+    </div>
+  )
+}
+
 export default function PropertiesTab({ onOpenLead }) {
   const [filters, setFilters] = useState({ type: '', bhk: '', status: '', band: '', q: '' })
+  const [showFilters, setShowFilters] = useState(false)
   const [adding, setAdding] = useState(false)
   const [saving, setSaving] = useState(false)
   const [addError, setAddError] = useState(null)
@@ -31,6 +46,7 @@ export default function PropertiesTab({ onOpenLead }) {
   const [refreshKey, setRefreshKey] = useState(0)
   const refresh = () => setRefreshKey((k) => k + 1)
 
+  const filterCount = activeFilterCount(filters)
   const [bandMin, bandMax] = filters.band ? filters.band.split('-') : ['', '']
   const { data: properties, error } = usePoll(
     () =>
@@ -83,50 +99,72 @@ export default function PropertiesTab({ onOpenLead }) {
         </p>
       )}
 
-      <input
-        value={filters.q}
-        onChange={(e) => setFilters((s) => ({ ...s, q: e.target.value }))}
-        placeholder="Search title, locality, builder…"
-        className={`${inputCls} mt-4`}
-      />
-
-      <div className="flex gap-2 mt-3 overflow-x-auto no-scrollbar rise rise-1">
-        {TYPE_FILTERS.map((t) => (
-          <Chip key={t.id} active={filters.type === t.id} onClick={() => setFilters((s) => ({ ...s, type: t.id }))}>
-            {t.label}
-          </Chip>
-        ))}
+      <div className="flex items-center gap-2 mt-4">
+        <input
+          value={filters.q}
+          onChange={(e) => setFilters((s) => ({ ...s, q: e.target.value }))}
+          placeholder="Search title, locality, builder…"
+          className={`${inputCls} flex-1`}
+        />
+        <button
+          onClick={() => setShowFilters(true)}
+          className={`shrink-0 flex items-center gap-1.5 text-[12.5px] font-bold rounded-xl px-3.5 py-2.5 border transition active:scale-95 ${
+            filterCount > 0 ? 'bg-brand text-white border-brand' : 'bg-card text-ink-soft border-line'
+          }`}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="w-4 h-4">
+            <path d="M3 5h18M6 12h12M10 19h4" />
+          </svg>
+          Filters
+          {filterCount > 0 && (
+            <span className="ml-0.5 min-w-[18px] text-center text-[10.5px] font-bold bg-white/25 rounded-full px-1">
+              {filterCount}
+            </span>
+          )}
+        </button>
       </div>
-      <div className="flex gap-2 mt-2 overflow-x-auto no-scrollbar">
-        {PRICE_BANDS.map((b) => (
-          <Chip key={b.id} active={filters.band === b.id} onClick={() => setFilters((s) => ({ ...s, band: b.id }))}>
-            {b.label}
-          </Chip>
-        ))}
-      </div>
-      <div className="flex gap-2 mt-2 overflow-x-auto no-scrollbar">
-        {['', '1', '2', '3', '4'].map((b) => (
-          <Chip key={b || 'any'} active={filters.bhk === b} onClick={() => setFilters((s) => ({ ...s, bhk: b }))}>
-            {b ? `${b} BHK` : 'Any BHK'}
-          </Chip>
-        ))}
-        {['', 'available', 'token', 'sold'].map((st) => (
-          <Chip key={st || 'anyst'} active={filters.status === st} onClick={() => setFilters((s) => ({ ...s, status: st }))}>
-            {st ? STATUS_LABEL[st] : 'Any status'}
-          </Chip>
-        ))}
-      </div>
+      {filterCount > 0 && (
+        <button
+          onClick={() => setFilters((s) => clearedFilters(s))}
+          className="mt-2 text-[11.5px] font-bold text-brand active:scale-95 transition"
+        >
+          Clear all filters
+        </button>
+      )}
 
       {properties && properties.length === 0 && (
         <div className="mt-6 bg-card rounded-2xl border border-line shadow-card p-5 rise rise-2">
-          <p className="font-bold text-[14.5px] text-ink">No properties yet</p>
-          <p className="text-[12.5px] text-ink-soft leading-relaxed mt-1.5">
-            Add the flats, villas, and plots you're authorised to sell. One tap sends a
-            formatted property card to any lead on WhatsApp.
+          <span className="text-[26px]">🏠</span>
+          <p className="font-bold text-[14.5px] text-ink mt-2">
+            {filterCount > 0 || filters.q ? 'No properties match these filters' : 'No properties yet'}
           </p>
-          <button onClick={() => setAdding(true)} className="inline-block mt-3 text-[12.5px] font-bold text-brand">
-            Add your first property →
-          </button>
+          {filterCount > 0 || filters.q ? (
+            <>
+              <p className="text-[12.5px] text-ink-soft leading-relaxed mt-1.5">
+                Try clearing filters or a different search to see your inventory.
+              </p>
+              <button
+                onClick={() => setFilters({ type: '', bhk: '', status: '', band: '', q: '' })}
+                className="inline-block mt-3 text-[12.5px] font-bold text-brand"
+              >
+                Clear filters
+              </button>
+            </>
+          ) : (
+            <>
+              <p className="text-[12.5px] text-ink-soft leading-relaxed mt-1.5">
+                Add the flats, villas, and plots you're authorised to sell. HomeNex automatically
+                matches them to every lead's budget and location — so the right property is one tap
+                away in any WhatsApp chat.
+              </p>
+              <button
+                onClick={() => setAdding(true)}
+                className="mt-3.5 w-full rounded-full bg-brand text-white font-bold text-[13.5px] py-2.5 shadow-card active:scale-[0.99] transition"
+              >
+                Add your first property
+              </button>
+            </>
+          )}
         </div>
       )}
 
@@ -160,6 +198,55 @@ export default function PropertiesTab({ onOpenLead }) {
           </button>
         ))}
       </div>
+
+      {showFilters && (
+        <Sheet onClose={() => setShowFilters(false)} title="Filter properties">
+          <div className="space-y-4">
+            <FilterGroup label="Type">
+              {TYPE_FILTERS.map((t) => (
+                <Chip key={t.id} active={filters.type === t.id} onClick={() => setFilters((s) => ({ ...s, type: t.id }))}>
+                  {t.label}
+                </Chip>
+              ))}
+            </FilterGroup>
+            <FilterGroup label="Price">
+              {PRICE_BANDS.map((b) => (
+                <Chip key={b.id} active={filters.band === b.id} onClick={() => setFilters((s) => ({ ...s, band: b.id }))}>
+                  {b.label}
+                </Chip>
+              ))}
+            </FilterGroup>
+            <FilterGroup label="Bedrooms (BHK)">
+              {BHK_FILTERS.map((b) => (
+                <Chip key={b || 'any'} active={filters.bhk === b} onClick={() => setFilters((s) => ({ ...s, bhk: b }))}>
+                  {b ? `${b} BHK` : 'Any BHK'}
+                </Chip>
+              ))}
+            </FilterGroup>
+            <FilterGroup label="Status">
+              {STATUS_FILTERS.map((st) => (
+                <Chip key={st || 'anyst'} active={filters.status === st} onClick={() => setFilters((s) => ({ ...s, status: st }))}>
+                  {st ? STATUS_LABEL[st] : 'Any status'}
+                </Chip>
+              ))}
+            </FilterGroup>
+          </div>
+          <div className="flex gap-2 mt-5">
+            <button
+              onClick={() => setFilters((s) => clearedFilters(s))}
+              className="px-4 text-[13px] font-bold text-ink-soft rounded-full py-2.5 bg-ink/5 active:scale-[0.99] transition"
+            >
+              Clear all
+            </button>
+            <button
+              onClick={() => setShowFilters(false)}
+              className="flex-1 bg-brand text-white font-bold text-[13px] rounded-full py-2.5 active:scale-[0.99] transition"
+            >
+              {properties ? `Show ${properties.length} result${properties.length === 1 ? '' : 's'}` : 'Show results'}
+            </button>
+          </div>
+        </Sheet>
+      )}
 
       {adding && (
         <Sheet onClose={() => setAdding(false)} title="Add property">

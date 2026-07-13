@@ -1,11 +1,15 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api.js'
+import { InfoTip } from './ui.jsx'
 
 // Card that surfaces the agent's WhatsApp Business number so they can share it.
 // If the agent hasn't configured their own number, shows a setup prompt instead.
-export default function ShareNumberCard({ agent }) {
+// `compact` collapses it to a small "WhatsApp connected" chip (used on Home, where
+// the full card previously dominated the screen); the full setup lives in Settings.
+export default function ShareNumberCard({ agent, compact = false }) {
   const [copied, setCopied] = useState(false)
   const [showSetup, setShowSetup] = useState(false)
+  const [expanded, setExpanded] = useState(false)
   const [form, setForm] = useState({ wa_phone_number: '', wa_phone_number_id: '' })
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState(null)
@@ -55,6 +59,59 @@ export default function ShareNumberCard({ agent }) {
       wa_phone_number_id: config?.wa_phone_number_id || '',
     })
     setShowSetup(true)
+  }
+
+  // Compact chip for Home: once a number is connected, don't dominate the screen —
+  // show a small confirmation with an on-demand Share panel. No number → render
+  // nothing (the onboarding banner + Settings handle first-time setup).
+  if (compact) {
+    if (!waNumber) return null
+    return (
+      <section className="mt-5 rise rise-1">
+        <div className="flex items-center gap-2 bg-brand-wash border border-brand/20 rounded-2xl px-4 py-2.5">
+          <span className="w-2 h-2 rounded-full bg-brand shrink-0" />
+          <p className="text-[12.5px] font-bold text-brand-deep">WhatsApp connected</p>
+          <InfoTip
+            label=""
+            text="Your WhatsApp Business (WABA) number is live. Buyers who message it are auto-captured as leads and get instant AI replies."
+          />
+          <span className="text-[12px] text-ink-soft tabular-nums truncate">{waNumber}</span>
+          <button
+            onClick={() => setExpanded((v) => !v)}
+            className="ml-auto shrink-0 text-[11.5px] font-bold text-brand active:scale-95 transition"
+          >
+            Share {expanded ? '▴' : '▾'}
+          </button>
+        </div>
+        {expanded && (
+          <div className="mt-2 bg-card rounded-2xl border border-line shadow-card p-4">
+            <p className="text-[12px] text-ink-soft leading-relaxed">
+              Share this number with your clients. When they message it, HomeNex recognises them
+              and their qualified lead appears on Home.
+            </p>
+            <div className="flex items-center gap-2 mt-3">
+              <span className="font-display text-[18px] font-bold text-ink tabular-nums flex-1 truncate">{waNumber}</span>
+              <button
+                onClick={copy}
+                className="shrink-0 text-[12px] font-bold rounded-full px-3.5 py-1.5 transition active:scale-95 bg-ink/5 text-ink-soft"
+              >
+                {copied ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+            {waLink && (
+              <a
+                href={waLink}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-3 flex items-center justify-center gap-2 w-full rounded-full bg-[#25D366] text-white font-bold text-[13px] py-2.5 shadow-card active:scale-[0.99] transition"
+              >
+                Open in WhatsApp
+              </a>
+            )}
+          </div>
+        )}
+      </section>
+    )
   }
 
   if (showSetup) {
