@@ -75,7 +75,6 @@ export async function signup({ name, phone, email, password, wa_phone_number }) 
   name = (name || '').trim()
   phone = (phone || '').trim()
   email = (email || '').trim().toLowerCase() // optional
-  const waPhone = (wa_phone_number || '').trim() || null // optional WABA number
   if (!name || !phone || !password) throw new Error('Name, WhatsApp number and password are required')
   // A valid WhatsApp number is at least 10 digits (Indian mobile) once normalized.
   const digits = normalizePhone(phone).replace(/\D/g, '')
@@ -83,14 +82,10 @@ export async function signup({ name, phone, email, password, wa_phone_number }) 
   if (email && !/^\S+@\S+\.\S+$/.test(email)) throw new Error('Enter a valid email address')
   if (password.length < MIN_PASSWORD_LENGTH)
     throw new Error(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`)
-  // WABA number must differ from the agent's personal WhatsApp number.
-  if (waPhone) {
-    const normalizedWa = normalizePhone(waPhone)
-    const normalizedPersonal = normalizePhone(phone)
-    if (normalizedWa === normalizedPersonal) {
-      throw new Error('Your WhatsApp Business number must be different from your personal WhatsApp number')
-    }
-  }
+  // We now use a single number: the agent's WhatsApp number IS their WhatsApp Business
+  // number. Default the WABA number to the signup number (an explicit override is still
+  // honoured, and may match the login number).
+  const waPhone = (wa_phone_number || '').trim() || phone
   if (await findAgentByPhone(phone))
     throw new Error('An account with this WhatsApp number already exists — log in instead')
   if (email && (await findAgentByEmail(email)))

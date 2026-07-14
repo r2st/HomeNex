@@ -732,10 +732,8 @@ app.put('/api/agent/wa-phone', ah(async (req, res) => {
   try {
     const norm = normalizePhone(wa_phone_number)
     if (norm.replace(/\D/g, '').length < 10) return res.status(400).json({ error: 'Enter a valid phone number' })
-    // Must differ from personal number
-    if (norm === req.agent.phone) {
-      return res.status(400).json({ error: 'Your WhatsApp Business number must be different from your personal WhatsApp number' })
-    }
+    // A single number is used for login and WhatsApp Business, so the WABA number may
+    // match the agent's login number — no "must differ" check.
     res.json(await setAgentWaPhone(req.agent.id, norm))
   } catch (err) {
     res.status(400).json({ error: err.message })

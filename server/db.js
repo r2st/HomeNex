@@ -881,11 +881,8 @@ export async function updateAgentPhone(agentId, rawPhone) {
     throw err
   }
   if (agent.phone === phone) return agent // no-op, stay idempotent
-  if (agent.wa_phone_number === phone) {
-    const err = new Error('This is already your WhatsApp Business number — use a different personal number')
-    err.code = 'WA_PHONE_CLASH'
-    throw err
-  }
+  // The login number and the WhatsApp Business number are allowed to be the same, so
+  // there is no clash check against wa_phone_number here.
   const clash = (await q('SELECT id FROM agents WHERE phone = $1 AND id != $2', [phone, agentId])).rows[0]
   if (clash) {
     const err = new Error('Another agent already uses this WhatsApp number')

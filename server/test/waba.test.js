@@ -69,7 +69,7 @@ test('signup with wa_phone_number stores it and sets waba_status to pending', as
   assert.equal(data.agent.waba_status, 'pending')
 })
 
-test('signup without wa_phone_number sets waba_status to none', async () => {
+test('signup without wa_phone_number defaults it to the login number (pending)', async () => {
   const res = await req('POST', '/api/auth/signup', {
     name: 'Agent Beta',
     phone: '+919800000002',
@@ -79,20 +79,22 @@ test('signup without wa_phone_number sets waba_status to none', async () => {
   const data = await res.json()
   tokenB = data.token
   agentB = data.agent
-  assert.equal(data.agent.wa_phone_number, null)
-  assert.equal(data.agent.waba_status, 'none')
+  // Single number: the WABA number defaults to the signup number.
+  assert.equal(data.agent.wa_phone_number, '+919800000002')
+  assert.equal(data.agent.waba_status, 'pending')
 })
 
-test('signup rejects wa_phone_number same as personal phone', async () => {
+test('signup allows wa_phone_number equal to personal phone', async () => {
   const res = await req('POST', '/api/auth/signup', {
     name: 'Agent Gamma',
     phone: '+919800000003',
     password: 'secret789',
     wa_phone_number: '+919800000003',
   }, null)
-  assert.equal(res.status, 400)
+  assert.equal(res.status, 200)
   const data = await res.json()
-  assert.match(data.error, /must be different/)
+  assert.equal(data.agent.wa_phone_number, '+919800000003')
+  assert.equal(data.agent.waba_status, 'pending')
 })
 
 // === Agent updates their WA Business phone from settings ===
@@ -107,13 +109,13 @@ test('PUT /api/agent/wa-phone sets business number and status to pending', async
   assert.equal(data.waba_status, 'pending')
 })
 
-test('PUT /api/agent/wa-phone rejects same as personal number', async () => {
+test('PUT /api/agent/wa-phone allows the same number as the login number', async () => {
   const res = await req('PUT', '/api/agent/wa-phone', {
     wa_phone_number: '+919800000002',
   }, tokenB)
-  assert.equal(res.status, 400)
+  assert.equal(res.status, 200)
   const data = await res.json()
-  assert.match(data.error, /must be different/)
+  assert.equal(data.wa_phone_number, '+919800000002')
 })
 
 test('PUT /api/agent/wa-phone rejects invalid number', async () => {
