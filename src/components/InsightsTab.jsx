@@ -22,7 +22,7 @@ export default function InsightsTab() {
 
   const kpis = [
     { label: 'Avg first response', value: fmtSeconds(stats.avgFirstResponseS), sub: 'buyer message → first reply', accent: true },
-    { label: 'Leads qualified', value: `${stats.qualifiedPct}%`, sub: 'full BLTC captured', accent: false },
+    { label: 'Leads qualified', value: `${stats.qualifiedPct}%`, sub: 'budget, location, timeline & home type captured', accent: false },
     { label: 'After-hours leads', value: String(stats.afterHours), sub: 'arrived 9 PM – 9 AM', accent: false },
     { label: 'Total leads', value: String(stats.total), sub: 'all time', accent: false },
   ]

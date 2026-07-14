@@ -1539,6 +1539,19 @@ app.delete('/api/media/:id', ah(async (req, res) => {
   res.status(ok ? 200 : 404).json({ ok })
 }))
 
+// Generic file upload → hosted URL. Lets forms (e.g. the property photo/brochure
+// picker) turn a phone-gallery file into a URL we store, without creating a media
+// library record. Returns { url, filename, mime, size }.
+app.post('/api/uploads', ah(async (req, res) => {
+  const b = req.body ?? {}
+  if (!b.data_base64) return res.status(400).json({ error: 'data_base64 is required' })
+  try {
+    res.json(saveUpload(b.data_base64, b.filename, b.mime))
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+}))
+
 // Send a library asset into a chat. Records the send so the UI can show "sent".
 // Free-text-window rules don't apply to media the same way, but Meta still requires
 // an open session for non-template media, so we enforce the 24h window here too.

@@ -2,6 +2,14 @@ import { useState } from 'react'
 import { api, usePoll, fmtAgo } from '../api.js'
 import { paiseToDisplay } from '../money.js'
 import { Chip } from './ui.jsx'
+import { friendlyMessage } from '../lib/friendlyError.js'
+import {
+  commissionStatusLabel,
+  dealTypeLabel,
+  dealStatusLabel,
+  invoiceStatusLabel,
+  payerLabel,
+} from '../lib/labels.js'
 
 const STATUS_STYLE = {
   expected: 'text-ink-soft',
@@ -44,10 +52,10 @@ function Receivables() {
             <p className="text-[14px] font-bold tabular-nums text-ink">{paiseToDisplay(b.total_paise)}</p>
           </div>
           <div className="flex gap-1 mt-3">
-            <Bucket label="0–30d" paise={b.b_0_30} tone="text-ink" />
-            <Bucket label="31–60d" paise={b.b_31_60} tone="text-amber-600" />
-            <Bucket label="61–90d" paise={b.b_61_90} tone="text-orange-600" />
-            <Bucket label="90+ d" paise={b.b_90_plus} tone="text-hot" />
+            <Bucket label="On time" paise={b.b_0_30} tone="text-ink" />
+            <Bucket label="A bit late" paise={b.b_31_60} tone="text-amber-600" />
+            <Bucket label="Overdue" paise={b.b_61_90} tone="text-orange-600" />
+            <Bucket label="Very overdue" paise={b.b_90_plus} tone="text-hot" />
           </div>
         </div>
       ))}
@@ -90,14 +98,14 @@ function Deals({ onOpenLead }) {
                 {d.property_title ? <span className="text-ink-soft font-semibold"> · {d.property_title}</span> : null}
               </p>
               <span className="shrink-0 text-[10.5px] font-bold rounded-full px-2 py-0.5 bg-cream border border-line text-ink-soft">
-                {d.deal_type}
+                {dealTypeLabel(d.deal_type)}
               </span>
             </div>
             <p className="text-[12px] text-ink-soft mt-0.5">
               {d.deal_type === 'rental'
                 ? `${paiseToDisplay(d.monthly_rent_paise) || '—'}/mo`
                 : paiseToDisplay(d.deal_value_paise) || '—'}
-              {d.builder_name ? ` · ${d.builder_name}` : ''} · {d.status} · {fmtAgo(d.created_at)}
+              {d.builder_name ? ` · ${d.builder_name}` : ''} · {dealStatusLabel(d.status)} · {fmtAgo(d.created_at)}
             </p>
           </button>
         ))}
@@ -111,6 +119,7 @@ function Commissions() {
   const [filter, setFilter] = useState('') // '' = all
   const [refreshKey, setRefreshKey] = useState(0)
   const [busy, setBusy] = useState(null)
+  const [error, setError] = useState(null)
   const { data: commissions } = usePoll(
     () => api.commissions(filter || undefined),
     8000,
@@ -119,11 +128,12 @@ function Commissions() {
 
   const raiseInvoice = async (c) => {
     setBusy(c.id)
+    setError(null)
     try {
       await api.createCommissionInvoice(c.id)
       setRefreshKey((k) => k + 1)
     } catch (e) {
-      alert(e.message)
+      setError(friendlyMessage(e))
     } finally {
       setBusy(null)
     }
@@ -141,15 +151,16 @@ function Commissions() {
       {commissions && commissions.length === 0 && (
         <p className="mt-6 text-[12.5px] text-ink-faint">No commissions yet.</p>
       )}
+      {error && <p className="mt-4 text-[12.5px] text-hot bg-amber-wash rounded-xl px-3.5 py-2.5">{error}</p>}
       <div className="mt-4 space-y-2.5">
         {(commissions || []).map((c) => (
           <div key={c.id} className="bg-card rounded-2xl border border-line shadow-card px-4 py-3.5">
             <div className="flex items-baseline justify-between">
               <p className="font-bold text-[14px] tabular-nums text-ink">{paiseToDisplay(c.amount_paise) || '—'}</p>
-              <span className={`text-[11px] font-bold ${STATUS_STYLE[c.status] || 'text-ink-soft'}`}>{c.status}</span>
+              <span className={`text-[11px] font-bold ${STATUS_STYLE[c.status] || 'text-ink-soft'}`}>{commissionStatusLabel(c.status)}</span>
             </div>
             <p className="text-[12px] text-ink-soft mt-0.5">
-              {c.payer_type || 'payer ?'}
+              {payerLabel(c.payer_type)}
               {c.builder_name ? ` · ${c.builder_name}` : ''}
               {c.commission_pct ? ` · ${c.commission_pct}%` : ''}
               {c.expected_payout_date ? ` · due ${c.expected_payout_date}` : ''}
@@ -188,7 +199,7 @@ function Invoices() {
           <div className="flex items-baseline justify-between">
             <p className="font-bold text-[13px] text-ink">{inv.invoice_number}</p>
             <span className={`text-[11px] font-bold ${inv.status === 'paid' ? 'text-emerald-600' : inv.status === 'cancelled' ? 'text-ink-faint' : 'text-brand'}`}>
-              {inv.status}
+              {invoiceStatusLabel(inv.status)}
             </span>
           </div>
           <p className="text-[12px] text-ink-soft mt-0.5">

@@ -32,6 +32,12 @@ export const glossary = {
     'The stages a buyer moves through — from a new enquiry to a closed deal. Drag a lead along as things progress.',
   GST:
     'GST is the tax added to your brokerage invoice. HomeNex works out the split (CGST/SGST or IGST) for you.',
+  BLTC:
+    'The four things a buyer needs pinned down before they can decide: budget, location, timeline and home type.',
+  PORTAL_EMAIL:
+    'A private email address just for you. Set it as your contact email on 99acres, MagicBricks and Housing, and every lead notification becomes a lead here automatically.',
+  API_KEY:
+    'A secret code a property portal gives you to connect your account directly. Most agents never need this — use the lead email instead.',
 }
 
 // Look up a term case-insensitively; returns undefined if we have no explanation.

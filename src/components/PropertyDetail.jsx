@@ -1,8 +1,167 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api, usePoll, fmtAgo } from '../api.js'
 import { paiseToDisplay, lakhsToPaise, paiseToLakhs } from '../money.js'
 import { SlideOver, Sheet, Chip, Field, inputCls, useConfirm, InfoTip } from './ui.jsx'
 import { glossary } from '../lib/glossary.js'
+
+// Downscale a phone-camera photo to a reasonable listing size in the browser, so a
+// 5 MB image never travels over a patchy 4G connection. Returns a JPEG data URL.
+const PHOTO_MAX_PX = 1280
+function downscalePhoto(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file)
+    const img = new Image()
+    img.onload = () => {
+      URL.revokeObjectURL(url)
+      const scale = Math.min(1, PHOTO_MAX_PX / Math.max(img.width, img.height))
+      const w = Math.round(img.width * scale)
+      const h = Math.round(img.height * scale)
+      const canvas = document.createElement('canvas')
+      canvas.width = w
+      canvas.height = h
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h)
+      resolve(canvas.toDataURL('image/jpeg', 0.82))
+    }
+    img.onerror = () => {
+      URL.revokeObjectURL(url)
+      reject(new Error("That file isn't an image we can read"))
+    }
+    img.src = url
+  })
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader()
+    r.onload = () => resolve(r.result)
+    r.onerror = () => reject(new Error("Couldn't read that file"))
+    r.readAsDataURL(file)
+  })
+}
+
+// Pick property photos from the phone gallery/camera. Uploads each to the server and
+// keeps a list of hosted URLs — the broker never has to host or paste a link.
+function PhotoPicker({ photos, onChange, onError }) {
+  const fileRef = useRef(null)
+  const [busy, setBusy] = useState(false)
+
+  const pick = async (files) => {
+    if (!files?.length) return
+    setBusy(true)
+    onError(null)
+    try {
+      for (const file of files) {
+        const dataUrl = await downscalePhoto(file)
+        const { url } = await api.uploadFile(dataUrl, file.name, 'image/jpeg')
+        onChange((prev) => [...prev, url])
+      }
+    } catch (err) {
+      onError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div>
+      <div className="flex gap-2 flex-wrap">
+        {photos.map((url, i) => (
+          <div key={url} className="relative">
+            <img src={url} alt="" className="w-20 h-20 rounded-xl border border-line object-cover" />
+            <button
+              type="button"
+              onClick={() => onChange((prev) => prev.filter((_, j) => j !== i))}
+              aria-label="Remove photo"
+              className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-ink text-white text-[12px] leading-none flex items-center justify-center shadow active:scale-90 transition"
+            >
+              ×
+            </button>
+          </div>
+        ))}
+        <button
+          type="button"
+          onClick={() => fileRef.current?.click()}
+          disabled={busy}
+          className="w-20 h-20 rounded-xl border-2 border-dashed border-line text-ink-faint text-[11px] font-bold flex flex-col items-center justify-center gap-1 active:scale-95 transition disabled:opacity-50"
+        >
+          <span className="text-[20px] leading-none">＋</span>
+          {busy ? 'Adding…' : 'Add photo'}
+        </button>
+      </div>
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*"
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          const files = Array.from(e.target.files || [])
+          e.target.value = ''
+          pick(files)
+        }}
+      />
+    </div>
+  )
+}
+
+// Pick a brochure (PDF or image) from the phone and upload it.
+function BrochurePicker({ url, onChange, onError }) {
+  const fileRef = useRef(null)
+  const [busy, setBusy] = useState(false)
+
+  const pick = async (file) => {
+    if (!file) return
+    setBusy(true)
+    onError(null)
+    try {
+      const dataUrl = await fileToDataUrl(file)
+      const saved = await api.uploadFile(dataUrl, file.name, file.type)
+      onChange(saved.url)
+    } catch (err) {
+      onError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (url) {
+    return (
+      <div className="flex items-center gap-2 bg-cream border border-line rounded-xl px-3 py-2.5">
+        <span className="text-[16px]">📄</span>
+        <a href={url} target="_blank" rel="noopener noreferrer" className="flex-1 text-[12px] font-bold text-brand underline underline-offset-2 truncate">
+          Brochure added — view
+        </a>
+        <button type="button" onClick={() => onChange(null)} className="shrink-0 text-[11.5px] font-bold text-hot active:scale-95 transition">
+          Remove
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => fileRef.current?.click()}
+        disabled={busy}
+        className="w-full rounded-xl border-2 border-dashed border-line text-ink-soft text-[12.5px] font-bold py-3 active:scale-[0.99] transition disabled:opacity-50"
+      >
+        {busy ? 'Uploading…' : '📄 Add brochure (PDF)'}
+      </button>
+      <input
+        ref={fileRef}
+        type="file"
+        accept="application/pdf,image/*"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0]
+          e.target.value = ''
+          pick(file)
+        }}
+      />
+    </div>
+  )
+}
 
 const STATUS_STYLE = {
   available: 'bg-brand-wash text-brand-deep border-brand/30',
@@ -27,10 +186,16 @@ export function PropertyForm({ initial, onSave, onCancel, saving, error }) {
     rera_project_number: initial?.rera_project_number || '',
     builder_name: initial?.builder_name || '',
     owner_name: initial?.owner_name || '',
-    photos: (initial?.photos || []).join('\n'),
-    brochure_url: initial?.brochure_url || '',
     notes: initial?.notes || '',
   }))
+  const [photos, setPhotos] = useState(() => initial?.photos || [])
+  const [brochureUrl, setBrochureUrl] = useState(() => initial?.brochure_url || '')
+  const [uploadError, setUploadError] = useState(null)
+  // "More details" (RERA/builder/owner/brochure/notes) starts open when editing an
+  // existing property that already has any of them, else collapsed to keep add simple.
+  const [showMore, setShowMore] = useState(() =>
+    Boolean(initial?.rera_project_number || initial?.builder_name || initial?.owner_name || initial?.brochure_url || initial?.notes),
+  )
   const set = (k) => (e) => setForm((s) => ({ ...s, [k]: e.target.value }))
 
   const submit = (e) => {
@@ -47,8 +212,8 @@ export function PropertyForm({ initial, onSave, onCancel, saving, error }) {
       rera_project_number: form.rera_project_number.trim() || null,
       builder_name: form.builder_name.trim() || null,
       owner_name: form.owner_name.trim() || null,
-      photos: form.photos.split('\n').map((s) => s.trim()).filter(Boolean),
-      brochure_url: form.brochure_url.trim() || null,
+      photos,
+      brochure_url: brochureUrl || null,
       notes: form.notes.trim() || null,
     })
   }
@@ -101,26 +266,45 @@ export function PropertyForm({ initial, onSave, onCancel, saving, error }) {
           <input value={form.city} onChange={set('city')} placeholder="Pune" className={inputCls} />
         </Field>
       </div>
-      <Field label="RERA project number">
-        <input value={form.rera_project_number} onChange={set('rera_project_number')} placeholder="P52100012345" className={inputCls} />
+
+      <Field label="Photos">
+        <PhotoPicker photos={photos} onChange={setPhotos} onError={setUploadError} />
+        <span className="block text-[11px] text-ink-faint mt-1.5">Pick straight from your phone — no links needed.</span>
       </Field>
-      <div className="grid grid-cols-2 gap-2">
-        <Field label="Builder">
-          <input value={form.builder_name} onChange={set('builder_name')} className={inputCls} />
-        </Field>
-        <Field label="Owner">
-          <input value={form.owner_name} onChange={set('owner_name')} className={inputCls} />
-        </Field>
-      </div>
-      <Field label="Photo URLs (one per line)">
-        <textarea value={form.photos} onChange={set('photos')} rows={2} className={inputCls} />
-      </Field>
-      <Field label="Brochure URL">
-        <input value={form.brochure_url} onChange={set('brochure_url')} className={inputCls} />
-      </Field>
-      <Field label="Notes">
-        <textarea value={form.notes} onChange={set('notes')} rows={2} className={inputCls} />
-      </Field>
+      {uploadError && <p className="text-[12px] text-hot bg-amber-wash rounded-xl px-3.5 py-2.5">{uploadError}</p>}
+
+      {/* Rarely-changed extras stay out of the way so "add a flat" feels light. */}
+      <button
+        type="button"
+        onClick={() => setShowMore((v) => !v)}
+        className="w-full flex items-center justify-between text-[12px] font-bold text-ink-soft bg-cream rounded-xl px-3.5 py-2.5 active:scale-[0.99] transition"
+      >
+        More details (optional)
+        <span className="text-ink-faint">{showMore ? '▲' : '▼'}</span>
+      </button>
+
+      {showMore && (
+        <div className="space-y-3">
+          <Field label={<span className="inline-flex items-center gap-1.5">RERA project number <InfoTip label="RERA" text={glossary.RERA} /></span>}>
+            <input value={form.rera_project_number} onChange={set('rera_project_number')} placeholder="P52100012345" className={inputCls} />
+          </Field>
+          <div className="grid grid-cols-2 gap-2">
+            <Field label="Builder">
+              <input value={form.builder_name} onChange={set('builder_name')} className={inputCls} />
+            </Field>
+            <Field label="Owner">
+              <input value={form.owner_name} onChange={set('owner_name')} className={inputCls} />
+            </Field>
+          </div>
+          <Field label="Brochure">
+            <BrochurePicker url={brochureUrl} onChange={setBrochureUrl} onError={setUploadError} />
+          </Field>
+          <Field label="Notes">
+            <textarea value={form.notes} onChange={set('notes')} rows={2} className={inputCls} />
+          </Field>
+        </div>
+      )}
+
       {error && <p className="text-[12px] text-hot bg-amber-wash rounded-xl px-3.5 py-2.5">{error}</p>}
       <div className="flex gap-2 pt-1">
         <button type="submit" disabled={saving} className="flex-1 bg-brand text-white font-bold text-[13.5px] rounded-full py-3 active:scale-[0.99] transition disabled:opacity-50">
@@ -228,7 +412,7 @@ function MicroPageCard({ propertyId }) {
         {copied ? '✓ Link copied' : '🔗 Share micro-page'}
       </button>
       <p className="text-[10.5px] text-ink-faint mt-2">
-        Anyone with the link can view — perfect for broker groups. Views count as engagement.
+        Anyone with the link can view — perfect for broker groups. Every time someone opens it is counted here.
       </p>
     </section>
   )
@@ -246,7 +430,7 @@ function AnalyticsCard({ propertyId, onOpenLead }) {
   const max = Math.max(1, ...days.map((d) => d.views))
   return (
     <section className="bg-card rounded-2xl border border-line shadow-card p-4">
-      <p className="text-[10.5px] font-bold tracking-[0.18em] text-brand mb-3">VIEW ANALYTICS</p>
+      <p className="text-[10.5px] font-bold tracking-[0.18em] text-brand mb-3">WHO'S LOOKING AT THIS PROPERTY</p>
       <div className="grid grid-cols-3 gap-2 mb-3">
         {[['Total', a.total], ['Last 24h', a.last_24h], ['Viewers', a.distinct_leads]].map(([label, v]) => (
           <div key={label} className="bg-cream rounded-xl px-3 py-2 text-center">
@@ -366,6 +550,7 @@ export default function PropertyDetail({ propertyId, onClose, onChanged, onOpenL
   const { data: property } = usePoll(() => api.property(propertyId), 30000, [propertyId, refreshKey])
   const [editing, setEditing] = useState(false)
   const [sending, setSending] = useState(false)
+  const [showPromote, setShowPromote] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
   const confirm = useConfirm()
@@ -472,9 +657,22 @@ export default function PropertyDetail({ propertyId, onClose, onChanged, onOpenL
               )}
             </section>
 
-            <MicroPageCard propertyId={property.id} />
-            <SyndicateCard property={property} />
-            <AnalyticsCard propertyId={property.id} onOpenLead={onOpenLead} />
+            <div>
+              <button
+                onClick={() => setShowPromote((v) => !v)}
+                className="w-full flex items-center justify-between bg-card rounded-2xl border border-line shadow-card px-4 py-3.5 active:scale-[0.99] transition"
+              >
+                <span className="text-[10.5px] font-bold tracking-[0.18em] text-brand">SHARE &amp; PROMOTE</span>
+                <span className="text-ink-faint text-[13px]">{showPromote ? '▲' : '▼'}</span>
+              </button>
+              {showPromote && (
+                <div className="space-y-4 mt-4">
+                  <MicroPageCard propertyId={property.id} />
+                  <SyndicateCard property={property} />
+                  <AnalyticsCard propertyId={property.id} onOpenLead={onOpenLead} />
+                </div>
+              )}
+            </div>
 
             <button
               onClick={() => setSending(true)}

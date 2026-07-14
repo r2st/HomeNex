@@ -141,6 +141,7 @@ export const api = {
   labels: () => get('/api/labels'),
   createLabel: (body) => post('/api/labels', body),
   deleteLabel: (id) => del(`/api/labels/${id}`),
+  uploadFile: (data_base64, filename, mime) => post('/api/uploads', { data_base64, filename, mime }),
   media: () => get('/api/media'),
   createMedia: (body) => post('/api/media', body),
   deleteMedia: (id) => del(`/api/media/${id}`),

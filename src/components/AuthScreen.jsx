@@ -7,6 +7,7 @@ export default function AuthScreen({ onAuthed }) {
   const [form, setForm] = useState({ name: '', cc: '+91', phone: '', password: '' })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
+  const [showPassword, setShowPassword] = useState(false)
 
   // Keep a leading "+" and up to 4 dialing digits (e.g. +1, +44, +971).
   const setCc = (v) => {
@@ -121,15 +122,25 @@ export default function AuthScreen({ onAuthed }) {
 
         <label className="block">
           <span className="text-[11.5px] font-bold text-ink-soft">Password</span>
-          <input
-            type="password"
-            value={form.password}
-            onChange={(e) => setForm((s) => ({ ...s, password: e.target.value }))}
-            placeholder={mode === 'signup' ? 'At least 6 characters' : '••••••••'}
-            autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
-            required
-            className={inputCls}
-          />
+          <div className="relative">
+            <input
+              type={showPassword ? 'text' : 'password'}
+              value={form.password}
+              onChange={(e) => setForm((s) => ({ ...s, password: e.target.value }))}
+              placeholder={mode === 'signup' ? 'At least 6 characters' : '••••••••'}
+              autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+              required
+              className={`${inputCls} pr-12`}
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword((v) => !v)}
+              aria-label={showPassword ? 'Hide password' : 'Show password'}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-[18px] leading-none text-ink-faint active:scale-90 transition"
+            >
+              {showPassword ? '🙈' : '👁'}
+            </button>
+          </div>
         </label>
 
         {error && (

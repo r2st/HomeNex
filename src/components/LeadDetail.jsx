@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api, usePoll, fmtAgo, fmtTime } from '../api.js'
 import { paiseRangeToDisplay, paiseToDisplay, lakhsToPaise, paiseToLakhs } from '../money.js'
-import { ScoreRing, SlideOver, Sheet, Chip, Field, inputCls } from './ui.jsx'
+import { ScoreRing, SlideOver, Sheet, Chip, Field, inputCls, InfoTip } from './ui.jsx'
 import { buyerProfileIsEmpty } from '../lib/buyerProfile.js'
 import { shouldShowScoreBreakdown } from '../lib/scoreDisplay.js'
+import { glossary } from '../lib/glossary.js'
+import { visitStatusLabel } from '../lib/labels.js'
 
 const LOST_REASONS = [
   'Bought elsewhere',
@@ -546,7 +548,7 @@ function SiteVisitsSection({ lead, refresh }) {
                     v.status === s ? 'bg-ink text-cream border-ink' : 'bg-card text-ink-soft border-line'
                   }`}
                 >
-                  {s.replace('_', ' ')}
+                  {visitStatusLabel(s)}
                 </button>
               ))}
             </div>
@@ -736,7 +738,15 @@ export default function LeadDetail({ leadId, onClose, onOpenConversation, onChan
             <div className="flex items-center gap-2.5 min-w-0">
               <span className="text-[18px]">{SOURCE_ICON[lead.source_channel] || '💬'}</span>
               <div className="min-w-0">
-                <p className="text-[10.5px] font-bold tracking-[0.18em] text-ink-soft">LEAD SOURCE</p>
+                <p className="text-[10.5px] font-bold tracking-[0.18em] text-ink-soft flex items-center gap-1.5">
+                  LEAD SOURCE
+                  {(lead.source_channel === 'ctwa' || lead.source_channel === 'meta_lead_ad') && (
+                    <InfoTip label="" text={glossary.CTWA} align="left" />
+                  )}
+                  {(lead.source_channel === 'portal_email' || lead.source_channel === 'portal_api') && (
+                    <InfoTip label="" text={glossary.PORTAL} align="left" />
+                  )}
+                </p>
                 <p className="text-[13px] font-bold text-ink truncate">
                   {SOURCE_LABEL[lead.source_channel] || 'WhatsApp'}
                   {lead.source_portal ? ` · ${lead.source_portal}` : ''}
@@ -747,8 +757,8 @@ export default function LeadDetail({ leadId, onClose, onOpenConversation, onChan
             {lead.free_entry_window && (
               <div className={`mt-2.5 rounded-xl px-3 py-2 text-[12px] font-semibold leading-snug ${lead.free_entry_window.open ? 'bg-brand-wash text-brand-deep' : 'bg-cream text-ink-faint'}`}>
                 {lead.free_entry_window.open
-                  ? `🎁 Free 72-hour messaging window — ${lead.free_entry_window.hours_left}h left. Reply freely, no template needed.`
-                  : '72-hour free-messaging window has closed — send an approved template.'}
+                  ? `🎁 You can reply free for 72 hours — ${lead.free_entry_window.hours_left}h left. No approved message needed.`
+                  : 'The 72-hour free-reply time is up — you can only send one of your approved messages now.'}
               </div>
             )}
           </section>

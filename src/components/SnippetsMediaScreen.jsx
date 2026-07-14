@@ -3,7 +3,32 @@ import { api } from '../api.js'
 import { Chip, Field, inputCls, useConfirm } from './ui.jsx'
 
 const KIND_ICON = { brochure: '📄', floor_plan: '📐', photo: '🖼️', video: '🎬', document: '📎' }
-const varsHint = 'Use {{name}}, {{property}}, {{visit_time}} as fill-in variables.'
+
+// Tap-to-insert variables so nobody has to type the {{double-brace}} syntax by hand.
+const INSERT_VARS = [
+  { token: '{{name}}', label: 'Name' },
+  { token: '{{property}}', label: 'Property' },
+  { token: '{{visit_time}}', label: 'Visit time' },
+]
+
+// A row of chips that append the correct fill-in token to a textarea's value.
+function VarChips({ onInsert }) {
+  return (
+    <div className="flex gap-1.5 flex-wrap">
+      <span className="text-[11px] text-ink-faint self-center">Insert:</span>
+      {INSERT_VARS.map((v) => (
+        <button
+          key={v.token}
+          type="button"
+          onClick={() => onInsert(v.token)}
+          className="text-[11px] font-bold text-brand-deep bg-brand-wash rounded-full px-2.5 py-1 active:scale-95 transition"
+        >
+          {v.label}
+        </button>
+      ))}
+    </div>
+  )
+}
 
 // --- Media library ---------------------------------------------------------
 function MediaManager() {
@@ -152,25 +177,32 @@ function TemplatesManager() {
       <div className="bg-card rounded-2xl border border-line shadow-card p-4 space-y-2">
         <p className="font-bold text-[13.5px] text-ink">New template</p>
         <Field label="Name">
-          <input value={name} onChange={(e) => setName(e.target.value)} className={inputCls} placeholder="e.g. follow_up_week" />
+          <input value={name} onChange={(e) => setName(e.target.value)} className={inputCls} placeholder="e.g. Weekly follow-up" />
         </Field>
-        <div className="flex gap-2">
-          {['utility', 'marketing', 'service'].map((c) => (
-            <Chip key={c} active={category === c} onClick={() => setCategory(c)}>
-              {c}
-            </Chip>
-          ))}
+        <div>
+          <div className="flex gap-2">
+            {['utility', 'marketing', 'service'].map((c) => (
+              <Chip key={c} active={category === c} onClick={() => setCategory(c)}>
+                {c === 'utility' ? 'Reminder' : c === 'marketing' ? 'Promotion' : 'Reply'}
+              </Chip>
+            ))}
+          </div>
+          <p className="text-[11px] text-ink-faint mt-1.5">
+            WhatsApp needs to know the message type. Reminder = updates &amp; nudges · Promotion =
+            offers &amp; new listings · Reply = answering a question.
+          </p>
         </div>
         <Field label="Body">
           <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={3} className={inputCls + ' resize-none'} placeholder="Hi {{name}}, …" />
         </Field>
+        <VarChips onInsert={(t) => setBody((b) => (b ? `${b} ${t}` : t))} />
         {category === 'marketing' && (
           <label className="flex items-center gap-2 text-[12px] text-ink-soft">
             <input type="checkbox" checked={rera} onChange={(e) => setRera(e.target.checked)} />
-            Auto-append my RERA number (required for marketing)
+            Auto-append my RERA number (required for promotions)
           </label>
         )}
-        <p className="text-[11px] text-ink-faint">{varsHint}</p>
+        <p className="text-[11px] text-ink-faint">Tap a chip above to drop in a fill-in — the name fills in automatically when you send.</p>
         {err && <p className="text-[11.5px] text-hot">{err}</p>}
         <button
           onClick={create}
@@ -189,7 +221,7 @@ function TemplatesManager() {
               <div className="flex items-center gap-2">
                 <p className="font-bold text-[13.5px] text-ink flex-1">{t.name}</p>
                 <span className="text-[9.5px] font-bold bg-cream border border-line rounded-full px-2 py-0.5 text-ink-soft">
-                  {t.category}
+                  {t.category === 'utility' ? 'Reminder' : t.category === 'marketing' ? 'Promotion' : t.category === 'service' ? 'Reply' : t.category}
                 </span>
                 {t.is_system && <span className="text-[9.5px] font-bold bg-brand-wash text-brand-deep rounded-full px-2 py-0.5">pack</span>}
                 {locked && <span className="text-[11px]" title="Locked — fill variables, can't edit wording">🔒</span>}
@@ -242,7 +274,7 @@ function QuickRepliesManager() {
         <Field label="Body">
           <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={2} className={inputCls + ' resize-none'} placeholder="Hi {{name}}, …" />
         </Field>
-        <p className="text-[11px] text-ink-faint">{varsHint}</p>
+        <VarChips onInsert={(t) => setBody((b) => (b ? `${b} ${t}` : t))} />
         <button
           onClick={create}
           disabled={!title.trim() || !body.trim()}
@@ -352,6 +384,16 @@ export default function SnippetsMediaScreen() {
           Labels
         </Chip>
       </div>
+      {tab === 'templates' && (
+        <p className="text-[11.5px] text-ink-soft mt-3 px-1 leading-snug">
+          Approved messages for buyers who haven't replied in 24 hours.
+        </p>
+      )}
+      {tab === 'quick' && (
+        <p className="text-[11.5px] text-ink-soft mt-3 px-1 leading-snug">
+          Shortcuts you drop into a live chat.
+        </p>
+      )}
       {tab === 'media' && <MediaManager />}
       {tab === 'templates' && <TemplatesManager />}
       {tab === 'quick' && <QuickRepliesManager />}

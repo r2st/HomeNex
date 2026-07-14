@@ -4,11 +4,13 @@ import ProfileCard from './ProfileCard.jsx'
 import SecurityCard from './SecurityCard.jsx'
 import PreferencesCard from './PreferencesCard.jsx'
 
+// Brand tokens so the pills match the green/cream/amber system used everywhere else
+// (no foreign blue/gray Tailwind defaults).
 const statusColors = {
-  none: 'bg-gray-100 text-gray-600',
-  pending: 'bg-amber-100 text-amber-700',
-  registered: 'bg-blue-100 text-blue-700',
-  active: 'bg-green-100 text-green-700',
+  none: 'bg-cream text-ink-soft',
+  pending: 'bg-amber-wash text-gold',
+  registered: 'bg-brand-wash text-brand-deep',
+  active: 'bg-brand-wash text-brand-deep',
 }
 
 const statusLabels = {
@@ -141,7 +143,7 @@ export default function SettingsTab({ agent, onAgentUpdate }) {
 
       {/* How it works */}
       <div className="bg-white border border-line rounded-2xl p-4 space-y-3">
-        <h3 className="text-[13px] font-bold text-ink-soft">How WABA Registration Works</h3>
+        <h3 className="text-[13px] font-bold text-ink-soft">How your WhatsApp number gets connected</h3>
         <ol className="text-[12.5px] text-ink-soft leading-relaxed space-y-1.5 list-decimal list-inside">
           <li>Provide a phone number (not your personal WhatsApp)</li>
           <li>Our support team registers it on Meta WhatsApp Business API</li>

@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { api, usePoll, fmtAgo, fmtTime, fmtWait } from '../api.js'
 import ShareNumberCard from './ShareNumberCard.jsx'
 import { onboardingSteps, shouldShowOnboarding, ONBOARDING_DISMISS_KEY } from '../lib/onboarding.js'
+import { homeSections } from '../lib/homeSections.js'
+import { tempBadge, visitStatusLabel } from '../lib/labels.js'
 
 const DOT = {
   hot: 'bg-hot',
@@ -145,6 +147,19 @@ export default function DashboardTab({ agent, onGoTo, onOpenConversation, onOpen
     { label: "Today's site visits", value: String(d.siteVisitsToday.length), accent: false },
   ]
 
+  // The "Your day" worklist already rolls up unanswered replies + today's & overdue
+  // follow-ups, so those sections are hidden while it has items (they only reappear as
+  // a fallback on a quiet day). Decided in a pure, tested module.
+  const sections = homeSections({
+    worklistCount: work?.items.length || 0,
+    unansweredCount: d?.unanswered.length || 0,
+    followupsTodayCount: d?.followupsToday.length || 0,
+    overdueCount: d?.overdueFollowups?.length || 0,
+    siteVisitsCount: d?.siteVisitsToday.length || 0,
+    hotLeadsCount: d?.hotLeads.length || 0,
+    activityCount: d?.activity.length || 0,
+  })
+
   return (
     <div className="px-5 pt-7">
       <header className="rise">
@@ -230,7 +245,7 @@ export default function DashboardTab({ agent, onGoTo, onOpenConversation, onOpen
         </section>
       )}
 
-      {work && work.items.length > 0 && (
+      {sections.worklist && work && (
         <section className="mt-7 rise rise-2">
           <SectionHeader badge={work.counts.total}>YOUR DAY — WHAT TO DO NEXT</SectionHeader>
           <div className="space-y-2.5 mt-3">
@@ -259,7 +274,7 @@ export default function DashboardTab({ agent, onGoTo, onOpenConversation, onOpen
         </section>
       )}
 
-      {d && d.unanswered.length > 0 && (
+      {sections.unanswered && d && (
         <section className="mt-7 rise rise-2">
           <SectionHeader badge={d.unanswered.length}>UNANSWERED — REPLY NOW</SectionHeader>
           <div className="space-y-2.5 mt-3">
@@ -288,7 +303,7 @@ export default function DashboardTab({ agent, onGoTo, onOpenConversation, onOpen
         </section>
       )}
 
-      {d && d.followupsToday.length > 0 && (
+      {sections.followupsToday && d && (
         <section className="mt-7 rise rise-3">
           <SectionHeader badge={d.followupsToday.length}>TODAY'S FOLLOW-UPS</SectionHeader>
           <div className="mt-3 bg-card rounded-2xl border border-line shadow-card divide-y divide-line">
@@ -317,9 +332,9 @@ export default function DashboardTab({ agent, onGoTo, onOpenConversation, onOpen
         </section>
       )}
 
-      {d && d.overdueFollowups && d.overdueFollowups.length > 0 && (
+      {sections.overdue && d && (
         <section className="mt-7 rise rise-3">
-          <SectionHeader badge={d.overdueFollowups.length}>⏰ OVERDUE · BY HEAT</SectionHeader>
+          <SectionHeader badge={d.overdueFollowups.length}>⏰ OVERDUE FOLLOW-UPS</SectionHeader>
           <div className="mt-3 bg-card rounded-2xl border border-line shadow-card divide-y divide-line">
             {d.overdueFollowups.slice(0, 6).map((f) => {
               const temp = f.lead_effective_temp || f.lead_temp || 'Cold'
@@ -349,7 +364,7 @@ export default function DashboardTab({ agent, onGoTo, onOpenConversation, onOpen
         </section>
       )}
 
-      {d && d.siteVisitsToday.length > 0 && (
+      {sections.siteVisits && d && (
         <section className="mt-7 rise rise-3">
           <SectionHeader badge={d.siteVisitsToday.length}>TODAY'S SITE VISITS</SectionHeader>
           <div className="mt-3 bg-card rounded-2xl border border-line shadow-card divide-y divide-line">
@@ -362,7 +377,7 @@ export default function DashboardTab({ agent, onGoTo, onOpenConversation, onOpen
                     {v.property_title ? ` → ${v.property_title}` : ''}
                   </p>
                   <p className="text-[12px] text-ink-soft">
-                    {fmtTime(v.scheduled_at)} · {v.status}
+                    {fmtTime(v.scheduled_at)} · {visitStatusLabel(v.status)}
                     {v.pickup_required ? ' · 🚗 pickup' : ''}
                   </p>
                 </div>
@@ -372,7 +387,7 @@ export default function DashboardTab({ agent, onGoTo, onOpenConversation, onOpen
         </section>
       )}
 
-      {d && d.hotLeads.length > 0 && (
+      {sections.hotLeads && d && (
         <section className="mt-7 rise rise-4">
           <SectionHeader>🔥 HOT LEADS</SectionHeader>
           <div className="space-y-2.5 mt-3">
@@ -383,7 +398,7 @@ export default function DashboardTab({ agent, onGoTo, onOpenConversation, onOpen
                 className="w-full text-left bg-card rounded-2xl border border-line shadow-card px-4 py-3.5 active:scale-[0.99] transition"
               >
                 <p className="font-bold text-[14px] text-ink">
-                  {l.name || l.wa_id} <span className="text-hot">· {l.score}/100</span>
+                  {l.name || l.wa_id} <span className="text-hot">· {tempBadge(l.temp || 'Hot').icon} {tempBadge(l.temp || 'Hot').word}</span>
                 </p>
                 {l.next_step && <p className="text-[12.5px] text-ink-soft mt-1 leading-snug">Next: {l.next_step}</p>}
                 <p className="text-[11px] text-ink-faint mt-1">
@@ -395,7 +410,7 @@ export default function DashboardTab({ agent, onGoTo, onOpenConversation, onOpen
         </section>
       )}
 
-      {d && d.activity.length > 0 && (
+      {sections.activity && d && (
         <section className="mt-7 rise rise-5">
           <div className="flex items-center gap-2">
             <span className="relative flex h-2 w-2">

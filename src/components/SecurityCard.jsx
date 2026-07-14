@@ -3,29 +3,38 @@ import { api } from '../api.js'
 import { inputCls, Field } from './ui.jsx'
 
 // Change the WhatsApp number the agent logs in with. Password-gated server-side.
+// Minimum local-part length we'll accept (covers short international numbers).
+const MIN_LOCAL_DIGITS = 6
+
 function PhoneForm({ phone, onSaved }) {
   const [editing, setEditing] = useState(false)
+  const [cc, setCc] = useState('+91')
   const [newPhone, setNewPhone] = useState('')
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState(null)
   const [error, setError] = useState(null)
 
+  const ready = newPhone.length >= MIN_LOCAL_DIGITS && Boolean(password)
+
   const close = () => {
     setEditing(false)
+    setCc('+91')
     setNewPhone('')
     setPassword('')
     setError(null)
   }
 
+  const setCountryCode = (v) => setCc('+' + v.replace(/\D/g, '').slice(0, 4))
+
   const submit = async (e) => {
     e.preventDefault()
-    if (busy || newPhone.length !== 10 || !password) return
+    if (busy || !ready) return
     setBusy(true)
     setError(null)
     setMsg(null)
     try {
-      const updated = await api.changePhone({ phone: '+91' + newPhone, password })
+      const updated = await api.changePhone({ phone: (cc || '+91') + newPhone, password })
       onSaved(updated)
       setMsg(`Your WhatsApp number is now ${updated.phone}. Use it to log in next time.`)
       close()
@@ -63,16 +72,31 @@ function PhoneForm({ phone, onSaved }) {
       {editing && (
         <form onSubmit={submit} className="space-y-3 pt-1">
           <div className="flex items-stretch bg-white border border-line rounded-2xl overflow-hidden focus-within:border-brand/60">
-            <span className="w-[4.5rem] px-3 py-3 text-[14px] font-semibold text-ink-soft bg-cream border-r border-line tracking-wide">
-              +91
-            </span>
+            <input
+              type="text"
+              inputMode="tel"
+              list="change-country-codes"
+              value={cc}
+              onChange={(e) => setCountryCode(e.target.value)}
+              placeholder="+91"
+              aria-label="Country code"
+              className="w-[4.5rem] px-3 py-3 text-[14px] font-semibold text-ink-soft bg-cream border-r border-line tracking-wide outline-none"
+            />
+            <datalist id="change-country-codes">
+              <option value="+91">India</option>
+              <option value="+1">USA / Canada</option>
+              <option value="+44">UK</option>
+              <option value="+971">UAE</option>
+              <option value="+61">Australia</option>
+              <option value="+65">Singapore</option>
+            </datalist>
             <input
               type="tel"
               inputMode="numeric"
               autoFocus
               value={newPhone}
-              onChange={(e) => setNewPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
-              placeholder="New 10-digit mobile"
+              onChange={(e) => setNewPhone(e.target.value.replace(/\D/g, '').slice(0, 12))}
+              placeholder="New mobile number"
               aria-label="New WhatsApp number"
               className="flex-1 px-4 py-3 text-[14px] outline-none bg-white tracking-wide"
             />
@@ -104,7 +128,7 @@ function PhoneForm({ phone, onSaved }) {
             </button>
             <button
               type="submit"
-              disabled={busy || newPhone.length !== 10 || !password}
+              disabled={busy || !ready}
               className="flex-1 bg-brand hover:bg-brand-deep disabled:opacity-50 text-white font-bold text-[13px] rounded-2xl py-3 active:scale-[0.98] transition"
             >
               {busy ? 'Saving…' : 'Update number'}

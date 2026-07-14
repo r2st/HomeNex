@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api, fmtAgo } from '../api.js'
 import { Chip, Field, inputCls } from './ui.jsx'
+import { ticketCategoryLabel, ticketStatusLabel } from '../lib/labels.js'
 
 const fmtRs = (paise) => (paise == null ? '—' : `₹${(Number(paise) / 100).toLocaleString('en-IN')}`)
 const CATEGORIES = ['general', 'billing', 'whatsapp', 'technical', 'feature_request']
@@ -40,7 +41,7 @@ function NewTicket({ onCreated }) {
       <Field label="Category">
         <select className={inputCls} value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>
           {CATEGORIES.map((c) => (
-            <option key={c} value={c}>{c.replace('_', ' ')}</option>
+            <option key={c} value={c}>{ticketCategoryLabel(c)}</option>
           ))}
         </select>
       </Field>
@@ -78,7 +79,7 @@ function TicketThread({ id, onBack }) {
     <div className="mt-4">
       <button onClick={onBack} className="text-[12.5px] font-bold text-ink-soft mb-2">← All requests</button>
       <p className="font-display text-[17px] font-semibold text-ink">{ticket.subject}</p>
-      <p className="text-[11.5px] text-ink-soft mb-3">{ticket.category} · {ticket.status}</p>
+      <p className="text-[11.5px] text-ink-soft mb-3">{ticketCategoryLabel(ticket.category)} · {ticketStatusLabel(ticket.status)}</p>
       <div className="space-y-2">
         {ticket.messages.map((m) => (
           <div key={m.id} className={`max-w-[85%] rounded-2xl px-3.5 py-2 ${m.is_staff ? 'ml-auto bg-brand-wash' : 'bg-card border border-line'}`}>
@@ -127,9 +128,9 @@ export default function SupportScreen() {
               <button key={t.id} onClick={() => setOpenId(t.id)} className="w-full text-left bg-card rounded-2xl border border-line shadow-card px-4 py-3 active:scale-[0.99] transition">
                 <div className="flex items-center gap-2">
                   <p className="font-bold text-[13.5px] text-ink flex-1 truncate">{t.subject}</p>
-                  <span className="text-[10.5px] font-bold text-ink-soft">{t.status}</span>
+                  <span className="text-[10.5px] font-bold text-ink-soft">{ticketStatusLabel(t.status)}</span>
                 </div>
-                <p className="text-[11.5px] text-ink-soft">{t.category} · {fmtAgo(t.updated_at)}</p>
+                <p className="text-[11.5px] text-ink-soft">{ticketCategoryLabel(t.category)} · {fmtAgo(t.updated_at)}</p>
               </button>
             ))}
           </div>
@@ -151,7 +152,10 @@ export default function SupportScreen() {
           <div className="bg-card rounded-2xl border border-line shadow-card p-4">
             <p className="font-bold text-[13px] text-ink mb-1">This month's usage</p>
             <p className="text-[12px] text-ink-soft">
-              {billing.usage.total_conversations} conversations · est. Meta cost {fmtRs(billing.usage.meta_cost_paise)}
+              {billing.usage.total_conversations} conversation{billing.usage.total_conversations === 1 ? '' : 's'} used
+              {billing.subscription?.conversation_quota != null
+                ? ` of ${billing.subscription.conversation_quota}`
+                : ''}
             </p>
           </div>
           {(billing.invoices || []).length > 0 && (

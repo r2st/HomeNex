@@ -1,6 +1,9 @@
 import { useState } from 'react'
 import { api, usePoll, fmtAgo } from '../api.js'
-import { Avatar, SlideOver, inputCls, useConfirm, LoadingRows } from './ui.jsx'
+import { Avatar, SlideOver, Sheet, inputCls, useConfirm, LoadingRows, InfoTip } from './ui.jsx'
+import { glossary } from '../lib/glossary.js'
+import { friendlyMessage } from '../lib/friendlyError.js'
+import { pipelineLabel, tempBadge } from '../lib/labels.js'
 
 const SOURCE_LABEL = {
   whatsapp_inbound: '💬 WhatsApp',
@@ -94,10 +97,10 @@ function ContactDetail({ contactId, onClose, onOpenLead }) {
                 className="w-full text-left bg-cream border border-line rounded-xl px-3.5 py-2.5 active:scale-[0.99] transition"
               >
                 <p className="text-[13px] font-bold text-ink">
-                  {l.stage || 'New'} <span className="text-ink-faint font-medium">· {l.pipeline_type || 'buy_primary'}</span>
+                  {l.stage || 'New'} <span className="text-ink-faint font-medium">· {pipelineLabel(l.pipeline_type)}</span>
                 </p>
                 <p className="text-[11.5px] text-ink-soft mt-0.5">
-                  {l.temp} · score {l.score ?? 0} · {fmtAgo(l.updated_at)}
+                  {tempBadge(l.temp).icon} {tempBadge(l.temp).word} · {fmtAgo(l.updated_at)}
                 </p>
               </button>
             ))}
@@ -111,11 +114,70 @@ function ContactDetail({ contactId, onClose, onOpenLead }) {
 // Contacts are captured automatically from WhatsApp conversations — this tab is
 // search + review, not data entry.
 // Contact groups / segments with one-click auto-grouping and a limiter-gated blast.
+// Themed compose-and-send sheet for a group blast — replaces the raw window.prompt().
+// Shows the recipient count up front and a Confirm step before it actually sends.
+function BlastSheet({ group, onClose, onSent }) {
+  const [message, setMessage] = useState('')
+  const [error, setError] = useState(null)
+  const confirm = useConfirm()
+
+  const doSend = async () => {
+    const r = await api.sendToGroup(group.id, message.trim())
+    onSent(r)
+  }
+
+  const ask = () => {
+    if (!message.trim()) return
+    setError(null)
+    confirm({
+      title: `Send to ${group.member_count} contact${group.member_count === 1 ? '' : 's'}?`,
+      message: `Everyone in "${group.name}" who has agreed to your messages will get this.`,
+      confirmLabel: 'Send now',
+      danger: false,
+      onConfirm: async () => {
+        try {
+          await doSend()
+        } catch (e) {
+          setError(friendlyMessage(e))
+          throw e
+        }
+      },
+    })
+  }
+
+  return (
+    <Sheet onClose={onClose} title={`Message "${group.name}"`}>
+      <p className="text-[12px] text-ink-soft leading-snug mb-3 flex items-center gap-1.5 flex-wrap">
+        Goes to {group.member_count} contact{group.member_count === 1 ? '' : 's'} who have agreed to your messages.
+        <InfoTip label="" text={glossary.OPT_IN} align="left" />
+      </p>
+      <textarea
+        value={message}
+        onChange={(e) => setMessage(e.target.value)}
+        rows={4}
+        autoFocus
+        placeholder="Type your message…"
+        className={`${inputCls} resize-none`}
+      />
+      {error && <p className="text-[12px] text-hot bg-amber-wash rounded-xl px-3 py-2 mt-2">{error}</p>}
+      <button
+        onClick={ask}
+        disabled={!message.trim()}
+        className="mt-3 w-full bg-brand text-white font-bold text-[13.5px] rounded-full py-3 active:scale-[0.99] transition disabled:opacity-40"
+      >
+        Review &amp; send →
+      </button>
+      {confirm.dialog}
+    </Sheet>
+  )
+}
+
 function GroupsPanel() {
   const [open, setOpen] = useState(false)
   const [groups, setGroups] = useState(null)
   const [busy, setBusy] = useState(false)
   const [flash, setFlash] = useState(null)
+  const [blastGroup, setBlastGroup] = useState(null)
   const confirm = useConfirm()
   const load = () => api.groups().then(setGroups).catch(() => setGroups([]))
 
@@ -132,23 +194,20 @@ function GroupsPanel() {
       await load()
       setFlash(`Grouped by ${by}`)
     } catch (e) {
-      setFlash(e.message)
+      setFlash(friendlyMessage(e))
     } finally {
       setBusy(false)
       setTimeout(() => setFlash(null), 2500)
     }
   }
 
-  const blast = async (g) => {
-    const message = window.prompt(`Message to send to "${g.name}" (${g.member_count} contacts):`)
-    if (!message || !message.trim()) return
-    try {
-      const r = await api.sendToGroup(g.id, message.trim())
-      setFlash(`Sent ${r.sent}, skipped ${r.skipped} (rate-limited/opted-out)`)
-    } catch (e) {
-      setFlash(e.message)
-    }
-    setTimeout(() => setFlash(null), 3500)
+  const onSent = (r) => {
+    setBlastGroup(null)
+    const skipped = r.skipped
+      ? ` ${r.skipped} skipped — they haven't agreed to messages yet.`
+      : ''
+    setFlash(`Sent to ${r.sent}.${skipped}`)
+    setTimeout(() => setFlash(null), 4000)
   }
 
   const remove = (g) =>
@@ -171,7 +230,7 @@ function GroupsPanel() {
         <div className="px-4 pb-4">
           <p className="text-[11.5px] text-ink-soft mb-2">Auto-group your contacts in one tap:</p>
           <div className="flex gap-2 flex-wrap">
-            {[['locality', '📍 Locality'], ['intent', '🎯 Intent'], ['temp', '🌡 Temperature']].map(([by, label]) => (
+            {[['locality', '📍 Locality'], ['intent', '🎯 Intent'], ['temp', '🌡 Interest level']].map(([by, label]) => (
               <button
                 key={by}
                 disabled={busy}
@@ -189,7 +248,7 @@ function GroupsPanel() {
                 <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: g.color }} />
                 <span className="text-[13px] font-bold text-ink truncate flex-1">{g.name}</span>
                 <span className="text-[11px] text-ink-faint tabular-nums">{g.member_count}</span>
-                <button onClick={() => blast(g)} className="text-[11.5px] font-bold text-brand active:scale-95 transition">Send</button>
+                <button onClick={() => setBlastGroup(g)} className="text-[11.5px] font-bold text-brand active:scale-95 transition">Send</button>
                 <button onClick={() => remove(g)} className="text-ink-faint text-[14px] leading-none active:scale-90 transition">×</button>
               </div>
             ))}
@@ -199,6 +258,7 @@ function GroupsPanel() {
           </div>
         </div>
       )}
+      {blastGroup && <BlastSheet group={blastGroup} onClose={() => setBlastGroup(null)} onSent={onSent} />}
       {confirm.dialog}
     </section>
   )

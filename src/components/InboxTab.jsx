@@ -261,8 +261,8 @@ function TemplateComposer({ lead, onSent, onError }) {
   return (
     <div>
       <p className="text-[11.5px] font-bold text-hot bg-amber-wash rounded-lg px-3 py-2 mb-2">
-        ⏱️ 24-hour window closed — only approved templates can be sent until{' '}
-        {lead.name || 'the client'} replies again.
+        ⏱️ You can send free replies for 24 hours after the buyer's last message. That time's up —
+        pick one of your approved messages below until {lead.name || 'the client'} replies again.
       </p>
       {templates === null && <p className="text-[11.5px] text-ink-faint px-1">Loading templates…</p>}
       {templates?.length === 0 && (
@@ -403,11 +403,12 @@ function Conversation({ leadId, onBack }) {
         <div className="flex-1 min-w-0">
           <p className="text-white font-bold text-[14.5px] leading-tight truncate">{lead.name || lead.wa_id}</p>
           <p className="text-white/75 text-[11px] truncate">
-            +{lead.wa_id} · {lead.temp} · score {lead.score}
+            +{lead.wa_id} · {lead.temp}
           </p>
           {win.known && (
-            <p className={`text-[10px] font-bold ${win.open ? 'text-emerald-300' : 'text-amber-300'}`}>
-              {win.open ? `🟢 window open · ${fmtCountdown(win.msLeft)} left` : '🔒 window closed · templates only'}
+            <p className={`text-[10px] font-bold inline-flex items-center gap-1 ${win.open ? 'text-emerald-300' : 'text-amber-300'}`}>
+              {win.open ? `🟢 Free replies · ${fmtCountdown(win.msLeft)} left` : '🔒 Free-reply time is up'}
+              <InfoTip label="" text={glossary.SERVICE_WINDOW} align="left" />
             </p>
           )}
         </div>
@@ -423,7 +424,7 @@ function Conversation({ leadId, onBack }) {
             lead.ai_enabled ? 'bg-white text-brand-deep' : 'bg-white/20 text-white'
           }`}
         >
-          {lead.ai_enabled ? '🤖 AI on' : 'AI off'}
+          {lead.ai_enabled ? '🤖 Auto-reply' : '✋ You reply'}
         </button>
       </div>
 

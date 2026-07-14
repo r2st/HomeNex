@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { api } from '../api.js'
 import { inputCls, Field } from './ui.jsx'
+import { timezoneOptions, DEFAULT_TIMEZONE } from '../lib/timezones.js'
 
 // Must match LANGUAGES in server/db.js — the API rejects anything else.
 const LANGUAGES = [
@@ -15,21 +16,6 @@ const LANGUAGES = [
   ['pa', 'ਪੰਜਾਬੀ — Punjabi'],
   ['ml', 'മലയാളം — Malayalam'],
   ['or', 'ଓଡ଼ିଆ — Odia'],
-]
-
-// Where HomeNex agents (and the NRI-facing ones) actually work. The server accepts
-// any IANA zone, so an agent's stored zone is added below if it isn't in this list.
-const TIMEZONES = [
-  'Asia/Kolkata',
-  'Asia/Dubai',
-  'Asia/Singapore',
-  'Asia/Kathmandu',
-  'Asia/Colombo',
-  'Europe/London',
-  'America/New_York',
-  'America/Los_Angeles',
-  'Australia/Sydney',
-  'UTC',
 ]
 
 const NOTIFICATIONS = [
@@ -73,7 +59,7 @@ export default function PreferencesCard({ agent, onSaved }) {
   const [error, setError] = useState(null)
 
   const quietOn = agent?.quiet_hours_start != null
-  const zones = TIMEZONES.includes(agent?.timezone) ? TIMEZONES : [agent.timezone, ...TIMEZONES]
+  const zones = timezoneOptions(agent?.timezone)
 
   const save = async (patch) => {
     setBusy(true)
@@ -120,14 +106,14 @@ export default function PreferencesCard({ agent, onSaved }) {
 
       <Field label="Timezone">
         <select
-          value={agent?.timezone || 'Asia/Kolkata'}
+          value={agent?.timezone || DEFAULT_TIMEZONE}
           disabled={busy}
           onChange={(e) => save({ timezone: e.target.value })}
           className={inputCls}
         >
-          {zones.map((tz) => (
-            <option key={tz} value={tz}>
-              {tz.replace('_', ' ')}
+          {zones.map(({ value, label }) => (
+            <option key={value} value={value}>
+              {label}
             </option>
           ))}
         </select>
@@ -138,14 +124,17 @@ export default function PreferencesCard({ agent, onSaved }) {
 
       <div className="border-t border-line pt-3 space-y-3">
         <div>
-          <div className="text-[11px] font-bold text-ink-faint uppercase tracking-wide">Alerts</div>
+          <div className="flex items-center gap-2">
+            <div className="text-[11px] font-bold text-ink-faint uppercase tracking-wide">Alerts</div>
+            <span className="text-[9.5px] font-bold bg-amber-wash text-gold rounded-full px-2 py-0.5">Coming soon</span>
+          </div>
           <p className="text-[11px] text-ink-faint mt-0.5 leading-snug">
-            Saved to your account. Alert delivery is still rolling out — these choices apply once it lands.
+            We're still building alert delivery. You'll be able to choose these once it's ready.
           </p>
         </div>
 
         {NOTIFICATIONS.map(([key, label, sub]) => (
-          <div key={key} className="flex items-center gap-3">
+          <div key={key} className="flex items-center gap-3 opacity-60">
             <div className="min-w-0 flex-1">
               <p className="text-[13px] font-semibold text-ink">{label}</p>
               <p className="text-[11.5px] text-ink-faint leading-snug">{sub}</p>
@@ -153,8 +142,8 @@ export default function PreferencesCard({ agent, onSaved }) {
             <Toggle
               label={label}
               checked={agent?.[key] === 1}
-              disabled={busy}
-              onChange={(next) => save({ [key]: next })}
+              disabled
+              onChange={() => {}}
             />
           </div>
         ))}

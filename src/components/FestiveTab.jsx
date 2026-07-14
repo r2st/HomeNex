@@ -40,7 +40,7 @@ function SendSheet({ festival, onClose, onDone }) {
   return (
     <Sheet onClose={onClose} title={`${festival.emoji} ${festival.name} greeting`}>
       <form onSubmit={submit} className="space-y-3">
-        <Field label="Message ({name} becomes the client's name)">
+        <Field label="Message (each client's name fills in automatically)">
           <textarea value={message} onChange={(e) => setMessage(e.target.value)} rows={5} className={inputCls} />
         </Field>
         <div className="flex gap-2">

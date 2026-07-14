@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { api, usePoll, fmtTime, fmtAgo } from '../api.js'
 import { Chip } from './ui.jsx'
+import { visitStatusLabel } from '../lib/labels.js'
 import ContactsTab from './ContactsTab.jsx'
 import InsightsTab from './InsightsTab.jsx'
 import SettingsTab from './SettingsTab.jsx'
@@ -136,7 +137,7 @@ function SiteVisitsScreen({ onBack, onOpenLead }) {
                     v.status === s ? 'bg-ink text-cream border-ink' : 'bg-card text-ink-soft border-line'
                   }`}
                 >
-                  {s.replace('_', ' ')}
+                  {visitStatusLabel(s)}
                 </button>
               ))}
             </div>
@@ -151,7 +152,7 @@ const MENU = [
   { id: 'followups', icon: '⏰', label: 'Follow-ups', sub: 'Reminders to call leads back — never miss one' },
   { id: 'sitevisits', icon: '🏗️', label: 'Site visits', sub: 'Schedule and track property tours' },
   { id: 'team', icon: '🤝', label: 'Team', sub: 'Add teammates and share leads' },
-  { id: 'sources', icon: '🎯', label: 'Lead sources', sub: 'Connect portals, Lead Ads and click-to-WhatsApp' },
+  { id: 'sources', icon: '🎯', label: 'Lead sources', sub: 'Get leads from 99acres, Facebook ads and more' },
   { id: 'commissions', icon: '💰', label: 'Deals & commissions', sub: 'Track earnings, payments due and invoices' },
   { id: 'contacts', icon: '👥', label: 'Contacts', sub: 'Everyone who has messaged you, saved automatically' },
   { id: 'snippets', icon: '⚡', label: 'Snippets & media', sub: 'Saved replies, message templates and files to send' },
@@ -279,7 +280,7 @@ export default function MoreTab({ agent, onAgentUpdate, onOpenConversation, foll
               <span className="text-[22px]">🛡️</span>
               <div className="min-w-0 flex-1">
                 <p className="font-bold text-[14.5px] text-ink">Team &amp; admin</p>
-                <p className="text-[12px] text-ink-soft mt-0.5">Agents, admin access, WABA registrations</p>
+                <p className="text-[12px] text-ink-soft mt-0.5">Agents, admin access, WhatsApp number setup</p>
               </div>
               <span className="text-ink-faint text-lg">→</span>
             </div>

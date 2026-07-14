@@ -4,16 +4,14 @@ import { InfoTip } from './ui.jsx'
 import { glossary } from '../lib/glossary.js'
 
 // Card that surfaces the agent's WhatsApp Business number so they can share it.
-// If the agent hasn't configured their own number, shows a setup prompt instead.
-// `compact` collapses it to a small "WhatsApp connected" chip (used on Home, where
-// the full card previously dominated the screen); the full setup lives in Settings.
+// Setup is done *for* the agent by the HomeNex support team (they register the
+// number with Meta) — the agent never touches a developer dashboard or pastes a
+// technical id. So this card only ever displays the connected number + Share
+// actions, or a friendly "being set up" message while support finishes.
+// `compact` collapses it to a small "WhatsApp connected" chip (used on Home).
 export default function ShareNumberCard({ agent, compact = false }) {
   const [copied, setCopied] = useState(false)
-  const [showSetup, setShowSetup] = useState(false)
   const [expanded, setExpanded] = useState(false)
-  const [form, setForm] = useState({ wa_phone_number: '', wa_phone_number_id: '' })
-  const [saving, setSaving] = useState(false)
-  const [saveError, setSaveError] = useState(null)
   const [config, setConfig] = useState(null)
 
   useEffect(() => {
@@ -33,33 +31,6 @@ export default function ShareNumberCard({ agent, compact = false }) {
     }
     setCopied(true)
     setTimeout(() => setCopied(false), 1600)
-  }
-
-  const saveConfig = async (e) => {
-    e.preventDefault()
-    if (saving) return
-    setSaving(true)
-    setSaveError(null)
-    try {
-      const updated = await api.updatePhoneConfig({
-        wa_phone_number: form.wa_phone_number || null,
-        wa_phone_number_id: form.wa_phone_number_id || null,
-      })
-      setConfig({ wa_phone_number: updated.wa_phone_number, wa_phone_number_id: updated.wa_phone_number_id })
-      setShowSetup(false)
-    } catch (err) {
-      setSaveError(err.message)
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const openSetup = () => {
-    setForm({
-      wa_phone_number: config?.wa_phone_number || '',
-      wa_phone_number_id: config?.wa_phone_number_id || '',
-    })
-    setShowSetup(true)
   }
 
   // Compact chip for Home: once a number is connected, don't dominate the screen —
@@ -112,87 +83,29 @@ export default function ShareNumberCard({ agent, compact = false }) {
     )
   }
 
-  if (showSetup) {
-    return (
-      <section className="mt-6 bg-card rounded-2xl border border-line shadow-card p-5 rise rise-2">
-        <div className="flex items-center gap-2">
-          <span className="text-[18px] leading-none">+</span>
-          <p className="text-[11px] font-bold tracking-[0.18em] text-brand">CONFIGURE YOUR WHATSAPP NUMBER</p>
-        </div>
-        <p className="text-[12.5px] text-ink-soft leading-relaxed mt-2">
-          Enter your WhatsApp Business number and its Meta phone_number_id from the
-          Meta developer dashboard.
-        </p>
-        <form onSubmit={saveConfig} className="mt-3.5 space-y-3">
-          <input
-            type="tel"
-            value={form.wa_phone_number}
-            onChange={(e) => setForm((s) => ({ ...s, wa_phone_number: e.target.value }))}
-            placeholder="WhatsApp number, e.g. +919812345678"
-            className="w-full bg-white border border-line rounded-xl px-3.5 py-2.5 text-[13px] outline-none focus:border-brand/60"
-          />
-          <input
-            type="text"
-            value={form.wa_phone_number_id}
-            onChange={(e) => setForm((s) => ({ ...s, wa_phone_number_id: e.target.value }))}
-            placeholder="Meta phone_number_id"
-            className="w-full bg-white border border-line rounded-xl px-3.5 py-2.5 text-[13px] outline-none focus:border-brand/60"
-          />
-          {saveError && (
-            <p className="text-[12px] text-hot bg-amber-wash rounded-xl px-3.5 py-2.5">{saveError}</p>
-          )}
-          <div className="flex gap-2">
-            <button
-              type="submit"
-              disabled={saving}
-              className="flex-1 bg-brand text-white font-bold text-[13px] rounded-full py-2.5 shadow-card active:scale-[0.99] transition disabled:opacity-50"
-            >
-              {saving ? 'Saving...' : 'Save'}
-            </button>
-            <button
-              type="button"
-              onClick={() => { setShowSetup(false); setSaveError(null) }}
-              className="px-4 text-[13px] font-bold text-ink-soft rounded-full py-2.5 bg-ink/5 active:scale-[0.99] transition"
-            >
-              Cancel
-            </button>
-          </div>
-        </form>
-      </section>
-    )
-  }
-
+  // No number yet — support is still connecting it. Reassure, don't ask the agent to
+  // configure anything technical themselves.
   if (!waNumber) {
     return (
       <section className="mt-6 bg-card rounded-2xl border border-line shadow-card p-5 rise rise-2">
         <div className="flex items-center gap-2">
-          <span className="text-[18px] leading-none">+</span>
-          <p className="text-[11px] font-bold tracking-[0.18em] text-brand">SET UP YOUR WHATSAPP NUMBER</p>
+          <span className="text-[18px] leading-none">🟡</span>
+          <p className="text-[11px] font-bold tracking-[0.18em] text-brand">WHATSAPP NUMBER BEING SET UP</p>
         </div>
         <p className="text-[12.5px] text-ink-soft leading-relaxed mt-2">
-          Configure your own WhatsApp Business number so clients message you directly
-          and HomeNex qualifies every lead automatically.
+          Our team is connecting your WhatsApp Business number for you. You'll get an email the
+          moment it's live — then every buyer who messages it lands here, qualified automatically.
         </p>
-        <button
-          onClick={openSetup}
-          className="mt-3 flex items-center justify-center gap-2 w-full rounded-full bg-brand text-white font-bold text-[13.5px] py-2.5 shadow-card active:scale-[0.99] transition"
-        >
-          Configure number
-        </button>
       </section>
     )
   }
 
   return (
     <section className="mt-6 bg-card rounded-2xl border border-line shadow-card p-5 rise rise-2">
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <span className="text-[18px] leading-none">+</span>
-          <p className="text-[11px] font-bold tracking-[0.18em] text-brand">YOUR WHATSAPP BUSINESS NUMBER</p>
-        </div>
-        <button onClick={openSetup} className="text-[11px] font-semibold text-ink-faint underline underline-offset-2">
-          Edit
-        </button>
+      <div className="flex items-center gap-2">
+        <span className="text-[18px] leading-none">+</span>
+        <p className="text-[11px] font-bold tracking-[0.18em] text-brand">YOUR WHATSAPP BUSINESS NUMBER</p>
+        <InfoTip label="" text={glossary.WABA} />
       </div>
       <p className="text-[12.5px] text-ink-soft leading-relaxed mt-2">
         Share this number with your clients. When they message it, HomeNex recognises them

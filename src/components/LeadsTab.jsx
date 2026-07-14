@@ -62,7 +62,7 @@ function LeadCard({ lead, onOpen, onDragStart, onDragEnd, dragging }) {
           </span>
         ) : (
           <span className={`text-[10px] font-bold border rounded-full px-2 py-0.5 ${TEMP_STYLE[lead.temp] || TEMP_STYLE.Cold}`}>
-            {lead.temp === 'Hot' ? '🔥' : lead.temp === 'Warm' ? '☀️' : '❄️'} {lead.score ?? 0}
+            {lead.temp === 'Hot' ? '🔥 Hot' : lead.temp === 'Warm' ? '☀️ Warm' : '❄️ Cold'}
           </span>
         )}
         <span className="text-[10.5px] text-ink-faint">{fmtAgo(lead.last_at || lead.updated_at)}</span>
@@ -159,7 +159,9 @@ function AnalyticsPanel({ pipeline }) {
 // onto another column to move stages (dropping on Lost asks for a reason first).
 export default function LeadsTab({ onOpenConversation }) {
   const [pipeline, setPipeline] = useState('buy_primary')
-  const [view, setView] = useState('board') // board | list | stats
+  // Default to the tap-friendly List — the drag-only board is fiddly on a phone for
+  // non-tech users, so they start on List and can opt into Board.
+  const [view, setView] = useState('list') // board | list | stats
   const [selectedId, setSelectedId] = useState(null)
   const [refreshKey, setRefreshKey] = useState(0)
   const [drag, setDrag] = useState(null) // { leadId, from }
