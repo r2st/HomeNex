@@ -4,7 +4,7 @@ import { api, setToken } from '../api.js'
 export default function AuthScreen({ onAuthed }) {
   const [mode, setMode] = useState('signup')
   // `cc` is the editable country code (defaults to +91); `phone` holds the local part.
-  const [form, setForm] = useState({ name: '', cc: '+91', phone: '', password: '', waCC: '+91', waPhone: '' })
+  const [form, setForm] = useState({ name: '', cc: '+91', phone: '', password: '' })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
 
@@ -13,13 +13,8 @@ export default function AuthScreen({ onAuthed }) {
     const digits = v.replace(/\D/g, '').slice(0, 4)
     setForm((s) => ({ ...s, cc: '+' + digits }))
   }
-  const setWaCC = (v) => {
-    const digits = v.replace(/\D/g, '').slice(0, 4)
-    setForm((s) => ({ ...s, waCC: '+' + digits }))
-  }
   // Local part: digits only, up to 12 (covers longer international numbers).
   const setPhone = (v) => setForm((s) => ({ ...s, phone: v.replace(/\D/g, '').slice(0, 12) }))
-  const setWaPhone = (v) => setForm((s) => ({ ...s, waPhone: v.replace(/\D/g, '').slice(0, 12) }))
 
   const submit = async (e) => {
     e.preventDefault()
@@ -31,7 +26,6 @@ export default function AuthScreen({ onAuthed }) {
         phone: (form.cc || '+91') + form.phone,
         password: form.password,
         ...(mode === 'signup' ? { name: form.name } : {}),
-        ...(mode === 'signup' && form.waPhone ? { wa_phone_number: (form.waCC || '+91') + form.waPhone } : {}),
       }
       const { token, agent } = await (mode === 'signup' ? api.signup(payload) : api.login(payload))
       setToken(token)
@@ -59,8 +53,8 @@ export default function AuthScreen({ onAuthed }) {
         </h1>
         <p className="text-[13.5px] text-ink-soft mt-2">
           {mode === 'signup'
-            ? 'Register your WhatsApp number — every buyer who messages it lands here, qualified by AI.'
-            : 'Log in with your WhatsApp number.'}
+            ? 'Register your WhatsApp Business number — every buyer who messages it lands here, qualified by AI.'
+            : 'Log in with your WhatsApp Business number.'}
         </p>
       </div>
 
@@ -81,7 +75,7 @@ export default function AuthScreen({ onAuthed }) {
         )}
 
         <label className="block">
-          <span className="text-[11.5px] font-bold text-ink-soft">WhatsApp Number</span>
+          <span className="text-[11.5px] font-bold text-ink-soft">WhatsApp Business Number</span>
           <div className="mt-1 flex items-stretch bg-white border border-line rounded-2xl overflow-hidden focus-within:border-brand/60">
             <input
               type="text"
@@ -121,7 +115,7 @@ export default function AuthScreen({ onAuthed }) {
             />
           </div>
           <span className="text-[11px] text-ink-faint mt-1 block">
-            Your personal WhatsApp number (used as your login).
+            The WhatsApp Business number buyers message — also used as your login.
           </span>
         </label>
 
@@ -137,48 +131,6 @@ export default function AuthScreen({ onAuthed }) {
             className={inputCls}
           />
         </label>
-
-        {mode === 'signup' && (
-          <div className="block">
-            <div className="flex items-center gap-2">
-              <span className="text-[11.5px] font-bold text-ink-soft">WhatsApp Business Number</span>
-              <span className="text-[10px] text-ink-faint bg-cream px-2 py-0.5 rounded-full">Optional</span>
-            </div>
-            <div className="mt-1 flex items-stretch bg-white border border-line rounded-2xl overflow-hidden focus-within:border-brand/60">
-              <input
-                type="text"
-                inputMode="tel"
-                list="country-codes-wa"
-                value={form.waCC}
-                onChange={(e) => setWaCC(e.target.value)}
-                placeholder="+91"
-                aria-label="Business country code"
-                className="w-[4.5rem] px-3 py-3.5 text-[14px] font-semibold text-ink-soft outline-none bg-cream border-r border-line tracking-wide"
-              />
-              <datalist id="country-codes-wa">
-                <option value="+91">India</option>
-                <option value="+1">USA / Canada</option>
-                <option value="+44">UK</option>
-                <option value="+971">UAE</option>
-              </datalist>
-              <input
-                type="tel"
-                inputMode="numeric"
-                value={form.waPhone}
-                onChange={(e) => setWaPhone(e.target.value)}
-                placeholder="Separate number for WA Business"
-                className="flex-1 px-4 py-3.5 text-[14px] outline-none bg-white tracking-wide"
-              />
-            </div>
-            <div className="mt-1.5 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
-              <p className="text-[11px] text-amber-800 leading-snug">
-                This number will be registered as your WhatsApp Business number.
-                Do <strong>not</strong> use your personal WhatsApp number — it must be a separate line.
-                You can add this later from Settings.
-              </p>
-            </div>
-          </div>
-        )}
 
         {error && (
           <p className="text-[12.5px] text-hot bg-amber-wash rounded-xl px-4 py-3">{error}</p>
