@@ -191,8 +191,22 @@ import {
   SYNDICATION_PORTALS,
 } from './leadSources.js'
 import { fetchLeadgenData } from './whatsapp.js'
+import { dbPing, closePool } from './db.js'
+import { securityHeaders, cors, requestLogger, rateLimit } from './middleware.js'
+import { validateEnv } from './env.js'
 
 const { PORT = 8787, WHATSAPP_VERIFY_TOKEN = 'homenex-verify', WHATSAPP_APP_SECRET } = process.env
+
+// Fail fast on a misconfigured production deploy; only warn in dev/test.
+const envCheck = validateEnv(process.env)
+for (const w of envCheck.warnings) console.warn('⚠ ' + w)
+if (!envCheck.ok) {
+  for (const e of envCheck.errors) console.error('✖ config error: ' + e)
+  if (process.env.NODE_ENV === 'production') {
+    console.error('Refusing to start with an invalid production configuration.')
+    process.exit(1)
+  }
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -236,6 +250,21 @@ function saveUpload(dataBase64, filename, mime) {
   return { url: `${PUBLIC_BASE_URL}/uploads/${stored}`, filename: filename || stored, mime: mime || null, size: buf.length }
 }
 
+// nginx sits in front in production; trust one proxy hop so req.ip / rate-limit keys
+// and secure-cookie logic see the real client address, not the proxy's.
+app.set('trust proxy', 1)
+// Don't advertise Express (minor fingerprinting reduction).
+app.disable('x-powered-by')
+
+// Cross-cutting middleware runs before any route: safe security headers on every
+// response, optional CORS (off unless CORS_ORIGIN is set), and a compact access log
+// (silent under test / LOG_REQUESTS=0).
+app.use(securityHeaders)
+app.use(cors())
+if (process.env.NODE_ENV !== 'test' && process.env.LOG_REQUESTS !== '0') {
+  app.use(requestLogger())
+}
+
 app.use(
   express.json({
     limit: '25mb', // media library uploads arrive as base64 JSON
@@ -245,8 +274,35 @@ app.use(
   }),
 )
 
+// Rate limits on the routes an anonymous caller can reach. Auth is tight (blunts
+// credential stuffing); the public ingest/webhook endpoints get a higher ceiling so
+// a legitimate portal/Meta burst isn't dropped. Disabled under test so the suite's
+// rapid signups aren't throttled. Kept as handles so shutdown can stop their sweeps.
+const rateLimiters = []
+if (process.env.NODE_ENV !== 'test') {
+  const authLimiter = rateLimit({ windowMs: 60_000, max: 20, message: 'Too many attempts — please wait a minute and try again.' })
+  const ingestLimiter = rateLimit({ windowMs: 60_000, max: 240 })
+  rateLimiters.push(authLimiter, ingestLimiter)
+  app.use('/api/auth', authLimiter)
+  app.use('/webhook', ingestLimiter)
+  app.use('/ingest', ingestLimiter)
+}
+
 // Publicly serve uploaded media so WhatsApp (and the dashboard) can fetch it by URL.
 app.use('/uploads', express.static(UPLOAD_DIR))
+
+// Lightweight liveness/readiness probe for load balancers and uptime monitors.
+// No auth, no external Graph API call — just "is the process up and can it reach the
+// database". 200 when healthy, 503 when the DB is unreachable so an orchestrator can
+// pull the node out of rotation. (Rich WhatsApp/AI status stays on /api/health.)
+app.get('/healthz', (_req, res) => {
+  dbPing()
+    .then(() => res.json({ ok: true, db: true, uptime: Math.round(process.uptime()) }))
+    .catch((err) => {
+      console.error('healthz db ping failed', err.message)
+      res.status(503).json({ ok: false, db: false })
+    })
+})
 
 function verifySignature(req) {
   if (!WHATSAPP_APP_SECRET) return true // signature check requires the app secret
@@ -1949,15 +2005,28 @@ const adminDist = path.join(__dirname, '..', 'admin', 'dist')
 app.use('/admin', express.static(adminDist))
 app.get(/^\/admin(\/.*)?$/, (_req, res) => res.sendFile(path.join(adminDist, 'index.html')))
 
+// Unknown /api routes must return JSON, not the SPA's index.html — otherwise a
+// client typo silently gets a 200 HTML page and a confusing JSON-parse failure.
+app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found', code: 'NOT_FOUND' }))
+
 // Serve the built dashboard so one process hosts everything in production.
 const dist = path.join(__dirname, '..', 'dist')
 app.use(express.static(dist))
 app.get(/^\/(?!api|webhook|admin).*/, (_req, res) => res.sendFile(path.join(dist, 'index.html')))
 
-// Last-resort error handler so unexpected DB failures return JSON, not an HTML stack.
+// Last-resort error handler. Malformed JSON and over-limit bodies are the client's
+// fault (400/413), not a server failure — map them so callers get an actionable code
+// instead of a generic 500. Everything else is an unexpected server error.
 app.use((err, _req, res, _next) => {
+  if (res.headersSent) return
+  if (err.type === 'entity.parse.failed' || err instanceof SyntaxError) {
+    return res.status(400).json({ error: 'Invalid request body — expected valid JSON.', code: 'BAD_JSON' })
+  }
+  if (err.type === 'entity.too.large') {
+    return res.status(413).json({ error: 'That upload is too large.', code: 'PAYLOAD_TOO_LARGE' })
+  }
   console.error('unhandled error', err)
-  if (!res.headersSent) res.status(500).json({ error: 'internal error' })
+  res.status(500).json({ error: 'Something went wrong on our side. Please try again.', code: 'INTERNAL' })
 })
 
 // Migrations must be applied before any request touches the schema.
@@ -1985,19 +2054,60 @@ export async function deliverDueFestiveSchedules() {
 
 // Start listening only when run directly (`node index.js`), not when imported by tests.
 if (process.env.NODE_ENV !== 'test') {
+  // A rejected promise or thrown error with no local handler must be logged, never
+  // swallowed silently. We keep running on an unhandled rejection (usually one bad
+  // request, not a corrupt process) but treat an uncaught exception as fatal and shut
+  // down cleanly — the process manager (systemd) restarts us into a known-good state.
+  process.on('unhandledRejection', (reason) => {
+    console.error('unhandledRejection:', reason instanceof Error ? reason.stack : reason)
+  })
+  process.on('uncaughtException', (err) => {
+    console.error('uncaughtException:', err.stack || err)
+    shutdown('uncaughtException', 1)
+  })
+
   // One tick a minute drives every background job: festive delivery plus the
   // scheduler's due jobs (service-window watch, hot-lead detection, stale-lead
   // follow-ups, score decay, site-visit reminders, commission sweep).
-  setInterval(() => {
+  const jobTimer = setInterval(() => {
     deliverDueFestiveSchedules().catch((err) => console.error('festive scheduler error', err))
     runDueJobs().catch((err) => console.error('scheduler error', err))
   }, 60_000)
-  app.listen(PORT, () => {
+
+  const server = app.listen(PORT, () => {
     console.log(`HomeNex server on :${PORT}`)
     if (!whatsappConfigured()) console.log('⚠ WhatsApp credentials missing — dashboard works, sends disabled')
     if (!aiConfigured()) console.log('⚠ OPENROUTER_API_KEY missing — AI replies/extraction disabled')
     if (!WHATSAPP_APP_SECRET) console.log('⚠ WHATSAPP_APP_SECRET missing — webhook signature check disabled')
   })
+
+  // Graceful shutdown: stop the background jobs and rate-limit sweeps, stop accepting
+  // new connections, drain the Postgres pool, then exit. A backstop timer force-exits
+  // if a hung connection won't drain, so a deploy is never blocked indefinitely.
+  let shuttingDown = false
+  async function shutdown(signal, code = 0) {
+    if (shuttingDown) return
+    shuttingDown = true
+    console.log(`\n${signal} received — shutting down gracefully…`)
+    clearInterval(jobTimer)
+    for (const limiter of rateLimiters) limiter.stop?.()
+    const force = setTimeout(() => {
+      console.error('shutdown timed out — forcing exit')
+      process.exit(code || 1)
+    }, 10_000)
+    force.unref()
+    server.close(async () => {
+      try {
+        await closePool()
+      } catch (err) {
+        console.error('error closing pool', err.message)
+      }
+      clearTimeout(force)
+      process.exit(code)
+    })
+  }
+  process.on('SIGTERM', () => shutdown('SIGTERM'))
+  process.on('SIGINT', () => shutdown('SIGINT'))
 }
 
 export { app }

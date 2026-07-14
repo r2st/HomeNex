@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { friendlyMessage } from './lib/friendlyError.js'
 
 const TOKEN_KEY = 'homenex-token'
 export const getToken = () => localStorage.getItem(TOKEN_KEY)
@@ -11,7 +12,14 @@ async function j(res) {
   }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
-    throw new Error(body.error || `HTTP ${res.status}`)
+    // Throw an error whose `.message` is already agent-friendly (so any component
+    // that shows err.message is safe), while keeping the raw pieces for callers that
+    // want to branch on them (err.status, err.code, err.serverMessage).
+    const err = new Error(friendlyMessage({ status: res.status, serverMessage: body.error }))
+    err.status = res.status
+    err.code = body.code
+    err.serverMessage = body.error
+    throw err
   }
   return res.json()
 }

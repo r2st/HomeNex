@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { api, usePoll } from '../api.js'
 import { paiseToDisplay, lakhsToPaise } from '../money.js'
-import { Chip, Sheet, inputCls } from './ui.jsx'
+import { Chip, Sheet, inputCls, LoadingRows } from './ui.jsx'
 import PropertyDetail, { PropertyForm, STATUS_LABEL } from './PropertyDetail.jsx'
 import { activeFilterCount, clearedFilters } from '../lib/propertyFilters.js'
 
@@ -167,6 +167,8 @@ export default function PropertiesTab({ onOpenLead }) {
           )}
         </div>
       )}
+
+      {!properties && <LoadingRows rows={4} />}
 
       <div className="space-y-2.5 mt-4">
         {(properties || []).map((p, i) => (

@@ -74,6 +74,13 @@ export async function closePool() {
   await pool.end()
 }
 
+// Cheap liveness probe for /healthz — confirms a client can be checked out and the
+// database answers. Throws if the pool is exhausted or Postgres is unreachable.
+export async function dbPing() {
+  const { rows } = await q('SELECT 1 AS ok')
+  return rows[0]?.ok === 1
+}
+
 // Build "SET col = $n" fragments from an allowlisted field object. JSONB columns
 // need their JS values stringified or pg would send arrays as postgres arrays.
 function buildSet(allowed, fields, startIndex = 1) {

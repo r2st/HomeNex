@@ -1,5 +1,5 @@
 // Small shared UI primitives for the dashboard tabs.
-import { useState } from 'react'
+import { useState, useCallback, Component } from 'react'
 
 // Tappable ⓘ that reveals a one-sentence plain-language explanation. Used to
 // demystify jargon (RERA, WhatsApp Business / WABA) for first-time agents without
@@ -150,4 +150,130 @@ export function Field({ label, children }) {
       {children}
     </label>
   )
+}
+
+// Styled confirm dialog for destructive actions — replaces the browser's jarring
+// window.confirm(), which is easy to mis-tap on a phone and doesn't match the app.
+// The destructive button is red and the exact object is named in the title so an
+// agent always knows what they're about to delete.
+export function Confirm({ title, message, confirmLabel = 'Delete', cancelLabel = 'Cancel', danger = true, onConfirm, onCancel, busy = false }) {
+  return (
+    <div className="fixed inset-0 z-[80] flex items-end sm:items-center justify-center">
+      <div className="absolute inset-0 bg-ink/50 backdrop-blur-[2px]" onClick={busy ? undefined : onCancel} />
+      <div
+        role="alertdialog"
+        aria-modal="true"
+        className="relative w-full max-w-[420px] bg-cream rounded-t-3xl sm:rounded-3xl shadow-float p-5 pb-[max(env(safe-area-inset-bottom),20px)] slide-in"
+      >
+        <p className="font-display font-semibold text-[17px] text-ink">{title}</p>
+        {message && <p className="text-[13px] text-ink-soft mt-1.5 leading-snug">{message}</p>}
+        <div className="flex gap-2.5 mt-5">
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            className="flex-1 rounded-xl py-2.5 text-[14px] font-bold bg-card text-ink-soft border border-line active:scale-95 transition disabled:opacity-50"
+          >
+            {cancelLabel}
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={busy}
+            className={`flex-1 rounded-xl py-2.5 text-[14px] font-bold text-white active:scale-95 transition disabled:opacity-60 ${
+              danger ? 'bg-hot' : 'bg-brand'
+            }`}
+          >
+            {busy ? 'Please wait…' : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Hook that turns a destructive action into a two-step confirm without every screen
+// wiring its own modal state. Usage:
+//   const confirm = useConfirm()
+//   ...
+//   <button onClick={() => confirm({ title: 'Delete "X"?', onConfirm: doDelete })}>Delete</button>
+//   {confirm.dialog}
+export function useConfirm() {
+  const [state, setState] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const open = useCallback((opts) => setState(opts), [])
+  const close = useCallback(() => {
+    setState(null)
+    setBusy(false)
+  }, [])
+  const run = useCallback(async () => {
+    if (!state?.onConfirm) return close()
+    try {
+      setBusy(true)
+      await state.onConfirm()
+      close()
+    } catch {
+      // Leave the dialog open on failure; the calling screen surfaces the error.
+      setBusy(false)
+    }
+  }, [state, close])
+
+  const fn = useCallback((opts) => open(opts), [open])
+  fn.dialog = state ? (
+    <Confirm {...state} busy={busy} onConfirm={run} onCancel={close} />
+  ) : null
+  return fn
+}
+
+// Loading skeleton bars — shown while a list/detail is loading so the screen never
+// flashes empty (which reads as "nothing here" instead of "loading").
+export function Skeleton({ className = '' }) {
+  return <div className={`animate-pulse bg-line/60 rounded-lg ${className}`} />
+}
+
+export function LoadingRows({ rows = 4 }) {
+  return (
+    <div className="space-y-2.5 px-1" aria-busy="true" aria-label="Loading">
+      {Array.from({ length: rows }).map((_, i) => (
+        <div key={i} className="flex items-center gap-3 bg-card border border-line rounded-2xl p-3">
+          <Skeleton className="w-11 h-11 rounded-full" />
+          <div className="flex-1 space-y-2">
+            <Skeleton className="h-3 w-1/2" />
+            <Skeleton className="h-2.5 w-3/4" />
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// App-level error boundary: a rendering crash shows a friendly recovery card instead
+// of a blank white screen, and the agent can retry without losing the whole session.
+export class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props)
+    this.state = { failed: false }
+  }
+  static getDerivedStateFromError() {
+    return { failed: true }
+  }
+  componentDidCatch(err, info) {
+    console.error('UI crash caught by ErrorBoundary:', err, info?.componentStack)
+  }
+  render() {
+    if (!this.state.failed) return this.props.children
+    return (
+      <div className="phone flex flex-col items-center justify-center text-center px-8 gap-3">
+        <div className="text-4xl">🙏</div>
+        <p className="font-display font-semibold text-[17px] text-ink">Something went wrong</p>
+        <p className="text-[13px] text-ink-soft leading-snug">
+          The app hit an unexpected problem. Your data is safe — please reload to continue.
+        </p>
+        <button
+          onClick={() => window.location.reload()}
+          className="mt-2 rounded-xl px-5 py-2.5 text-[14px] font-bold text-white bg-brand active:scale-95 transition"
+        >
+          Reload
+        </button>
+      </div>
+    )
+  }
 }

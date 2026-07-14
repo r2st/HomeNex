@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { api, fmtAgo } from '../api.js'
-import { Chip, Field, inputCls, Avatar } from './ui.jsx'
+import { Chip, Field, inputCls, Avatar, useConfirm } from './ui.jsx'
 
 const STRATEGIES = [
   { id: 'manual', label: 'Manual', sub: 'A manager assigns every lead' },
@@ -117,6 +117,15 @@ function Members({ ctx, reload }) {
   const [phone, setPhone] = useState('')
   const [role, setRole] = useState('agent')
   const [error, setError] = useState(null)
+  const confirm = useConfirm()
+
+  const removeMember = (m) =>
+    confirm({
+      title: `Remove ${m.name || 'this member'} from the team?`,
+      message: 'Their leads stay with them and they become a solo agent.',
+      confirmLabel: 'Remove',
+      onConfirm: () => act(() => api.removeTeamMember(m.agent_id)),
+    })
 
   const invite = async () => {
     setError(null)
@@ -175,7 +184,7 @@ function Members({ ctx, reload }) {
                 >
                   {m.accepts_leads === 0 ? 'enable' : 'pause'}
                 </button>
-                <button onClick={() => act(() => api.removeTeamMember(m.agent_id))} className="text-[10px] font-bold text-hot">
+                <button onClick={() => removeMember(m)} className="text-[10px] font-bold text-hot">
                   remove
                 </button>
               </div>
@@ -228,6 +237,7 @@ function Members({ ctx, reload }) {
           </div>
         </div>
       )}
+      {confirm.dialog}
     </div>
   )
 }
@@ -361,6 +371,7 @@ function Board({ reload }) {
 function Settings({ ctx, reload }) {
   const [name, setName] = useState(ctx.team.name)
   const [error, setError] = useState(null)
+  const confirm = useConfirm()
 
   const save = async (fields) => {
     setError(null)
@@ -372,15 +383,20 @@ function Settings({ ctx, reload }) {
     }
   }
 
-  const disband = async () => {
-    if (!window.confirm('Disband this team? Members become solo agents; their leads stay with them.')) return
-    try {
-      await api.deleteTeam()
-      reload()
-    } catch (e) {
-      setError(e.message)
-    }
-  }
+  const disband = () =>
+    confirm({
+      title: 'Disband this team?',
+      message: 'Members become solo agents; their leads stay with them. This cannot be undone.',
+      confirmLabel: 'Disband team',
+      onConfirm: async () => {
+        try {
+          await api.deleteTeam()
+          reload()
+        } catch (e) {
+          setError(e.message)
+        }
+      },
+    })
 
   return (
     <div className="mt-4 space-y-4">
@@ -419,6 +435,7 @@ function Settings({ ctx, reload }) {
         Disband team
       </button>
       <Err error={error} />
+      {confirm.dialog}
     </div>
   )
 }

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { api, usePoll, fmtAgo } from '../api.js'
-import { Avatar, SlideOver, inputCls } from './ui.jsx'
+import { Avatar, SlideOver, inputCls, useConfirm, LoadingRows } from './ui.jsx'
 
 const SOURCE_LABEL = {
   whatsapp_inbound: '💬 WhatsApp',
@@ -116,6 +116,7 @@ function GroupsPanel() {
   const [groups, setGroups] = useState(null)
   const [busy, setBusy] = useState(false)
   const [flash, setFlash] = useState(null)
+  const confirm = useConfirm()
   const load = () => api.groups().then(setGroups).catch(() => setGroups([]))
 
   const toggle = () => {
@@ -150,11 +151,15 @@ function GroupsPanel() {
     setTimeout(() => setFlash(null), 3500)
   }
 
-  const remove = async (g) => {
-    if (!window.confirm(`Delete group "${g.name}"?`)) return
-    await api.deleteGroup(g.id).catch(() => {})
-    load()
-  }
+  const remove = (g) =>
+    confirm({
+      title: `Delete group "${g.name}"?`,
+      message: 'The group is removed. The contacts in it are not deleted.',
+      onConfirm: async () => {
+        await api.deleteGroup(g.id).catch(() => {})
+        load()
+      },
+    })
 
   return (
     <section className="mt-4 bg-card rounded-2xl border border-line shadow-card overflow-hidden">
@@ -194,6 +199,7 @@ function GroupsPanel() {
           </div>
         </div>
       )}
+      {confirm.dialog}
     </section>
   )
 }
@@ -236,6 +242,8 @@ export default function ContactsTab({ onOpenLead }) {
           </p>
         </div>
       )}
+
+      {!contacts && <LoadingRows rows={5} />}
 
       <div className="space-y-2.5 mt-4">
         {(contacts || []).map((c, i) => (

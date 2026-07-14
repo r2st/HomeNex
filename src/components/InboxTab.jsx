@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, usePoll, fmtTime, fmtAgo, parseTs } from '../api.js'
 import { Sheet, Field, inputCls, InfoTip } from './ui.jsx'
+import { glossary } from '../lib/glossary.js'
 import { replyModeBadge, REPLY_MODE_HELP } from '../lib/replyMode.js'
 
 // Colour classes for the reply-mode badge tones (keeps green/white theme).
@@ -283,10 +284,7 @@ function TemplateComposer({ lead, onSent, onError }) {
                       <span className="text-[9px] font-bold bg-brand-wash text-brand-deep rounded-full px-1.5 py-0.5">
                         RERA auto
                       </span>
-                      <InfoTip
-                        label=""
-                        text="RERA is the real-estate regulator. Marketing messages must carry your RERA registration number — HomeNex adds it automatically."
-                      />
+                      <InfoTip label="" text={glossary.RERA} />
                     </span>
                   )}
                   {(t.is_locked || t.meta_status === 'approved') && <span className="text-[10px]">🔒</span>}

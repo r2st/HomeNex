@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api.js'
 import { InfoTip } from './ui.jsx'
+import { glossary } from '../lib/glossary.js'
 
 // Card that surfaces the agent's WhatsApp Business number so they can share it.
 // If the agent hasn't configured their own number, shows a setup prompt instead.
@@ -71,10 +72,7 @@ export default function ShareNumberCard({ agent, compact = false }) {
         <div className="flex items-center gap-2 bg-brand-wash border border-brand/20 rounded-2xl px-4 py-2.5">
           <span className="w-2 h-2 rounded-full bg-brand shrink-0" />
           <p className="text-[12.5px] font-bold text-brand-deep">WhatsApp connected</p>
-          <InfoTip
-            label=""
-            text="Your WhatsApp Business (WABA) number is live. Buyers who message it are auto-captured as leads and get instant AI replies."
-          />
+          <InfoTip label="" text={glossary.WABA} />
           <span className="text-[12px] text-ink-soft tabular-nums truncate">{waNumber}</span>
           <button
             onClick={() => setExpanded((v) => !v)}

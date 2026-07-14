@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { api, usePoll, fmtAgo } from '../api.js'
 import { paiseToDisplay, lakhsToPaise, paiseToLakhs } from '../money.js'
-import { SlideOver, Sheet, Chip, Field, inputCls } from './ui.jsx'
+import { SlideOver, Sheet, Chip, Field, inputCls, useConfirm, InfoTip } from './ui.jsx'
+import { glossary } from '../lib/glossary.js'
 
 const STATUS_STYLE = {
   available: 'bg-brand-wash text-brand-deep border-brand/30',
@@ -311,8 +312,10 @@ function SyndicateCard({ property }) {
 
   return (
     <section className="bg-card rounded-2xl border border-line shadow-card p-4">
-      <p className="text-[10.5px] font-bold tracking-[0.18em] text-brand mb-1">SYNDICATE LISTING</p>
-      <p className="text-[11.5px] text-ink-faint mb-3">Compose once — export portal-ready content for each portal.</p>
+      <p className="text-[10.5px] font-bold tracking-[0.18em] text-brand mb-1 flex items-center gap-1.5">
+        POST TO PORTALS <InfoTip label="" text={glossary.SYNDICATION} align="left" />
+      </p>
+      <p className="text-[11.5px] text-ink-faint mb-3">Write it once — get ready-to-paste content for 99acres, MagicBricks, Housing and more.</p>
       <div className="flex gap-1.5 flex-wrap mb-3">
         {data.portals.map((p) => (
           <Chip key={p} active={portal === p} onClick={() => setPortal(p)}>{PORTAL_LABELS[p] || p}</Chip>
@@ -365,6 +368,7 @@ export default function PropertyDetail({ propertyId, onClose, onChanged, onOpenL
   const [sending, setSending] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
+  const confirm = useConfirm()
 
   if (!property)
     return (
@@ -388,12 +392,17 @@ export default function PropertyDetail({ propertyId, onClose, onChanged, onOpenL
     }
   }
 
-  const remove = async () => {
-    if (!window.confirm(`Delete "${property.title}"?`)) return
-    await api.deleteProperty(property.id)
-    onChanged?.()
-    onClose()
-  }
+  const remove = () =>
+    confirm({
+      title: `Delete "${property.title}"?`,
+      message: 'This removes the property from your inventory. This cannot be undone.',
+      confirmLabel: 'Delete property',
+      onConfirm: async () => {
+        await api.deleteProperty(property.id)
+        onChanged?.()
+        onClose()
+      },
+    })
 
   const specs = [
     ['Type', property.property_type],
@@ -481,6 +490,7 @@ export default function PropertyDetail({ propertyId, onClose, onChanged, onOpenL
       </div>
 
       {sending && <SendToChatSheet property={property} onClose={() => setSending(false)} />}
+      {confirm.dialog}
     </SlideOver>
   )
 }

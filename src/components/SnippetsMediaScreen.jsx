@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api.js'
-import { Chip, Field, inputCls } from './ui.jsx'
+import { Chip, Field, inputCls, useConfirm } from './ui.jsx'
 
 const KIND_ICON = { brochure: '📄', floor_plan: '📐', photo: '🖼️', video: '🎬', document: '📎' }
 const varsHint = 'Use {{name}}, {{property}}, {{visit_time}} as fill-in variables.'
@@ -13,6 +13,7 @@ function MediaManager() {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
   const fileRef = useRef(null)
+  const confirm = useConfirm()
 
   const load = () => api.media().then(setAssets).catch(() => setAssets([]))
   useEffect(() => {
@@ -47,10 +48,15 @@ function MediaManager() {
     }
   }
 
-  const remove = async (a) => {
-    await api.deleteMedia(a.id)
-    await load()
-  }
+  const remove = (a) =>
+    confirm({
+      title: `Delete "${a.title || 'this file'}"?`,
+      message: 'It will be removed from your media library.',
+      onConfirm: async () => {
+        await api.deleteMedia(a.id)
+        await load()
+      },
+    })
 
   return (
     <div className="mt-4">
@@ -95,6 +101,7 @@ function MediaManager() {
           </div>
         ))}
       </div>
+      {confirm.dialog}
     </div>
   )
 }
@@ -107,6 +114,7 @@ function TemplatesManager() {
   const [body, setBody] = useState('')
   const [rera, setRera] = useState(false)
   const [err, setErr] = useState(null)
+  const confirm = useConfirm()
 
   const load = () => api.templates().then(setTemplates).catch(() => setTemplates([]))
   useEffect(() => {
@@ -124,15 +132,20 @@ function TemplatesManager() {
       setErr(e.message)
     }
   }
-  const remove = async (t) => {
-    setErr(null)
-    try {
-      await api.deleteTemplate(t.id)
-      await load()
-    } catch (e) {
-      setErr(e.message)
-    }
-  }
+  const remove = (t) =>
+    confirm({
+      title: `Delete template "${t.name}"?`,
+      message: 'You\'ll need to create and get it approved again if you want it back.',
+      onConfirm: async () => {
+        setErr(null)
+        try {
+          await api.deleteTemplate(t.id)
+          await load()
+        } catch (e) {
+          setErr(e.message)
+        }
+      },
+    })
 
   return (
     <div className="mt-4">
@@ -192,6 +205,7 @@ function TemplatesManager() {
           )
         })}
       </div>
+      {confirm.dialog}
     </div>
   )
 }
