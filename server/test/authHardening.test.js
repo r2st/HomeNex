@@ -174,6 +174,68 @@ test('an agent cannot edit their profile onto another agent\'s email', async () 
   assert.equal((await req('PUT', '/api/agent/profile', { email: 'mover@homenex.test' }, token)).status, 200)
 })
 
+// The pre-checks in both profile editors are reads too, so the constraint has to
+// catch what slips past them — and report it as a conflict, not a 500.
+test('two profile saves racing onto one email leave exactly one holder', async () => {
+  const a = await signup({ name: 'Race A', phone: '+919700000020', password: 'secret123' })
+  const b = await signup({ name: 'Race B', phone: '+919700000021', password: 'secret123' })
+
+  const results = await Promise.allSettled([
+    db.updateAgentProfileSelf(a.agent.id, { email: 'prize@homenex.test' }),
+    db.updateAgentProfileSelf(b.agent.id, { email: 'prize@homenex.test' }),
+  ])
+  assert.equal(results.filter((r) => r.status === 'fulfilled').length, 1)
+  for (const r of results) {
+    if (r.status === 'rejected') {
+      assert.equal(r.reason.code, 'EMAIL_TAKEN')
+      assert.match(r.reason.message, /already uses this email/)
+    }
+  }
+  const { rows } = await db.query("SELECT COUNT(*)::int AS n FROM agents WHERE email = 'prize@homenex.test'")
+  assert.equal(rows[0].n, 1)
+})
+
+test('the admin profile editor reports a raced email as a conflict too', async () => {
+  const a = await signup({ name: 'Admin Race A', phone: '+919700000022', password: 'secret123' })
+  const b = await signup({ name: 'Admin Race B', phone: '+919700000023', password: 'secret123' })
+
+  const results = await Promise.allSettled([
+    db.updateAgentProfile(a.agent.id, { email: 'adminprize@homenex.test' }),
+    db.updateAgentProfile(b.agent.id, { email: 'adminprize@homenex.test' }),
+  ])
+  assert.equal(results.filter((r) => r.status === 'fulfilled').length, 1)
+  for (const r of results) if (r.status === 'rejected') assert.equal(r.reason.code, 'EMAIL_TAKEN')
+})
+
+test('a raced phone change is reported as a phone conflict, not an email one', async () => {
+  const a = await signup({ name: 'Phone Race A', phone: '+919700000024', password: 'secret123' })
+  const b = await signup({ name: 'Phone Race B', phone: '+919700000025', password: 'secret123' })
+
+  const results = await Promise.allSettled([
+    db.updateAgentProfile(a.agent.id, { phone: '+919700000099' }),
+    db.updateAgentProfile(b.agent.id, { phone: '+919700000099' }),
+  ])
+  assert.equal(results.filter((r) => r.status === 'fulfilled').length, 1)
+  for (const r of results) {
+    if (r.status === 'rejected') {
+      assert.equal(r.reason.code, 'PHONE_TAKEN')
+      assert.match(r.reason.message, /phone number/)
+    }
+  }
+})
+
+test('a non-constraint database error is not disguised as a conflict', async () => {
+  // The catch arms only translate 23505; anything else has to keep propagating,
+  // or a real fault would be reported to the agent as "email taken".
+  await assert.rejects(
+    () => db.updateAgentProfile(999_999_999, { name: 'Ghost' }),
+    (err) => {
+      assert.equal(err.code, 'NOT_FOUND')
+      return true
+    },
+  )
+})
+
 test('clearing an email is allowed for as many agents as like — NULL never collides', async () => {
   const a = await signup({ name: 'Blank A', phone: '+919700000011', email: 'blanka@homenex.test', password: 'secret123' })
   const b = await signup({ name: 'Blank B', phone: '+919700000012', email: 'blankb@homenex.test', password: 'secret123' })
