@@ -332,3 +332,66 @@ test('every id-bearing API route in the app is covered by this sweep', () => {
     `these id-bearing routes have no cross-tenant test — add them to ROUTES() or to EXEMPT with a reason:\n${missing.join('\n')}`,
   )
 })
+
+// The completeness check above walks `app._router.stack`, which only sees routes
+// registered directly on the app. Anything mounted with `app.use(prefix, router)` —
+// /api/team and /api/admin, ~50 routes between them — is invisible to it, so those
+// id-bearing routes were never held against any coverage list at all.
+//
+// This closes that hole. Every :id route inside a mounted router must be named here
+// with the file that proves its isolation, or the test fails.
+test('every id-bearing route inside a mounted router is accounted for', () => {
+  // route pattern -> where its cross-tenant isolation is proven.
+  const COVERED_ELSEWHERE = {
+    // Team-versus-team: a legitimate manager of ANOTHER team aiming at these ids.
+    // requireManager asks what role you hold, not which team you hold it over, so
+    // the whole boundary rests on team_id being in each query's WHERE clause.
+    'PUT /api/team/members/:agentId/role': 'teamCrossTenancy.test.js',
+    'PUT /api/team/members/:agentId': 'teamCrossTenancy.test.js',
+    'DELETE /api/team/members/:agentId': 'teamCrossTenancy.test.js',
+    'DELETE /api/team/invites/:id': 'teamCrossTenancy.test.js',
+    'POST /api/team/invites/:id/accept': 'teamCrossTenancy.test.js',
+    'POST /api/team/invites/:id/decline': 'teamCrossTenancy.test.js',
+    'POST /api/team/leads/:id/assign': 'teamCrossTenancy.test.js',
+    'POST /api/team/leads/:id/auto-assign': 'teamCrossTenancy.test.js',
+    'POST /api/team/leads/:id/claim': 'teamCrossTenancy.test.js',
+  }
+  // /api/admin/* is not a tenant boundary: the whole router is gated on is_admin and
+  // a platform admin is *meant* to see every agent. adminTeam/adminPortal cover who
+  // may enter it at all, which is the boundary that exists there.
+  const NOT_A_TENANT_BOUNDARY = /^\/api\/admin\//
+
+  // Recover a mount prefix from the layer regexp express builds for `use(path, fn)`.
+  const prefixOf = (layer) =>
+    String(layer.regexp)
+      .replace(/^\/\^/, '')
+      .replace(/\\\/\?\(\?=\\\/\|\$\)\/i$/, '')
+      .replace(/\\\//g, '/')
+
+  const mounted = []
+  for (const layer of app._router.stack) {
+    if (layer.name !== 'router' || !layer.handle?.stack) continue
+    const prefix = prefixOf(layer)
+    for (const inner of layer.handle.stack) {
+      const path = inner.route?.path
+      if (typeof path !== 'string' || !path.includes(':')) continue
+      for (const method of Object.keys(inner.route.methods)) {
+        mounted.push(`${method.toUpperCase()} ${prefix}${path}`)
+      }
+    }
+  }
+
+  assert.ok(
+    mounted.some((r) => r.includes('/api/team/')),
+    `the sub-router walk found nothing under /api/team — it has stopped working (saw ${mounted.length})`,
+  )
+
+  const unaccounted = mounted.filter(
+    (r) => !COVERED_ELSEWHERE[r] && !NOT_A_TENANT_BOUNDARY.test(r.split(' ')[1]),
+  )
+  assert.deepEqual(
+    unaccounted,
+    [],
+    `these mounted id-bearing routes have no cross-tenant test — cover them and name the file here:\n${unaccounted.join('\n')}`,
+  )
+})
