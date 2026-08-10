@@ -189,6 +189,91 @@ test('invoicing a zero-amount commission is rejected', async () => {
   assert.match(body.error, /no amount/)
 })
 
+// --- Invoice numbering. These use a private agent so the sequence is predictable.
+// Signed up on first use rather than in a before() hook: the tests in this file run
+// in order, and a second top-level hook would race the one that boots the server.
+let billingToken
+let billingAgentId
+let billingSeq = 0
+
+async function ensureBillingAgent() {
+  if (!billingToken) {
+    const out = await jreq('POST', '/api/auth/signup', { name: 'Billing Agent', phone: '+919800000043', password: 'secret123' })
+    billingToken = out.token
+    billingAgentId = out.agent.id
+  }
+  return billingAgentId
+}
+
+// A commission with an amount, ready to invoice, owned by the numbering agent.
+async function billableCommission() {
+  await ensureBillingAgent()
+  const lead = await upsertLead(billingAgentId, `9192000000${String(++billingSeq).padStart(2, '0')}`, `Seq ${billingSeq}`)
+  return jreq(
+    'POST', '/api/commissions',
+    { lead_id: lead.id, commission_flat_paise: 1_00_000, payer_type: 'builder', builder_name: 'Godrej' },
+    billingToken,
+  )
+}
+
+// The regression: numbering used to come from COUNT(*)+1, so an agent who typed a
+// number above the count made every later auto-numbered invoice collide with it —
+// and since a rejected INSERT leaves the count untouched, it collided forever.
+test('a hand-typed invoice number does not jam auto-numbering', async () => {
+  const first = await jreq('POST', `/api/commissions/${(await billableCommission()).id}/invoice`, {}, billingToken)
+  assert.equal(first.invoice_number, `INV-${billingAgentId}-0001`)
+
+  // The agent types their own number, skipping ahead of the sequence.
+  const typed = await jreq(
+    'POST', `/api/commissions/${(await billableCommission()).id}/invoice`,
+    { invoice_number: `INV-${billingAgentId}-0003` }, billingToken,
+  )
+  assert.equal(typed.invoice_number, `INV-${billingAgentId}-0003`)
+
+  // Auto-numbering must step past it, not land on it. Under COUNT(*)+1 this asked
+  // for 0003 — a permanent 409, repeated for every invoice after it.
+  const next = await req('POST', `/api/commissions/${(await billableCommission()).id}/invoice`, {}, billingToken)
+  assert.equal(next.status, 200)
+  assert.equal((await next.json()).invoice_number, `INV-${billingAgentId}-0004`)
+})
+
+// A number the caller supplied is theirs to fix — it must surface as a 409 rather
+// than being silently retried onto some other number.
+test('a duplicate caller-supplied invoice number is a 409, not a silent renumber', async () => {
+  const number = `INV-${billingAgentId}-9999`
+  const ok = await req('POST', `/api/commissions/${(await billableCommission()).id}/invoice`, { invoice_number: number }, billingToken)
+  assert.equal(ok.status, 200)
+
+  const clash = await req('POST', `/api/commissions/${(await billableCommission()).id}/invoice`, { invoice_number: number }, billingToken)
+  assert.equal(clash.status, 409)
+  assert.match((await clash.json()).error, /already exists/)
+})
+
+// Reading the next number and inserting it is not atomic. Two invoices raised at
+// once pick the same number; the loser must retry, not fail the request.
+test('invoices raised concurrently each get their own number', async () => {
+  const commissions = await Promise.all([billableCommission(), billableCommission(), billableCommission()])
+  const results = await Promise.all(
+    commissions.map((c) => req('POST', `/api/commissions/${c.id}/invoice`, {}, billingToken)),
+  )
+  assert.deepEqual(results.map((r) => r.status), [200, 200, 200], 'no request lost the race')
+
+  const numbers = (await Promise.all(results.map((r) => r.json()))).map((i) => i.invoice_number)
+  assert.equal(new Set(numbers).size, 3, `three distinct numbers, got ${numbers.join(', ')}`)
+})
+
+// Numbering is per-agent: a busy neighbour must not push this agent's sequence along.
+test('invoice numbering is scoped to the agent', async () => {
+  const out = await jreq('POST', '/api/auth/signup', { name: 'Quiet Agent', phone: '+919800000044', password: 'secret123' })
+  const lead = await upsertLead(out.agent.id, '919300000001', 'Quiet Lead')
+  const c = await jreq(
+    'POST', '/api/commissions',
+    { lead_id: lead.id, commission_flat_paise: 50_000, payer_type: 'builder' }, out.token,
+  )
+  const inv = await jreq('POST', `/api/commissions/${c.id}/invoice`, {}, out.token)
+  assert.equal(inv.invoice_number, `INV-${out.agent.id}-0001`, 'a fresh agent starts at 0001')
+})
+
 // Manual deal create + edit, and the one-deal-per-lead guard.
 test('manual deal create is one-per-lead and editable', async () => {
   const lead = await upsertLead(agentId, '919000000006', 'Manual Manoj')

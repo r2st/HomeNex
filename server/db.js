@@ -2168,6 +2168,22 @@ export async function builderReceivables(agentId) {
   return { builders: rows, totals, received_paise }
 }
 
+// The next INV-<agent>-NNNN for this agent, derived from the highest sequence
+// already issued rather than from a row count. Counting is wrong twice over: an
+// agent who types their own number ("INV-7-0044") leaves the count behind the
+// numbers on the books, and because a rejected INSERT never changes the count,
+// the collision then repeats on every later invoice — auto-numbering jams for
+// good. substring() yields NULL for a hand-typed number that doesn't fit the
+// pattern, so MAX simply ignores those.
+async function nextInvoiceNumber(agentId) {
+  const { rows } = await q(
+    `SELECT COALESCE(MAX(substring(invoice_number from $2)::int), 0) AS n
+       FROM commission_invoices WHERE agent_id = $1`,
+    [agentId, `^INV-${agentId}-(\\d+)$`],
+  )
+  return `INV-${agentId}-${String(rows[0].n + 1).padStart(4, '0')}`
+}
+
 // Raise a GST-aware invoice for a commission. The subtotal is the commission's
 // canonical amount; GST (18% by default) is split in paise so subtotal + gst =
 // total exactly. Marks the commission 'invoiced'. Idempotent-ish: throws if the
@@ -2179,16 +2195,24 @@ export async function createCommissionInvoice(agentId, commissionId, { gst_rate,
   if (subtotal <= 0) throw new Error('commission has no amount to invoice')
   const rate = gst_rate ?? GST_RATE
   const breakdown = gstBreakdown(subtotal, rate)
-  const number =
-    invoice_number ||
-    `INV-${agentId}-${String(
-      (await q('SELECT COUNT(*)::int AS n FROM commission_invoices WHERE agent_id = $1', [agentId])).rows[0].n + 1,
-    ).padStart(4, '0')}`
-  const { rows } = await q(
-    `INSERT INTO commission_invoices (agent_id, commission_id, invoice_number, subtotal_paise, gst_rate, gst_paise, total_paise, notes)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-    [agentId, commissionId, number, breakdown.subtotal_paise, breakdown.gst_rate, breakdown.gst_paise, breakdown.total_paise, notes ?? null],
-  )
+  // Reading the next number and inserting it is not atomic, so two invoices raised
+  // at once pick the same one and the loser hits UNIQUE (agent_id, invoice_number).
+  // Retry — the re-read now sees the winner's row. A number the caller supplied is
+  // never retried: that collision is a real 409 for them to resolve.
+  let rows
+  for (let attempt = 0; ; attempt++) {
+    const number = invoice_number || (await nextInvoiceNumber(agentId))
+    try {
+      ;({ rows } = await q(
+        `INSERT INTO commission_invoices (agent_id, commission_id, invoice_number, subtotal_paise, gst_rate, gst_paise, total_paise, notes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+        [agentId, commissionId, number, breakdown.subtotal_paise, breakdown.gst_rate, breakdown.gst_paise, breakdown.total_paise, notes ?? null],
+      ))
+      break
+    } catch (err) {
+      if (err.code !== '23505' || invoice_number || attempt >= 4) throw err
+    }
+  }
   // Advance the commission to 'invoiced' (leave 'received'/'overdue' alone).
   await q(
     `UPDATE commissions SET status = 'invoiced', updated_at = now()
