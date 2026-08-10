@@ -22,7 +22,7 @@ const {
   normalizeAvatar,
   isValidTimezone,
 } = await import('../db.js')
-const { hashPassword, verifyPassword, changePassword } = await import('../auth.js')
+const { hashPassword, verifyPassword, changePassword, issueToken } = await import('../auth.js')
 
 let server
 let base
@@ -49,7 +49,16 @@ const req = (method, url, body, tok = tokenA) =>
   })
 
 // Password tests mutate the credential; restore it so tests stay order-independent.
-const resetPasswordA = () => updateAgentPassword(agentA.id, hashPassword(PASSWORD_A))
+// Restoring it also rotates the agent's token version — that is the whole point of a
+// password change — so the suite's session token has to be re-minted with it, or
+// every later request in the file would 401 on a token the reset just revoked.
+const resetPassword = async (agent, password, setToken) => {
+  const fresh = await updateAgentPassword(agent.id, hashPassword(password))
+  setToken(await issueToken(fresh.id, fresh.token_version))
+  return fresh
+}
+const resetPasswordA = () => resetPassword(agentA, PASSWORD_A, (t) => (tokenA = t))
+const resetPasswordB = () => resetPassword(agentB, PASSWORD_B, (t) => (tokenB = t))
 
 before(async () => {
   await new Promise((resolve) => {
@@ -409,10 +418,15 @@ test('PUT /api/agent/password changes the password and keeps the session alive',
     new_password: 'brand-new-pass',
   })
   assert.equal(res.status, 200)
-  assert.equal((await res.json()).password_hash, undefined, 'never leaks the hash')
+  const body = await res.json()
+  assert.equal(body.password_hash, undefined, 'never leaks the hash')
 
-  // The token is an HMAC of the agent id, so it survives a password change.
-  assert.equal((await req('GET', '/api/auth/me')).status, 200, 'still logged in')
+  // The change signed every session out, including this one — the caller is handed a
+  // replacement token in the response and stays logged in only by adopting it.
+  assert.equal((await req('GET', '/api/auth/me')).status, 401, 'the old token is revoked')
+  assert.ok(body.token, 'a replacement token comes back')
+  tokenA = body.token
+  assert.equal((await req('GET', '/api/auth/me')).status, 200, 'and it works')
 
   const ok = await req('POST', '/api/auth/login', { phone: agentA.phone, password: 'brand-new-pass' }, null)
   assert.equal(ok.status, 200, 'new password works')
@@ -473,7 +487,7 @@ test('PUT /api/agent/password only ever changes the caller', async () => {
   assert.equal(betaOk.status, 200)
   const alphaOk = await req('POST', '/api/auth/login', { phone: agentA.phone, password: PASSWORD_A }, null)
   assert.equal(alphaOk.status, 200, 'agent A untouched')
-  await updateAgentPassword(agentB.id, hashPassword(PASSWORD_B))
+  await resetPasswordB()
 })
 
 test('PUT /api/agent/password stores a fresh salt, not the same hash', async () => {

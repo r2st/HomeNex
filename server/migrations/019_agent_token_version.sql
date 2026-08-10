@@ -1,0 +1,12 @@
+-- Session revocation.
+--
+-- A session token is an HMAC of the agent id with no server-side session row to
+-- delete, so until now there was no way to invalidate one. Changing the password —
+-- the thing every agent does when they think someone else has their phone — left
+-- every other logged-in device working exactly as before. The only remedy was for
+-- an admin to deactivate the whole account.
+--
+-- token_version is folded into the signed payload, so bumping it makes every token
+-- issued under the old value stop verifying. Password change bumps it; the device
+-- that made the change is handed a freshly signed token so it stays logged in.
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 1;

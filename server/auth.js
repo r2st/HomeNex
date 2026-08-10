@@ -57,26 +57,43 @@ export function verifyPassword(password, stored) {
   }
 }
 
-const sign = async (id) =>
-  crypto.createHmac('sha256', await getSecret()).update(String(id)).digest('hex')
+// The signed payload is the agent id AND their current token version. There is no
+// server-side session row to delete, so the version is what makes revocation
+// possible at all: bumping the agent's token_version changes what every token for
+// that agent must be signed over, and every token issued under the old value stops
+// verifying. Password change bumps it (see db.updateAgentPassword).
+const sign = async (id, version) =>
+  crypto.createHmac('sha256', await getSecret()).update(`${id}.${version}`).digest('hex')
 
-export const issueToken = async (agentId) => `${agentId}.${await sign(agentId)}`
+// The version is optional: a caller that already holds the agent row passes it to
+// save a read, and anyone holding only an id gets the agent's current one looked up.
+// Defaulting to a lookup rather than to a constant is what stops a caller from
+// quietly minting a token under a version that has already been rotated away.
+export async function issueToken(agentId, version) {
+  const v = version ?? (await getAgent(agentId))?.token_version ?? 1
+  return `${agentId}.${v}.${await sign(agentId, v)}`
+}
 
 export async function verifyToken(token) {
   if (!token) return null
-  const [id, sig] = String(token).split('.')
-  if (!id || !sig) return null
-  const expected = await sign(id)
+  // Three parts exactly: a legacy two-part token from before versioning has no
+  // version to check and is refused rather than trusted.
+  const parts = String(token).split('.')
+  if (parts.length !== 3) return null
+  const [id, version, sig] = parts
+  if (!id || !version || !sig) return null
+  const expected = await sign(id, version)
   try {
     if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null
   } catch {
     return null
   }
   const agent = await getAgent(Number(id))
-  // A deactivated agent's existing sessions stop working immediately: the token is
-  // an HMAC of the agent id with no server-side session to revoke, so this check
-  // is what makes deactivation take effect for anyone already logged in.
+  // A deactivated agent's existing sessions stop working immediately, and so do the
+  // sessions of anyone whose password has since changed — this pair of checks is
+  // what makes both take effect for someone already logged in.
   if (!agent || agent.is_active !== 1) return null
+  if (Number(agent.token_version) !== Number(version)) return null
   return agent
 }
 
@@ -100,7 +117,7 @@ export async function signup({ name, phone, email, password, wa_phone_number }) 
   if (email && (await findAgentByEmail(email)))
     throw new Error('An account with this email already exists — log in instead')
   const agent = await createAgent(name, phone, email || null, hashPassword(password), waPhone)
-  return { token: await issueToken(agent.id), agent }
+  return { token: await issueToken(agent.id, agent.token_version), agent }
 }
 
 export async function login({ phone, email, password }) {
@@ -119,13 +136,13 @@ export async function login({ phone, email, password }) {
     throw err
   }
   const agent = await getAgent(row.id)
-  return { token: await issueToken(agent.id), agent }
+  return { token: await issueToken(agent.id, agent.token_version), agent }
 }
 
 // Change the logged-in agent's own WhatsApp number. That number is how they log in,
 // so the current password is required — a stolen session alone must not be enough to
-// move the account onto an attacker's number. The session token is an HMAC of the agent
-// id, so it stays valid afterwards and the agent is not logged out.
+// move the account onto an attacker's number. This does not touch token_version, so
+// every device stays logged in: the account itself hasn't changed hands.
 export async function changePhone(agentId, { phone, password } = {}) {
   const hash = await getAgentPasswordHash(agentId)
   if (!hash || !verifyPassword(password || '', hash)) {
@@ -138,8 +155,12 @@ export async function changePhone(agentId, { phone, password } = {}) {
 
 // Change the logged-in agent's own password. The current password is required —
 // a stolen session alone must not be enough to lock the real agent out.
-// The session token is an HMAC of the agent id, so it survives the change and the
-// agent stays logged in here; sessions on other devices also keep working.
+//
+// Changing the password signs every other device out. An agent who changes it
+// because someone else has their phone expects exactly that, and before token
+// versioning they didn't get it: the old sessions kept working and the only real
+// remedy was for an admin to deactivate the account. The device making the change
+// is handed a token signed with the new version, so it alone stays logged in.
 export async function changePassword(agentId, { current_password, new_password } = {}) {
   const hash = await getAgentPasswordHash(agentId)
   if (!hash || !verifyPassword(current_password || '', hash)) {
@@ -158,7 +179,8 @@ export async function changePassword(agentId, { current_password, new_password }
     err.code = 'SAME_PASSWORD'
     throw err
   }
-  return updateAgentPassword(agentId, hashPassword(next))
+  const agent = await updateAgentPassword(agentId, hashPassword(next))
+  return { agent, token: await issueToken(agent.id, agent.token_version) }
 }
 
 // Express middleware for the dashboard API.

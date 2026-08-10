@@ -244,3 +244,58 @@ test('clearing an email is allowed for as many agents as like — NULL never col
   const { rows } = await db.query('SELECT COUNT(*)::int AS n FROM agents WHERE email IS NULL')
   assert.ok(rows[0].n >= 2)
 })
+
+// --- Session revocation --------------------------------------------------------
+
+// The scenario this exists for: an agent's phone is stolen, or a token leaks. There
+// is no server-side session row to delete, so before token versioning the only
+// remedy was an admin deactivating the whole account. Changing the password is what
+// an agent actually reaches for, and it now does the job.
+test('changing the password logs out every other device, over HTTP', async () => {
+  const phone = '+919733000100'
+  const { token: stolen } = await signup({ name: 'Stolen Sneha', phone, password: 'secret123' })
+  const { token: mine } = await login({ phone, password: 'secret123' })
+
+  assert.equal((await req('GET', '/api/auth/me', undefined, stolen)).status, 200, 'the thief is in')
+
+  const changed = await req(
+    'PUT',
+    '/api/agent/password',
+    { current_password: 'secret123', new_password: 'secret456' },
+    mine,
+  )
+  assert.equal(changed.status, 200)
+  const replacement = (await changed.json()).token
+  assert.ok(replacement, 'the caller is handed a replacement token')
+
+  assert.equal((await req('GET', '/api/auth/me', undefined, stolen)).status, 401, 'the thief is out')
+  assert.equal((await req('GET', '/api/auth/me', undefined, mine)).status, 401, 'so is the token that asked')
+  assert.equal((await req('GET', '/api/auth/me', undefined, replacement)).status, 200, 'the replacement works')
+})
+
+// A revoked token must not be repairable by hand. The version is inside the signed
+// payload, so editing it invalidates the signature rather than bumping the session.
+test('a revoked token cannot be revived by editing its version', async () => {
+  const phone = '+919733000101'
+  const { agent, token } = await signup({ name: 'Forger Farah', phone, password: 'secret123' })
+  await req('PUT', '/api/agent/password', { current_password: 'secret123', new_password: 'secret456' }, token)
+
+  const [id, version, sig] = token.split('.')
+  const current = Number((await db.getAgent(agent.id)).token_version)
+  assert.equal(current, Number(version) + 1, 'the version moved on')
+
+  for (const forged of [`${id}.${current}.${sig}`, `${id}.${version}.${sig}`, `${id}.${current}.${sig.slice(0, -1)}0`]) {
+    assert.equal((await req('GET', '/api/auth/me', undefined, forged)).status, 401, forged)
+  }
+})
+
+// Deactivation and password change are independent revocation paths; neither may
+// resurrect a session the other closed.
+test('a password change on a deactivated account does not reopen it', async () => {
+  const phone = '+919733000102'
+  const { agent } = await signup({ name: 'Dormant Dev', phone, password: 'secret123' })
+  await db.query('UPDATE agents SET is_active = 0, deactivated_at = now() WHERE id = $1', [agent.id])
+  const { issueToken, verifyToken } = await import('../auth.js')
+  const fresh = await issueToken(agent.id)
+  assert.equal(await verifyToken(fresh), null, 'a correctly signed token is still refused while deactivated')
+})

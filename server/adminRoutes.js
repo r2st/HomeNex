@@ -197,7 +197,7 @@ router.post('/agents/:id/impersonate', ah(async (req, res) => {
   if (!target) return res.status(404).json({ error: 'Agent not found' })
   if (target.is_active !== 1) return res.status(409).json({ error: 'Cannot impersonate a deactivated agent' })
   await logAudit(req.agent.id, 'agent', target.id, 'impersonation_started', { target: target.name })
-  res.json({ token: await issueToken(target.id), agent: target })
+  res.json({ token: await issueToken(target.id, target.token_version), agent: target })
 }))
 
 // ===========================================================================

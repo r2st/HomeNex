@@ -83,19 +83,26 @@ test('verifyPassword returns false rather than throwing on a malformed stored ha
 
 // --- Token verification -------------------------------------------------------
 
-test('verifyToken rejects every shape that is not a signed agent id', async () => {
+test('verifyToken rejects every shape that is not a signed agent id and version', async () => {
   assert.equal(await verifyToken(null), null, 'no token')
   assert.equal(await verifyToken(''), null, 'empty token')
-  assert.equal(await verifyToken('nodothere'), null, 'no signature segment')
-  assert.equal(await verifyToken('.onlyasig'), null, 'no id segment')
-  assert.equal(await verifyToken(`${agent.id}.`), null, 'empty signature')
+  assert.equal(await verifyToken('nodothere'), null, 'no segments at all')
+  assert.equal(await verifyToken('..onlyasig'), null, 'no id segment')
+  assert.equal(await verifyToken(`${agent.id}.1.`), null, 'empty signature')
+  assert.equal(await verifyToken(`${agent.id}..onlyasig`), null, 'empty version')
+  // A token from before versioning carries no version to check, so it is refused
+  // rather than trusted — everyone signs in once after the upgrade.
+  assert.equal(await verifyToken(`${agent.id}.deadbeef`), null, 'legacy two-part token')
   // A signature of the wrong length makes timingSafeEqual throw — still a plain null.
-  assert.equal(await verifyToken(`${agent.id}.deadbeef`), null, 'short signature')
+  assert.equal(await verifyToken(`${agent.id}.1.deadbeef`), null, 'short signature')
   // Right length, wrong value: the constant-time compare returns false.
   const real = await issueToken(agent.id)
-  const [, sig] = real.split('.')
+  const [id, version, sig] = real.split('.')
   const flipped = sig[0] === '0' ? `1${sig.slice(1)}` : `0${sig.slice(1)}`
-  assert.equal(await verifyToken(`${agent.id}.${flipped}`), null, 'forged signature')
+  assert.equal(await verifyToken(`${id}.${version}.${flipped}`), null, 'forged signature')
+  // The version is inside the signed payload, so claiming a different one doesn't
+  // verify — a revoked session can't be resurrected by editing its version.
+  assert.equal(await verifyToken(`${id}.${Number(version) + 1}.${sig}`), null, 'version the signature does not cover')
 })
 
 test('verifyToken rejects a correctly signed id that has no agent behind it', async () => {
@@ -140,8 +147,10 @@ test('requireAuth answers 401 with no header, a junk header, or a dead token', a
 test('an unexpected failure while resolving a token becomes a 500, not a hung request', async () => {
   // A correctly signed but absurd agent id overflows the integer column, so the
   // lookup rejects instead of returning a row. requireAuth forwards that to the
-  // error handler rather than swallowing it.
-  const token = await issueToken('99999999999999999999')
+  // error handler rather than swallowing it. The version is passed explicitly so the
+  // overflow happens where this test is aiming it — inside verifyToken — rather than
+  // in the lookup issueToken would otherwise do to find the current version.
+  const token = await issueToken('99999999999999999999', 1)
   const realError = console.error
   console.error = () => {}
   try {
@@ -288,10 +297,45 @@ test('changePassword rejects a wrong current, a weak new, and a reused password'
   assert.ok((await login({ phone: '+919770000040', password: 'secret456' })).token, 'the new password works')
 })
 
-test('a session survives its own password change', async () => {
-  const { agent: keep, token } = await signup({ name: 'Keep Kavya', phone: '+919770000050', password: 'secret123' })
-  await changePassword(keep.id, { current_password: 'secret123', new_password: 'secret456' })
-  // The token is an HMAC of the agent id with no server-side session, so it stays
-  // valid — the agent is not logged out of the device they just used.
-  assert.equal((await verifyToken(token)).id, keep.id)
+// The point of changing a password when someone else has your phone: every other
+// device is signed out. The device that made the change gets a token signed with the
+// new version, so it alone stays usable.
+test('a password change revokes every existing session and re-issues one', async () => {
+  const { agent: keep, token: oldToken } = await signup({
+    name: 'Keep Kavya',
+    phone: '+919770000050',
+    password: 'secret123',
+  })
+  // A second device signed in on the same account.
+  const { token: otherDevice } = await login({ phone: '+919770000050', password: 'secret123' })
+  assert.ok(await verifyToken(otherDevice), 'both devices start out signed in')
+
+  const { agent, token: fresh } = await changePassword(keep.id, {
+    current_password: 'secret123',
+    new_password: 'secret456',
+  })
+
+  assert.equal(await verifyToken(oldToken), null, 'the token that made the change is revoked with the rest')
+  assert.equal(await verifyToken(otherDevice), null, 'and so is the other device')
+  assert.equal((await verifyToken(fresh)).id, keep.id, 'the caller is handed a working replacement')
+  assert.equal(Number(agent.token_version), 2, 'the version moved exactly once')
+})
+
+test('each password change revokes the token the previous one issued', async () => {
+  const { agent: rot } = await signup({ name: 'Rotate Ravi', phone: '+919770000051', password: 'secret123' })
+  const { token: first } = await changePassword(rot.id, { current_password: 'secret123', new_password: 'secret456' })
+  const { token: second } = await changePassword(rot.id, { current_password: 'secret456', new_password: 'secret789' })
+  assert.equal(await verifyToken(first), null, 'the previous replacement is revoked in turn')
+  assert.equal((await verifyToken(second)).id, rot.id)
+})
+
+// Changing the login number is not a change of hands, so it must not sign anyone out.
+test('changing the WhatsApp number leaves every session signed in', async () => {
+  const { agent: mover, token } = await signup({
+    name: 'Mover Meera',
+    phone: '+919770000052',
+    password: 'secret123',
+  })
+  await changePhone(mover.id, { phone: '+919770000053', password: 'secret123' })
+  assert.equal((await verifyToken(token)).id, mover.id, 'the same token still works')
 })

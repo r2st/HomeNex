@@ -114,8 +114,20 @@ test('page views are tracked as engagement signals', async () => {
   )
   assert.ok(page.url.endsWith(`/p/${property.micro_page_slug}`))
 
-  const { rows } = await query('SELECT referrer FROM property_page_views WHERE property_id = $1 ORDER BY id DESC LIMIT 1', [property.id])
-  assert.equal(rows[0].referrer, 'https://chat.whatsapp.com/xyz')
+  // Both views above are recorded fire-and-forget: the response returns before the
+  // insert lands, so the referred view can be written before the plain one and the
+  // newest row is not reliably the last request made. Select the referrer by value
+  // instead of trusting the insert order — the poll above already guarantees all
+  // three views are in.
+  const { rows } = await query(
+    'SELECT referrer FROM property_page_views WHERE property_id = $1 AND referrer IS NOT NULL',
+    [property.id],
+  )
+  assert.deepEqual(
+    rows.map((r) => r.referrer),
+    ['https://chat.whatsapp.com/xyz'],
+    'exactly one view carried a referrer, and it is the one we sent',
+  )
   const prop = await (await req('GET', `/api/properties/${property.id}`)).json()
   assert.ok(prop.page_views >= 3)
 })

@@ -762,9 +762,12 @@ const PASSWORD_ERROR_STATUS = { BAD_PASSWORD: 403, WEAK_PASSWORD: 400, SAME_PASS
 app.put('/api/agent/password', ah(async (req, res) => {
   const { current_password, new_password } = req.body ?? {}
   try {
-    const agent = await changePassword(req.agent.id, { current_password, new_password })
+    // The change signs every other device out, so the caller gets a token signed
+    // with the new version back — without it this device would 401 on its next
+    // request, having just been logged out by its own password change.
+    const { agent, token } = await changePassword(req.agent.id, { current_password, new_password })
     await logAudit(agent.id, 'agent', agent.id, 'password_changed', {})
-    res.json(agent)
+    res.json({ ...agent, token })
   } catch (err) {
     res.status(PASSWORD_ERROR_STATUS[err.code] ?? 400).json({ error: err.message })
   }

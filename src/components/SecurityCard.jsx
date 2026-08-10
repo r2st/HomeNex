@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { api } from '../api.js'
+import { api, setToken } from '../api.js'
 import { inputCls, Field } from './ui.jsx'
 
 // Change the WhatsApp number the agent logs in with. Password-gated server-side.
@@ -171,8 +171,12 @@ function PasswordForm() {
     setError(null)
     setMsg(null)
     try {
-      await api.changePassword({ current_password: current, new_password: next })
-      setMsg("Password updated. You're still signed in on this device.")
+      // The server rotates the agent's token version, which signs out every other
+      // device. It hands this one a token signed with the new version — store it or
+      // the very next request 401s and logs the agent out of their own session.
+      const { token } = await api.changePassword({ current_password: current, new_password: next })
+      if (token) setToken(token)
+      setMsg("Password updated. You're signed out everywhere else.")
       close()
     } catch (err) {
       setError(err.message)

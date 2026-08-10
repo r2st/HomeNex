@@ -415,15 +415,16 @@ test('verifyToken rejects missing, malformed and forged tokens', async () => {
 
   assert.equal(await verifyToken(null), null)
   assert.equal(await verifyToken(''), null)
-  assert.equal(await verifyToken('no-dot'), null, 'no signature part')
-  assert.equal(await verifyToken(`${agent.id}.`), null, 'empty signature')
-  assert.equal(await verifyToken(`.${good.split('.')[1]}`), null, 'empty id')
+  assert.equal(await verifyToken('no-dot'), null, 'no segments')
+  const [id, version, sig] = good.split('.')
+  assert.equal(await verifyToken(`${id}.${version}.`), null, 'empty signature')
+  assert.equal(await verifyToken(`..${sig}`), null, 'empty id')
+  assert.equal(await verifyToken(`${id}.${sig}`), null, 'a two-part token predates versioning')
   // A signature of the right length but the wrong bytes.
-  const [id, sig] = good.split('.')
   const flipped = sig[0] === 'a' ? `b${sig.slice(1)}` : `a${sig.slice(1)}`
-  assert.equal(await verifyToken(`${id}.${flipped}`), null, 'forged signature')
+  assert.equal(await verifyToken(`${id}.${version}.${flipped}`), null, 'forged signature')
   // A signature of the WRONG length makes timingSafeEqual throw — caught, not 500.
-  assert.equal(await verifyToken(`${id}.abc`), null, 'short signature')
+  assert.equal(await verifyToken(`${id}.${version}.abc`), null, 'short signature')
 })
 
 test("verifyToken rejects a valid signature over an agent id that doesn't exist", async () => {

@@ -158,7 +158,8 @@ const AGENT_COLS =
   'id, name, phone, email, business_name, city, bio, rera_id, rera_state, rera_expiry, avatar_url, ' +
   'timezone, language, notify_new_lead, notify_followup_due, notify_daily_digest, ' +
   'quiet_hours_start, quiet_hours_end, is_active, deactivated_at, ' +
-  'wa_phone_number_id, wa_phone_number, waba_status, waba_registered_at, meta_waba_id, is_admin, ingest_token, created_at'
+  'wa_phone_number_id, wa_phone_number, waba_status, waba_registered_at, meta_waba_id, is_admin, ingest_token, ' +
+  'token_version, created_at'
 
 export async function createAgent(name, phone, email, passwordHash, waPhoneNumber = null) {
   const pn = waPhoneNumber ? normalizePhone(waPhoneNumber) : null
@@ -1131,8 +1132,14 @@ export async function updateAgentPreferences(agentId, fields = {}) {
   return getAgent(agentId)
 }
 
+// The password and the token version move together, in one statement: a change that
+// set the new password but left the old sessions signed would be the exact window an
+// agent changing their password is trying to close.
 export async function updateAgentPassword(agentId, passwordHash) {
-  const { rowCount } = await q('UPDATE agents SET password_hash = $1 WHERE id = $2', [passwordHash, agentId])
+  const { rowCount } = await q(
+    'UPDATE agents SET password_hash = $1, token_version = token_version + 1 WHERE id = $2',
+    [passwordHash, agentId],
+  )
   if (!rowCount) fail('Agent not found', 'NOT_FOUND')
   return getAgent(agentId)
 }
