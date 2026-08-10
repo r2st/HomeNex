@@ -34,6 +34,7 @@ const {
   distributeTeamPool,
   upsertLead,
   getAgent,
+  pool,
 } = await import('../db.js')
 
 let server, base
@@ -327,4 +328,72 @@ test('a lead cannot be assigned to, or claimed by, someone outside the team', as
   assert.equal(await assignTeamLead(team.id, outside.id, owner.id), null, 'no cross-team reach')
   assert.equal(await claimTeamLead(team.id, owner.id, outside.id), null)
 
+})
+
+// --- Losing the membership race -------------------------------------------------
+//
+// Both team-joining paths guard with `agentTeamId()` — a read of COMMITTED rows —
+// and then insert into team_members, whose agent_id is UNIQUE. Between the two, a
+// second request can take the membership: a double-tapped button, two devices, an
+// invite accepted while a team is being created. The insert then raises 23505, and
+// what the agent must get is "You are already in a team", not a 500.
+//
+// Provoked deterministically rather than by racing: a rival transaction takes the
+// membership and holds it open. The guard reads committed rows so it sees nothing
+// and lets the caller through; the INSERT then blocks on the uncommitted index
+// entry; committing the rival turns that block into the unique violation.
+const holdMembership = async (teamId, agentId) => {
+  const racer = await pool.connect()
+  await racer.query('BEGIN')
+  await racer.query('INSERT INTO team_members (team_id, agent_id, role) VALUES ($1, $2, $3)', [teamId, agentId, 'member'])
+  return {
+    async commit() {
+      await racer.query('COMMIT')
+      racer.release()
+    },
+  }
+}
+
+test('a membership taken mid-createTeam is ALREADY_IN_TEAM, and leaves no orphan team', async () => {
+  const rival = await createTeam(stranger.id, 'Rival Realty')
+  const held = await holdMembership(rival.id, owner.id)
+
+  // Settled into a value up front: the rejection lands during the wait below, and an
+  // unhandled one would fail the run before the assertion ever sees it.
+  const attempt = createTeam(owner.id, 'Doomed Realty').then(() => null, (e) => e)
+  await new Promise((r) => setTimeout(r, 150))
+  await held.commit()
+
+  const err = await attempt
+  assert.ok(err, 'the create succeeded even though the membership was gone')
+  assert.equal(err.code, 'ALREADY_IN_TEAM')
+  assert.match(err.message, /already in a team/)
+
+  // createTeam inserts the team BEFORE the membership, so the failing insert must take
+  // the team down with it — otherwise every lost race leaves a nameless empty team.
+  const { rows } = await query(`SELECT COUNT(*)::int AS n FROM teams WHERE name = 'Doomed Realty'`)
+  assert.equal(rows[0].n, 0, 'the rolled-back create left an orphan team behind')
+})
+
+test('a membership taken mid-accept is ALREADY_IN_TEAM, and the invite stays pending', async () => {
+  const team = await createTeam(owner.id, 'Invite Realty')
+  await inviteToTeam(team.id, owner.id, { phone: member.phone, role: 'member' })
+  const [invite] = await listIncomingInvites(member.phone)
+
+  const rival = await createTeam(stranger.id, 'Faster Realty')
+  const held = await holdMembership(rival.id, member.id)
+
+  const attempt = respondToInvite(invite.id, member, true).then(() => null, (e) => e)
+  await new Promise((r) => setTimeout(r, 150))
+  await held.commit()
+
+  const err = await attempt
+  assert.ok(err, 'the accept succeeded even though the membership was gone')
+  assert.equal(err.code, 'ALREADY_IN_TEAM')
+
+  // The accept also marks the invite used and revokes the others; a rolled-back accept
+  // must leave all of that alone, or a lost race would silently burn the invite.
+  const still = await listIncomingInvites(member.phone)
+  assert.equal(still.length, 1, 'a failed accept consumed the invite anyway')
+  assert.equal(still[0].id, invite.id)
 })
