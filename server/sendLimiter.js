@@ -93,12 +93,3 @@ export function evaluateSend({
     return { canSend: false, reason: 'contact_monthly_cap' }
   return { canSend: true, reason: 'ok' }
 }
-
-// Human-readable reasons for the UI / activity log.
-export const SEND_BLOCK_REASONS = {
-  opted_out: 'Contact opted out',
-  outside_send_window: 'Outside allowed send hours',
-  daily_cap_reached: 'Daily send cap reached',
-  too_soon_since_last: `Messaged within the last ${PER_CONTACT_MIN_GAP_H}h`,
-  contact_monthly_cap: `Monthly cap of ${PER_CONTACT_MONTHLY_CAP} reached`,
-}
