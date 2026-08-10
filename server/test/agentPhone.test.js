@@ -239,13 +239,18 @@ test('PUT /api/agent/phone only ever changes the caller, never another agent', a
   await updateAgentPhone(agentB.id, '+919800000002')
 })
 
-test('PUT /api/agent/phone rejects reusing the agent own WA Business number', async () => {
+test('PUT /api/agent/phone allows reusing the agent own WA Business number (single-number model)', async () => {
+  // Login and WA Business number are the same field now (see db.js updateAgentPhone) —
+  // changing the login number to match an already-configured WA Business number must
+  // succeed, not be treated as a clash with yourself.
   const { updateAgentPhoneConfig } = await import('../db.js')
   await updateAgentPhoneConfig(agentA.id, '+919888888888', 'pnid_alpha_phone_test')
   const res = await req('PUT', '/api/agent/phone', { phone: '9888888888', password: PASSWORD_A })
-  assert.equal(res.status, 400)
-  assert.match((await res.json()).error, /WhatsApp Business number/)
+  assert.equal(res.status, 200)
+  const data = await res.json()
+  assert.equal(data.phone, '+919888888888')
   await updateAgentPhoneConfig(agentA.id, null, null)
+  await resetPhoneA()
 })
 
 test('PUT /api/agent/phone writes an audit log entry', async () => {

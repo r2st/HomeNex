@@ -1,4 +1,22 @@
+import { RequestQueue, RetryableError, isRetryableStatus, retryAfterMs } from './aiQueue.js'
+
 const GRAPH = 'https://graph.facebook.com/v21.0'
+
+// Graph API calls that hang (a stalled connection, not a clean error) used to hold a
+// webhook-processing coroutine open forever — no error, no retry, the lead's pipeline
+// (reply -> extraction) just never completed. Every request gets a hard deadline.
+const WA_TIMEOUT_MS = Number(process.env.WA_TIMEOUT_MS) || 15_000
+
+// Every outbound Graph API call flows through this queue: bounded concurrency (so a
+// bulk/festive send fan-out or a burst of simultaneous inbound replies doesn't fire an
+// unbounded number of concurrent requests at Meta) and retry-with-backoff on 429 /
+// 5xx / network blips / timeouts, honouring Retry-After when Meta sends one. A token
+// error (Meta code 190) is never retried — refreshing WHATSAPP_ACCESS_TOKEN is the
+// only fix, so it fails fast instead of burning retries on a call that can't succeed.
+export const waQueue = new RequestQueue({
+  concurrency: Number(process.env.WA_CONCURRENCY) || 4,
+  maxRetries: Number(process.env.WA_MAX_RETRIES) || 3,
+})
 
 export const whatsappConfigured = () =>
   Boolean(process.env.WHATSAPP_ACCESS_TOKEN && process.env.WHATSAPP_PHONE_NUMBER_ID)
@@ -7,6 +25,56 @@ export const whatsappConfigured = () =>
 // Callers care about this specifically because the fix is "refresh the token", not "retry".
 const isTokenError = (error) =>
   error?.code === 190 || error?.type === 'OAuthException'
+
+// One Graph API HTTP attempt with a hard timeout. Throws a RetryableError for
+// 429 / 5xx / network blips / timeouts (the queue backs off and retries); throws a
+// plain WA_TOKEN_EXPIRED error for an expired/invalid token (never retried); returns
+// the parsed JSON body on success (2xx or not — callers classify non-2xx themselves).
+async function waFetch(url, options) {
+  let res
+  try {
+    res = await fetch(url, { ...options, signal: AbortSignal.timeout(WA_TIMEOUT_MS) })
+  } catch (err) {
+    throw new RetryableError(`WhatsApp API unreachable: ${err.message}`)
+  }
+  const data = await res.json().catch(() => ({}))
+  if (res.ok) return data
+  if (isTokenError(data.error)) {
+    const err = new Error(
+      'WhatsApp access token is expired or invalid — refresh WHATSAPP_ACCESS_TOKEN in the server .env',
+    )
+    err.code = 'WA_TOKEN_EXPIRED'
+    throw err
+  }
+  if (isRetryableStatus(res.status)) {
+    throw new RetryableError(`WhatsApp API ${res.status}`, {
+      status: res.status,
+      retryAfterMs: retryAfterMs(res.headers.get('retry-after')),
+    })
+  }
+  const err = new Error(`WhatsApp API failed (${res.status}): ${JSON.stringify(data.error || data)}`)
+  err.code = 'WA_SEND_FAILED'
+  throw err
+}
+
+// Queues + retries a Graph API call and normalises the failure into the error codes
+// callers already branch on: WA_TOKEN_EXPIRED (don't retry, needs a human), or
+// WA_SEND_FAILED (everything else, including "retried until we gave up").
+async function waRequest(url, options) {
+  try {
+    return await waQueue.enqueue(() => waFetch(url, options))
+  } catch (err) {
+    if (err.code === 'WA_TOKEN_EXPIRED') throw err
+    const failure = new Error(`WhatsApp send failed: ${err.message}`)
+    failure.code = 'WA_SEND_FAILED'
+    throw failure
+  }
+}
+
+const authHeaders = () => ({
+  Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
+  'Content-Type': 'application/json',
+})
 
 // Live check that the configured access token can still talk to the Graph API.
 // Returns { ok } on success, or { ok:false, expired, reason } so callers (e.g. /api/health)
@@ -17,6 +85,7 @@ export async function checkToken(phoneNumberId) {
   try {
     const res = await fetch(
       `${GRAPH}/${fromId}?fields=id&access_token=${encodeURIComponent(process.env.WHATSAPP_ACCESS_TOKEN)}`,
+      { signal: AbortSignal.timeout(WA_TIMEOUT_MS) },
     )
     const data = await res.json().catch(() => ({}))
     if (res.ok) return { ok: true }
@@ -35,12 +104,9 @@ export async function sendText(to, text, phoneNumberId) {
     throw err
   }
   const fromId = phoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID
-  const res = await fetch(`${GRAPH}/${fromId}/messages`, {
+  const data = await waRequest(`${GRAPH}/${fromId}/messages`, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
-      'Content-Type': 'application/json',
-    },
+    headers: authHeaders(),
     body: JSON.stringify({
       messaging_product: 'whatsapp',
       to,
@@ -48,19 +114,6 @@ export async function sendText(to, text, phoneNumberId) {
       text: { body: text },
     }),
   })
-  const data = await res.json().catch(() => ({}))
-  if (!res.ok) {
-    if (isTokenError(data.error)) {
-      const err = new Error(
-        'WhatsApp access token is expired or invalid — refresh WHATSAPP_ACCESS_TOKEN in the server .env',
-      )
-      err.code = 'WA_TOKEN_EXPIRED'
-      throw err
-    }
-    const err = new Error(`WhatsApp send failed (${res.status}): ${JSON.stringify(data.error || data)}`)
-    err.code = 'WA_SEND_FAILED'
-    throw err
-  }
   return data.messages?.[0]?.id ?? null
 }
 
@@ -82,27 +135,11 @@ export async function sendTemplate(to, { name, language = 'en', components } = {
   const fromId = phoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID
   const template = { name, language: { code: language } }
   if (components && components.length) template.components = components
-  const res = await fetch(`${GRAPH}/${fromId}/messages`, {
+  const data = await waRequest(`${GRAPH}/${fromId}/messages`, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
-      'Content-Type': 'application/json',
-    },
+    headers: authHeaders(),
     body: JSON.stringify({ messaging_product: 'whatsapp', to, type: 'template', template }),
   })
-  const data = await res.json().catch(() => ({}))
-  if (!res.ok) {
-    if (isTokenError(data.error)) {
-      const err = new Error(
-        'WhatsApp access token is expired or invalid — refresh WHATSAPP_ACCESS_TOKEN in the server .env',
-      )
-      err.code = 'WA_TOKEN_EXPIRED'
-      throw err
-    }
-    const err = new Error(`WhatsApp template send failed (${res.status}): ${JSON.stringify(data.error || data)}`)
-    err.code = 'WA_SEND_FAILED'
-    throw err
-  }
   return data.messages?.[0]?.id ?? null
 }
 
@@ -115,6 +152,7 @@ export async function fetchLeadgenData(leadgenId) {
   try {
     const res = await fetch(
       `${GRAPH}/${leadgenId}?fields=field_data,ad_id,ad_name,form_id,campaign_id,created_time&access_token=${encodeURIComponent(token)}`,
+      { signal: AbortSignal.timeout(WA_TIMEOUT_MS) },
     )
     const data = await res.json().catch(() => ({}))
     if (!res.ok) {
@@ -146,27 +184,11 @@ export async function sendMedia(to, { type = 'document', link, caption, filename
   const media = { link }
   if (caption) media.caption = caption
   if (type === 'document' && filename) media.filename = filename
-  const res = await fetch(`${GRAPH}/${fromId}/messages`, {
+  const data = await waRequest(`${GRAPH}/${fromId}/messages`, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
-      'Content-Type': 'application/json',
-    },
+    headers: authHeaders(),
     body: JSON.stringify({ messaging_product: 'whatsapp', to, type, [type]: media }),
   })
-  const data = await res.json().catch(() => ({}))
-  if (!res.ok) {
-    if (isTokenError(data.error)) {
-      const err = new Error(
-        'WhatsApp access token is expired or invalid — refresh WHATSAPP_ACCESS_TOKEN in the server .env',
-      )
-      err.code = 'WA_TOKEN_EXPIRED'
-      throw err
-    }
-    const err = new Error(`WhatsApp media send failed (${res.status}): ${JSON.stringify(data.error || data)}`)
-    err.code = 'WA_SEND_FAILED'
-    throw err
-  }
   return data.messages?.[0]?.id ?? null
 }
 
@@ -175,10 +197,8 @@ export async function markRead(messageId, phoneNumberId) {
   const fromId = phoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID
   await fetch(`${GRAPH}/${fromId}/messages`, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
-      'Content-Type': 'application/json',
-    },
+    headers: authHeaders(),
     body: JSON.stringify({ messaging_product: 'whatsapp', status: 'read', message_id: messageId }),
+    signal: AbortSignal.timeout(WA_TIMEOUT_MS),
   }).catch(() => {})
 }

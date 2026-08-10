@@ -117,8 +117,10 @@ test('dashboard returns platform stats with signup and WABA breakdowns', async (
   assert.equal(s.totalAgents, 7)
   assert.equal(s.newAgents7d, 7) // all created just now
   assert.equal(s.newAgents30d, 7)
-  assert.equal(s.pendingWaba, 1) // Bala signed up with a business number
-  assert.equal(s.noneWaba, 6)
+  // Single-number model: every signup's WA Business number defaults to the login
+  // number (see auth.js signup), so every agent starts 'pending', none stay 'none'.
+  assert.equal(s.pendingWaba, 7)
+  assert.equal(s.noneWaba, 0)
   assert.equal(s.registeredWaba, 0)
   assert.equal(s.activeWaba, 0)
   assert.ok(s.activeConversations >= 1)
@@ -175,16 +177,18 @@ test('agents list supports search by name, email and phone', async () => {
 })
 
 test('agents list filters by waba_status', async () => {
+  // Single-number model: every agent defaults to 'pending' (see comment above); none
+  // are 'none'.
   const pending = await (await req('GET', '/api/admin/agents?status=pending')).json()
-  assert.equal(pending.total, 1)
-  assert.equal(pending.agents[0].id, plainAgent.id)
+  assert.equal(pending.total, 7)
 
   const noneStatus = await (await req('GET', '/api/admin/agents?status=none')).json()
-  assert.equal(noneStatus.total, 6)
+  assert.equal(noneStatus.total, 0)
 
   // Search and filter combine.
-  const combo = await (await req('GET', '/api/admin/agents?status=none&search=Anita')).json()
+  const combo = await (await req('GET', '/api/admin/agents?status=pending&search=Anita')).json()
   assert.equal(combo.total, 1)
+  assert.equal(combo.agents[0].id, adminAgent.id)
 })
 
 // === GET /api/admin/agents/:id ===
@@ -271,10 +275,10 @@ test('WABA workflow: pending -> registered with Meta IDs -> active', async () =>
   a = await res.json()
   assert.equal(a.waba_status, 'active')
 
-  // Dashboard reflects the change.
+  // Dashboard reflects the change. The other 6 agents stay 'pending' — only Bala moved.
   const s = await (await req('GET', '/api/admin/dashboard')).json()
   assert.equal(s.activeWaba, 1)
-  assert.equal(s.pendingWaba, 0)
+  assert.equal(s.pendingWaba, 6)
 })
 
 test('WABA update validates status and id', async () => {

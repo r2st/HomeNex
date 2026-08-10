@@ -229,10 +229,28 @@ const pgBadRequest = (err) => ['23514', '23503', '22P02', '22007', '22008', '220
 // for same-origin display and for tests where WhatsApp is unconfigured).
 const UPLOAD_DIR = path.join(__dirname, 'uploads')
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '')
-const EXT_BY_MIME = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'video/mp4': 'mp4', 'application/pdf': 'pdf' }
+const EXT_BY_MIME = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif', 'video/mp4': 'mp4', 'application/pdf': 'pdf' }
+// /uploads is served by express.static same-origin (WhatsApp and the dashboard both
+// need a plain URL), so express derives the response Content-Type from this file
+// extension alone. Without an allowlist, an authenticated agent could upload
+// something like a .html/.svg file and get it served back as text/html/image+xml on
+// our own origin — a same-origin stored-XSS vector that could steal another agent's
+// (or an admin's) session token. Only file types the product actually needs
+// (photos/brochures/videos/spreadsheets) make it to disk.
+const ALLOWED_UPLOAD_EXTENSIONS = new Set([
+  'jpg', 'jpeg', 'png', 'webp', 'gif', // images
+  'mp4', 'mov', // video
+  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv', // documents
+])
+// Base64 inflates raw bytes by ~4/3, so the 25MB express.json() body cap already caps
+// a decoded upload at ~18.75MB before this ever runs (a bigger payload 413s at the
+// body-parser). This is a lower, cleaner ceiling with headroom for the JSON wrapper,
+// enforced here so the error is a clear 400 rather than depending on that arithmetic.
+const UPLOAD_SIZE_LIMIT_BYTES = 15 * 1024 * 1024 // 15MB decoded
 
 // Write a base64 (or data-URL) payload to the uploads dir under a random name and
-// return its public URL, canonical filename, mime and byte size.
+// return its public URL, canonical filename, mime and byte size. Throws on an empty
+// payload, an oversized payload, or a file extension outside ALLOWED_UPLOAD_EXTENSIONS.
 function saveUpload(dataBase64, filename, mime) {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true })
   let b64 = String(dataBase64)
@@ -243,8 +261,18 @@ function saveUpload(dataBase64, filename, mime) {
   }
   const buf = Buffer.from(b64, 'base64')
   if (!buf.length) throw new Error('empty upload')
+  if (buf.length > UPLOAD_SIZE_LIMIT_BYTES) {
+    const err = new Error(`File too large — max ${UPLOAD_SIZE_LIMIT_BYTES / (1024 * 1024)}MB`)
+    err.code = 'UPLOAD_TOO_LARGE'
+    throw err
+  }
   const extFromName = filename && path.extname(filename).replace(/^\./, '')
-  const ext = (extFromName || EXT_BY_MIME[mime] || 'bin').toLowerCase().replace(/[^a-z0-9]/g, '')
+  const ext = (extFromName || EXT_BY_MIME[mime] || '').toLowerCase().replace(/[^a-z0-9]/g, '')
+  if (!ALLOWED_UPLOAD_EXTENSIONS.has(ext)) {
+    const err = new Error(`Unsupported file type${ext ? `: .${ext}` : ''} — allowed: images, video, PDF, Office documents`)
+    err.code = 'UPLOAD_TYPE_REJECTED'
+    throw err
+  }
   const stored = `${crypto.randomBytes(12).toString('hex')}.${ext}`
   fs.writeFileSync(path.join(UPLOAD_DIR, stored), buf)
   return { url: `${PUBLIC_BASE_URL}/uploads/${stored}`, filename: filename || stored, mime: mime || null, size: buf.length }
@@ -320,9 +348,25 @@ function verifySignature(req) {
 // Core pipeline for one inbound buyer message on the shared WhatsApp number:
 // persist -> AI reply -> WhatsApp send (from the shared number) -> extract BLTC.
 // agentId is null for the unassigned pool (an unknown sender); brokerName personalises the AI.
-async function handleInbound({ agentId = null, brokerName, waId, name, text, source = 'WhatsApp', phoneNumberId = null, send = true, referral = null }) {
+// waMessageId is Meta's id for this inbound message. Meta redelivers webhook events on
+// any ack hiccup (slow response, network blip, restart mid-request) — without a dedupe
+// check the same buyer message would be persisted, AI-replied-to and extracted twice.
+// The buyer message is inserted FIRST (before any AI/send work) so a unique-constraint
+// conflict on wa_message_id (migration 015) lets us detect "already processed" and bail
+// out before doing anything expensive or user-visible a second time.
+async function handleInbound({ agentId = null, brokerName, waId, name, text, source = 'WhatsApp', phoneNumberId = null, send = true, referral = null, waMessageId = null }) {
   const lead = agentId ? await upsertLead(agentId, waId, name) : await upsertUnassignedLead(waId, name)
   const isNewLead = !lead.ai_summary && (await getMessages(lead.id, 1)).length === 0
+  if (waMessageId) {
+    try {
+      await addMessage(lead.id, 'buyer', text, waMessageId)
+    } catch (err) {
+      if (err.code === '23505') return { lead, reply: null, duplicate: true }
+      throw err
+    }
+  } else {
+    await addMessage(lead.id, 'buyer', text)
+  }
   // Click-to-WhatsApp attribution: capture the ad referral and (re)open the 72h free window.
   if (referral) {
     await recordCtwaReferral(lead.id, referral)
@@ -337,7 +381,6 @@ async function handleInbound({ agentId = null, brokerName, waId, name, text, sou
         `Click-to-WhatsApp lead: ${name || waId}${referral.headline ? ` · "${referral.headline}"` : ''}`)
     }
   }
-  await addMessage(lead.id, 'buyer', text)
   await recordContactMessage(waId) // stamp first/last message time on the CRM contact, if known
   // CRM: link the lead to its auto-captured contact and drop it into the pipeline.
   if (agentId) {
@@ -397,6 +440,39 @@ async function handleInbound({ agentId = null, brokerName, waId, name, text, sou
   }
 
   return { lead: await getLead(lead.id), reply }
+}
+
+// Turn any inbound WhatsApp message type into readable text so nothing is silently
+// dropped from the conversation/lead-capture pipeline. We don't download the actual
+// media (a bigger feature — needs Graph media-URL auth + storage); a placeholder is
+// enough for the message to be recorded, show up in the inbox, and prompt a human
+// follow-up. Returns null for message types with no useful text (reactions, system
+// messages, unrecognised/unsupported types), which the caller skips entirely.
+export function inboundMessageText(msg) {
+  switch (msg.type) {
+    case 'text':
+      return msg.text?.body || null
+    case 'image':
+      return msg.image?.caption ? `📷 ${msg.image.caption}` : '📷 Photo'
+    case 'video':
+      return msg.video?.caption ? `🎥 ${msg.video.caption}` : '🎥 Video'
+    case 'document':
+      return `📄 Document${msg.document?.filename ? `: ${msg.document.filename}` : ''}`
+    case 'audio':
+      return msg.audio?.voice ? '🎤 Voice message' : '🎵 Audio'
+    case 'sticker':
+      return '💬 Sticker'
+    case 'location':
+      return msg.location?.name ? `📍 Shared location: ${msg.location.name}` : '📍 Shared location'
+    case 'contacts':
+      return '👤 Shared a contact'
+    case 'interactive':
+      return msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title || null
+    case 'button':
+      return msg.button?.text || null
+    default:
+      return null
+  }
 }
 
 // Decide which agent handles an inbound on a team member's line. Solo agents (and
@@ -504,7 +580,14 @@ app.post('/webhook', (req, res) => {
             await handleAgentCommand({ agent, msg, phoneNumberId })
             continue
           }
-          if (msg.type !== 'text') continue
+          // Non-text messages (photos, documents, voice notes, location, button/list
+          // taps, ...) used to be silently dropped — the buyer's message vanished with
+          // no record and no reply. We don't download/store the media itself, but a
+          // readable placeholder keeps the conversation and lead-capture pipeline
+          // intact so a human agent can follow up. Reactions and other message types
+          // with no useful text (unsupported/system/order) are still skipped.
+          const text = inboundMessageText(msg)
+          if (!text) continue
           markRead(msg.id, phoneNumberId)
           // Click-to-WhatsApp ads attach a referral to the opening message.
           const referral = extractReferral(msg)
@@ -525,9 +608,10 @@ app.post('/webhook', (req, res) => {
               brokerName: assignee.name,
               waId: msg.from,
               name: waProfileName,
-              text: msg.text.body,
+              text,
               phoneNumberId,
               referral,
+              waMessageId: msg.id,
             })
             continue
           }
@@ -540,9 +624,10 @@ app.post('/webhook', (req, res) => {
               brokerName: (await getAgent(contact.agent_id))?.name,
               waId: msg.from,
               name: contact.name || waProfileName,
-              text: msg.text.body,
+              text,
               phoneNumberId,
               referral,
+              waMessageId: msg.id,
             })
           } else {
             // Unknown sender on a shared number → unassigned pool, visible to all agents to claim.
@@ -551,9 +636,10 @@ app.post('/webhook', (req, res) => {
               brokerName: 'the HomeNex team',
               waId: msg.from,
               name: waProfileName,
-              text: msg.text.body,
+              text,
               phoneNumberId,
               referral,
+              waMessageId: msg.id,
             })
           }
         }
@@ -1529,7 +1615,8 @@ app.post('/api/media', ah(async (req, res) => {
     }
     res.json(await createMediaAsset(req.agent.id, asset))
   } catch (err) {
-    if (!pgBadRequest(err) && !/required/.test(err.message)) throw err
+    const uploadRejected = err.code === 'UPLOAD_TYPE_REJECTED' || err.code === 'UPLOAD_TOO_LARGE'
+    if (!pgBadRequest(err) && !uploadRejected && !/required/.test(err.message)) throw err
     res.status(400).json({ error: err.message })
   }
 }))
@@ -1943,7 +2030,7 @@ app.use('/api/admin', adminRouter)
 // Dev/test endpoint: pushes a message through the SAME real pipeline (DB + AI),
 // without an outbound WhatsApp send. Useful before the Meta webhook is wired up.
 app.post('/api/simulate', ah(async (req, res) => {
-  const { from = 'test-' + Date.now(), name = 'Test Buyer', text, source = 'Test' } = req.body ?? {}
+  const { from = 'test-' + Date.now(), name = 'Test Buyer', text, source = 'Test', wa_message_id = null } = req.body ?? {}
   if (!text) return res.status(400).json({ error: 'text required' })
   const result = await handleInbound({
     agentId: req.agent.id,
@@ -1953,6 +2040,7 @@ app.post('/api/simulate', ah(async (req, res) => {
     text,
     source,
     send: false,
+    waMessageId: wa_message_id,
   })
   res.json(result)
 }))
