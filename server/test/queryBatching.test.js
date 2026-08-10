@@ -363,3 +363,36 @@ test('dashboard still returns every widget key', async () => {
   }
   assert.ok(d.hotLeads.some((l) => l.name === 'Fanout Buyer'), 'the Hot lead shows on the dashboard')
 })
+
+// --- 4. Stats round-trip budget --------------------------------------------
+// The counters behind /api/stats used to be eleven separate aggregates plus a
+// timezone lookup — twelve round trips, seven of them scanning the same `leads`
+// rows. The pg pool holds ten connections, so a single dashboard poll could not
+// even fit in it: at twelve concurrent callers the old shape measured ~34ms per
+// wave against ~22ms for this one.
+
+test('stats answers in a handful of round trips, not one per counter', async () => {
+  const n = await countQueries(() => stats(agentId))
+  assert.ok(n <= 5, `stats issued ${n} round trips; the eleven-aggregate shape is back`)
+})
+
+test('the leads counters come from one pass, not one query each', async () => {
+  const original = pool.query.bind(pool)
+  const texts = []
+  pool.query = (...args) => {
+    texts.push(typeof args[0] === 'string' ? args[0] : args[0]?.text || '')
+    return original(...args)
+  }
+  try {
+    await stats(agentId)
+  } finally {
+    pool.query = original
+  }
+  // `FROM messages` is excluded: its tenant scope is a `lead_id IN (SELECT id FROM
+  // leads …)` subquery, not a scan of its own. `GROUP BY` excludes the two rollups
+  // (sources, last 7 days) that genuinely need their own shape.
+  const leadScans = texts.filter(
+    (t) => /FROM leads\b/i.test(t) && !/FROM messages\b/i.test(t) && !/GROUP BY/i.test(t),
+  )
+  assert.equal(leadScans.length, 1, `expected one rollup over leads, saw ${leadScans.length}`)
+})

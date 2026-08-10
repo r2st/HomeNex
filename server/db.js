@@ -452,6 +452,9 @@ export async function upsertLead(agentId, waId, name) {
      RETURNING *`,
     [agentId, waId, name || null, waId],
   )
+  // A new lead is the number an agent watches for on the dashboard, so don't make
+  // them wait out the stats TTL to see it.
+  invalidateStats(agentId)
   return rows[0]
 }
 
@@ -513,12 +516,17 @@ export async function addMessage(leadId, role, text, waMessageId = null) {
     'INSERT INTO messages (lead_id, role, text, wa_message_id) VALUES ($1, $2, $3, $4) RETURNING *',
     [leadId, role, text, waMessageId],
   )
-  // A buyer message (re)opens the WhatsApp 24-hour service window.
-  if (role === 'buyer') {
-    await q('UPDATE leads SET last_inbound_at = now(), updated_at = now() WHERE id = $1', [leadId])
-  } else {
-    await q('UPDATE leads SET updated_at = now() WHERE id = $1', [leadId])
-  }
+  // A buyer message (re)opens the WhatsApp 24-hour service window. The owning agent
+  // comes back from the UPDATE that was happening anyway, so freshening their cached
+  // counters (messages today, threads active in 24h) costs no extra round-trip.
+  const touched = await q(
+    role === 'buyer'
+      ? 'UPDATE leads SET last_inbound_at = now(), updated_at = now() WHERE id = $1 RETURNING agent_id'
+      : 'UPDATE leads SET updated_at = now() WHERE id = $1 RETURNING agent_id',
+    [leadId],
+  )
+  const ownerId = touched.rows[0]?.agent_id
+  if (ownerId != null) invalidateStats(ownerId)
   return rows[0]
 }
 
@@ -1312,57 +1320,92 @@ export async function agentTimezone(agentId) {
   return tz && isValidTimezone(tz) ? tz : TZ
 }
 
+// --- Dashboard stats cache -------------------------------------------------
+// /api/stats is the most-polled read in the app: the Home dashboard asks every 10s
+// and the Insights screen every 8s. The numbers behind it are counters over the
+// agent's whole history, so re-deriving them on every poll is pure waste — an agent
+// leaving the dashboard open all day issues the same eleven aggregates ~5,000 times.
+//
+// The TTL is read per call, not at import, so a test can turn it on and off. It
+// defaults off under NODE_ENV=test: a suite that writes a lead and immediately reads
+// the counters should see the write, not a 1ms-old cache entry.
+const statsCache = new Map() // agentId -> { at, value }
+
+function statsCacheMs() {
+  const raw = process.env.STATS_CACHE_MS
+  if (raw != null && raw !== '') return Math.max(0, Number(raw) || 0)
+  return process.env.NODE_ENV === 'test' ? 0 : 8000
+}
+
+// Drop an agent's cached counters. Called from the write paths an agent watches for
+// a reaction — a new lead, a new message — so those land immediately instead of
+// waiting out the TTL. Anything not hooked here is simply stale for a few seconds,
+// which is the same staleness the poll interval already imposes.
+export function invalidateStats(agentId) {
+  statsCache.delete(Number(agentId))
+}
+
+// Exposed for tests and for a clean shutdown; nothing in the app needs it.
+export function clearStatsCache() {
+  statsCache.clear()
+}
+
 export async function stats(agentId) {
+  const ttl = statsCacheMs()
+  const key = Number(agentId)
+  if (ttl > 0) {
+    const hit = statsCache.get(key)
+    if (hit && Date.now() - hit.at < ttl) return hit.value
+  }
+  const value = await computeStats(agentId)
+  if (ttl > 0) {
+    // One entry per agent is small, but nothing ever removes them, so sweep the
+    // expired ones once the map is bigger than any real brokerage.
+    if (statsCache.size > 500) {
+      const cutoff = Date.now() - ttl
+      for (const [id, entry] of statsCache) if (entry.at < cutoff) statsCache.delete(id)
+    }
+    statsCache.set(key, { at: Date.now(), value })
+  }
+  return value
+}
+
+async function computeStats(agentId) {
   const TZ = await agentTimezone(agentId)
-  const one = async (sql, params) => Object.values((await q(sql, params)).rows[0])[0]
-  // Messages are scoped to the agent's leads.
-  const myMessages = 'lead_id IN (SELECT id FROM leads WHERE agent_id = $1)'
-  // Every counter below is independent, so they are issued together — the dashboard
-  // waits on the slowest one instead of on the sum of eleven round-trips.
-  const [
-    total,
-    newToday,
-    // Decayed/rule-hybrid temperature, not the AI's one-time categorical guess — a
-    // lead scored Hot at extraction time but silent for a week must not still
-    // count as "hot now" (see scoring.js decay + hybridScore).
-    hotNow,
-    active24h,
-    rawPipelineL,
-    avgFirstResponseS,
-    qualified,
-    afterHours,
-    sourcesRes,
-    dailyRes,
-    msgsToday,
-  ] = await Promise.all([
-    one('SELECT COUNT(*) FROM leads WHERE agent_id = $1', [agentId]),
-    one(
-      `SELECT COUNT(*) FROM leads WHERE agent_id = $1
-         AND created_at >= date_trunc('day', now() AT TIME ZONE $2) AT TIME ZONE $2`,
+  // Seven of these used to be seven separate `SELECT COUNT(*) FROM leads WHERE
+  // agent_id = $1 AND ...` — seven scans of the same rows, in seven round-trips, to
+  // answer one screen. FILTER folds them into a single pass.
+  //
+  // The day boundary is expressed in the agent's own timezone, so "new today" means
+  // their today (see agentTimezone).
+  const dayStart = `date_trunc('day', now() AT TIME ZONE $2) AT TIME ZONE $2`
+  const [leadAgg, msgAgg, sourcesRes, dailyRes] = await Promise.all([
+    q(
+      `SELECT COUNT(*)::int AS total,
+              COUNT(*) FILTER (WHERE created_at >= ${dayStart})::int AS new_today,
+              -- Decayed/rule-hybrid temperature, not the AI's one-time categorical
+              -- guess: a lead scored Hot at extraction time but silent for a week
+              -- must not still count as "hot now" (scoring.js decay + hybridScore).
+              COUNT(*) FILTER (WHERE COALESCE(effective_temp, temp) = 'Hot')::int AS hot_now,
+              COALESCE(SUM((budget_min_l + budget_max_l) / 2.0)
+                       FILTER (WHERE temp != 'Cold' AND budget_max_l IS NOT NULL), 0) AS pipeline_l,
+              AVG(first_response_s) AS avg_first_response_s,
+              COUNT(*) FILTER (WHERE locality IS NOT NULL AND timeline IS NOT NULL
+                                 AND config IS NOT NULL AND budget_max_l IS NOT NULL)::int AS qualified,
+              COUNT(*) FILTER (WHERE EXTRACT(HOUR FROM created_at AT TIME ZONE $2) >= 21
+                                  OR EXTRACT(HOUR FROM created_at AT TIME ZONE $2) < 9)::int AS after_hours
+         FROM leads WHERE agent_id = $1`,
       [agentId, TZ],
     ),
-    one(`SELECT COUNT(*) FROM leads WHERE agent_id = $1 AND COALESCE(effective_temp, temp) = 'Hot'`, [
-      agentId,
-    ]),
-    one(
-      `SELECT COUNT(DISTINCT lead_id) FROM messages WHERE ${myMessages} AND created_at >= now() - interval '1 day'`,
-      [agentId],
-    ),
-    one(
-      `SELECT COALESCE(SUM((budget_min_l + budget_max_l) / 2.0), 0) FROM leads
-       WHERE agent_id = $1 AND temp != 'Cold' AND budget_max_l IS NOT NULL`,
-      [agentId],
-    ),
-    one('SELECT AVG(first_response_s) FROM leads WHERE agent_id = $1', [agentId]),
-    one(
-      `SELECT COUNT(*) FROM leads WHERE agent_id = $1 AND locality IS NOT NULL
-         AND timeline IS NOT NULL AND config IS NOT NULL AND budget_max_l IS NOT NULL`,
-      [agentId],
-    ),
-    one(
-      `SELECT COUNT(*) FROM leads
-       WHERE agent_id = $1 AND (EXTRACT(HOUR FROM created_at AT TIME ZONE $2) >= 21
-          OR EXTRACT(HOUR FROM created_at AT TIME ZONE $2) < 9)`,
+    // Both message counters look back at most one day, and the agent's local day
+    // start is never more than 24h ago — so this one bounded scan covers both, and
+    // the whole message history stays untouched.
+    q(
+      `SELECT COUNT(DISTINCT lead_id)::int AS active_24h,
+              COUNT(*) FILTER (WHERE created_at >= ${dayStart})::int AS msgs_today
+         FROM messages
+        WHERE lead_id IN (SELECT id FROM leads WHERE agent_id = $1)
+          AND created_at >= now() - interval '1 day'`,
       [agentId, TZ],
     ),
     q(
@@ -1376,27 +1419,22 @@ export async function stats(agentId) {
        GROUP BY day ORDER BY day`,
       [agentId, TZ],
     ),
-    one(
-      `SELECT COUNT(*) FROM messages WHERE ${myMessages}
-         AND created_at >= date_trunc('day', now() AT TIME ZONE $2) AT TIME ZONE $2`,
-      [agentId, TZ],
-    ),
   ])
-  const pipelineL = rawPipelineL || 0
-  const sources = sourcesRes.rows
-  const daily = dailyRes.rows
+  const lead = leadAgg.rows[0]
+  const msg = msgAgg.rows[0]
+  const pipelineL = lead.pipeline_l || 0
   return {
-    total,
-    newToday,
-    hotNow,
-    active24h,
+    total: lead.total,
+    newToday: lead.new_today,
+    hotNow: lead.hot_now,
+    active24h: msg.active_24h,
     pipelineCr: pipelineL / 100,
-    avgFirstResponseS,
-    qualifiedPct: total ? Math.round((qualified / total) * 100) : 0,
-    afterHours,
-    sources,
-    daily,
-    msgsToday,
+    avgFirstResponseS: lead.avg_first_response_s,
+    qualifiedPct: lead.total ? Math.round((lead.qualified / lead.total) * 100) : 0,
+    afterHours: lead.after_hours,
+    sources: sourcesRes.rows,
+    daily: dailyRes.rows,
+    msgsToday: msg.msgs_today,
   }
 }
 
