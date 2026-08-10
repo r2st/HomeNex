@@ -326,12 +326,19 @@ export async function listContacts(agentId, { search = '', source = '' } = {}) {
     where.push(`c.source = $${params.length}`)
   }
   const { rows } = await q(
+    // Both subqueries match a lead by phone number, and both must ALSO match on
+    // agent_id. Without it they matched every agent's lead for that number: the same
+    // buyer messaging two brokers on the shared line gave each of them the other's
+    // message count and last-activity time. It is also the whole cost of this query —
+    // `WHERE l.wa_id = ...` alone can't use UNIQUE (agent_id, wa_id), so each contact
+    // row drove a sequential scan of the entire leads table.
     `SELECT c.*,
        (SELECT COUNT(*) FROM messages m
           JOIN leads l ON l.id = m.lead_id
-          WHERE l.wa_id = replace(c.phone, '+', '') AND m.role = 'buyer') AS msg_count,
+          WHERE l.agent_id = c.agent_id AND l.wa_id = replace(c.phone, '+', '')
+            AND m.role = 'buyer') AS msg_count,
        (SELECT MAX(l.updated_at) FROM leads l
-          WHERE l.wa_id = replace(c.phone, '+', '')) AS last_at
+          WHERE l.agent_id = c.agent_id AND l.wa_id = replace(c.phone, '+', '')) AS last_at
      FROM contacts c
      WHERE ${where.join(' AND ')}
      ORDER BY c.last_message_at DESC NULLS LAST, c.created_at DESC`,
@@ -633,9 +640,13 @@ export async function listLeads(agentId, { pipelineType = '', stage = '' } = {})
        (l.agent_id IS NULL)::int AS unassigned,
        (SELECT c.name FROM contacts c
           WHERE c.agent_id = $1 AND replace(c.phone, '+', '') = l.wa_id LIMIT 1) AS contact_name,
-       (SELECT text FROM messages m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) AS last_msg,
-       (SELECT role FROM messages m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) AS last_role,
-       (SELECT created_at FROM messages m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) AS last_at,
+       -- One lateral lookup for the last message, not three correlated subqueries
+       -- fetching three columns of the same row. This is the list the inbox and the
+       -- pipeline board both poll every few seconds, so it ran 3 index scans per
+       -- lead where 1 does.
+       last.text AS last_msg,
+       last.role AS last_role,
+       last.created_at AS last_at,
        -- Unread = buyer messages newer than the last time the agent opened the thread.
        (SELECT count(*) FROM messages m
           WHERE m.lead_id = l.id AND m.role = 'buyer'
@@ -647,6 +658,10 @@ export async function listLeads(agentId, { pipelineType = '', stage = '' } = {})
             WHERE ll.lead_id = l.id),
          '[]'::json) AS labels
      FROM leads l
+     LEFT JOIN LATERAL (
+       SELECT m.text, m.role, m.created_at FROM messages m
+        WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1
+     ) last ON true
      WHERE ${where.join(' AND ')}
      ORDER BY l.updated_at DESC`,
     params,
