@@ -14,7 +14,7 @@ const dbName = await createTestDb('schedbranches')
 const { app } = await import('../index.js')
 const {
   closePool, query, upsertLead, addMessage, applyExtraction, recomputeLeadScore,
-  createProperty, recordPropertyView, createSiteVisit, createCommission,
+  createProperty, recordPropertyView, createSiteVisit, createCommission, createCommissionInvoice,
 } = await import('../db.js')
 const {
   serviceWindowWatchForAgent, detectHotLeadsForAgent, generateStaleFollowupsForAgent,
@@ -170,6 +170,124 @@ test('one sweep chases every overdue commission, each named after its own lead',
     await query(`SELECT COUNT(*)::int AS n FROM commissions WHERE agent_id = $1 AND status = 'expected'`, [agentId])
   ).rows[0].n
   assert.equal(stillExpected, 0, 'nothing overdue is left behind')
+})
+
+// The regression the sweep was written around: an invoiced commission is money the
+// agent has already billed for and still not been paid, so it is the one most worth
+// chasing — but it used to be excluded from the sweep entirely.
+test('an invoiced commission past its payout date goes overdue and names the invoice', async () => {
+  const lead = await upsertLead(agentId, '919750010006', 'Invoiced Isha')
+  const commission = await createCommission(agentId, {
+    lead_id: lead.id,
+    commission_flat_paise: 2_50_000,
+    payer_type: 'builder',
+    expected_payout_date: '2020-01-01',
+    status: 'expected',
+  })
+  const invoice = await createCommissionInvoice(agentId, commission.id)
+  assert.equal(
+    (await query('SELECT status FROM commissions WHERE id = $1', [commission.id])).rows[0].status,
+    'invoiced',
+    'raising the invoice advances the commission',
+  )
+
+  assert.equal(await commissionOverdueSweepForAgent(agentId), 1)
+  assert.equal(
+    (await query('SELECT status FROM commissions WHERE id = $1', [commission.id])).rows[0].status,
+    'overdue',
+  )
+  const note = await notification(`commov:${commission.id}`)
+  assert.match(note.body, new RegExp(invoice.invoice_number), 'the agent is told which invoice to chase')
+  assert.match(note.body, /Invoiced Isha/)
+  assert.match(note.body, /Chase the payment/, 'invoiced money is chased, not re-invoiced')
+})
+
+// The commission carries the 'invoiced' status even when its only invoice was
+// cancelled, so the body has no number to quote and must not print "undefined".
+test('an invoiced commission whose invoice was cancelled still reads cleanly', async () => {
+  const lead = await upsertLead(agentId, '919750010007', 'Cancelled Kabir')
+  const commission = await createCommission(agentId, {
+    lead_id: lead.id,
+    commission_flat_paise: 1_00_000,
+    payer_type: 'builder',
+    expected_payout_date: '2020-01-01',
+    status: 'expected',
+  })
+  const invoice = await createCommissionInvoice(agentId, commission.id)
+  await query(`UPDATE commission_invoices SET status = 'cancelled' WHERE id = $1`, [invoice.id])
+
+  assert.equal(await commissionOverdueSweepForAgent(agentId), 1)
+  const note = await notification(`commov:${commission.id}`)
+  assert.doesNotMatch(note.body, /undefined|null/, 'no dangling placeholder for the missing number')
+  assert.match(note.body, /invoiced and past its payout date/)
+  assert.match(note.body, /Cancelled Kabir/)
+})
+
+// 'received' is paid and 'overdue' is already flagged; sweeping either would
+// re-open settled money or double-notify.
+test('the sweep leaves received and already-overdue commissions alone', async () => {
+  const lead = await upsertLead(agentId, '919750010008', 'Settled Sana')
+  const made = {}
+  for (const status of ['received', 'overdue']) {
+    made[status] = await createCommission(agentId, {
+      lead_id: lead.id,
+      commission_flat_paise: 5_00_000,
+      expected_payout_date: '2020-01-01',
+      status,
+    })
+  }
+  assert.equal(await commissionOverdueSweepForAgent(agentId), 0, 'nothing to sweep')
+  assert.equal(
+    (await query('SELECT status FROM commissions WHERE id = $1', [made.received.id])).rows[0].status,
+    'received',
+    'paid money stays paid',
+  )
+  assert.equal(
+    (await query('SELECT COUNT(*)::int AS n FROM notifications WHERE agent_id = $1 AND dedupe_key = $2', [
+      agentId,
+      `commov:${made.overdue.id}`,
+    ])).rows[0].n,
+    0,
+    'a row that was already overdue is not announced again',
+  )
+})
+
+// A commission with no payout date has no date to be past, whichever status it holds.
+test('a commission with no expected payout date is never swept', async () => {
+  const lead = await upsertLead(agentId, '919750010009', 'Undated Uma')
+  const commission = await createCommission(agentId, {
+    lead_id: lead.id,
+    commission_flat_paise: 3_00_000,
+    status: 'expected',
+  })
+  await createCommissionInvoice(agentId, commission.id)
+  assert.equal(await commissionOverdueSweepForAgent(agentId), 0)
+  assert.equal(
+    (await query('SELECT status FROM commissions WHERE id = $1', [commission.id])).rows[0].status,
+    'invoiced',
+  )
+})
+
+// The sweep runs daily, so the same overdue row is seen again tomorrow. The status
+// flip takes it out of the WHERE clause, and the dedupe key is the backstop.
+test('a second sweep does not re-announce a commission it already chased', async () => {
+  const lead = await upsertLead(agentId, '919750010010', 'Repeat Rhea')
+  const commission = await createCommission(agentId, {
+    lead_id: lead.id,
+    commission_flat_paise: 4_00_000,
+    expected_payout_date: '2020-01-01',
+    status: 'expected',
+  })
+  assert.equal(await commissionOverdueSweepForAgent(agentId), 1)
+  assert.equal(await commissionOverdueSweepForAgent(agentId), 0, 'the flip makes the sweep idempotent')
+  assert.equal(
+    (await query('SELECT COUNT(*)::int AS n FROM notifications WHERE agent_id = $1 AND dedupe_key = $2', [
+      agentId,
+      `commov:${commission.id}`,
+    ])).rows[0].n,
+    1,
+    'exactly one notification for one commission',
+  )
 })
 
 // --- Stale follow-up sweep ----------------------------------------------------

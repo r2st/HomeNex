@@ -248,28 +248,63 @@ export async function siteVisitWaRemindersForAgent(agentId, now = Date.now(), se
   return n
 }
 
-// Flip expected commissions past their payout date to overdue, and notify once.
+// Flip unpaid commissions past their payout date to overdue, and notify once.
+//
+// Both money-owed statuses are swept, not just 'expected'. An invoiced commission is
+// the one most worth chasing — the agent has already billed the builder and the money
+// still hasn't landed — but it used to age silently: the sweep only ever looked at
+// 'expected', so raising an invoice took the commission *out* of the only job that
+// could flag it. builderReceivables already counts 'invoiced' as outstanding and ages
+// it into the 90+ bucket, so the ledger was showing a debt the notifications never
+// mentioned. 'received' and 'overdue' are left alone: one is paid, the other is
+// already flagged.
 export async function commissionOverdueSweepForAgent(agentId) {
+  // The pre-image is captured in `due` because UPDATE ... RETURNING yields the new row,
+  // and the message depends on the status being replaced ("raise the invoice" vs "chase
+  // the payment"). `swept` is joined back in so a row another sweep took concurrently
+  // is not announced twice.
+  //
   // The lead is joined in rather than fetched per row: commissions.lead_id is a NOT NULL
   // foreign key, so every swept row has exactly one lead and the join never drops any.
   const { rows } = await query(
-    `WITH swept AS (
-       UPDATE commissions SET status = 'overdue', updated_at = now()
-       WHERE agent_id = $1 AND status = 'expected'
+    `WITH due AS (
+       SELECT id, lead_id, status AS prior_status
+       FROM commissions
+       WHERE agent_id = $1 AND status IN ('expected', 'invoiced')
          AND expected_payout_date IS NOT NULL AND expected_payout_date < now()::date
-       RETURNING id, lead_id
+     ),
+     swept AS (
+       UPDATE commissions c SET status = 'overdue', updated_at = now()
+       FROM due WHERE c.id = due.id
+       RETURNING c.id
      )
-     SELECT swept.id, leads.name, leads.wa_id
-     FROM swept JOIN leads ON leads.id = swept.lead_id`,
+     SELECT due.id, due.prior_status, leads.name, leads.wa_id, inv.invoice_number
+     FROM due
+     JOIN swept ON swept.id = due.id
+     JOIN leads ON leads.id = due.lead_id
+     LEFT JOIN LATERAL (
+       SELECT invoice_number FROM commission_invoices ci
+       WHERE ci.commission_id = due.id AND ci.agent_id = $1 AND ci.status <> 'cancelled'
+       ORDER BY ci.issued_at DESC, ci.id DESC LIMIT 1
+     ) inv ON true`,
     [agentId],
   )
   let n = 0
   for (const c of rows) {
+    // leads.name is nullable, so fall back to the wa_id, which is NOT NULL.
+    const who = c.name || c.wa_id
+    // An invoice that was raised and then cancelled leaves the commission 'invoiced'
+    // with nothing to quote, so the number is only named when there is one.
+    const body =
+      c.prior_status === 'invoiced'
+        ? c.invoice_number
+          ? `Invoice ${c.invoice_number} for ${who} is past its payout date. Chase the payment.`
+          : `Brokerage for ${who} is invoiced and past its payout date. Chase the payment.`
+        : `Brokerage for ${who} is past its payout date. Chase it.`
     const created = await createNotification(agentId, {
       type: 'commission_overdue',
       title: `💰 Commission overdue`,
-      // leads.name is nullable, so fall back to the wa_id, which is NOT NULL.
-      body: `Brokerage for ${c.name || c.wa_id} is past its payout date. Chase it.`,
+      body,
       entity_type: 'commission',
       entity_id: c.id,
       dedupe_key: `commov:${c.id}`,
