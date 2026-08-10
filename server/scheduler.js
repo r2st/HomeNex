@@ -250,20 +250,26 @@ export async function siteVisitWaRemindersForAgent(agentId, now = Date.now(), se
 
 // Flip expected commissions past their payout date to overdue, and notify once.
 export async function commissionOverdueSweepForAgent(agentId) {
+  // The lead is joined in rather than fetched per row: commissions.lead_id is a NOT NULL
+  // foreign key, so every swept row has exactly one lead and the join never drops any.
   const { rows } = await query(
-    `UPDATE commissions SET status = 'overdue', updated_at = now()
-     WHERE agent_id = $1 AND status = 'expected'
-       AND expected_payout_date IS NOT NULL AND expected_payout_date < now()::date
-     RETURNING id, lead_id`,
+    `WITH swept AS (
+       UPDATE commissions SET status = 'overdue', updated_at = now()
+       WHERE agent_id = $1 AND status = 'expected'
+         AND expected_payout_date IS NOT NULL AND expected_payout_date < now()::date
+       RETURNING id, lead_id
+     )
+     SELECT swept.id, leads.name, leads.wa_id
+     FROM swept JOIN leads ON leads.id = swept.lead_id`,
     [agentId],
   )
   let n = 0
   for (const c of rows) {
-    const lead = (await query('SELECT name, wa_id FROM leads WHERE id = $1', [c.lead_id])).rows[0] || {}
     const created = await createNotification(agentId, {
       type: 'commission_overdue',
       title: `💰 Commission overdue`,
-      body: `Brokerage for ${lead.name || lead.wa_id || 'a deal'} is past its payout date. Chase it.`,
+      // leads.name is nullable, so fall back to the wa_id, which is NOT NULL.
+      body: `Brokerage for ${c.name || c.wa_id} is past its payout date. Chase it.`,
       entity_type: 'commission',
       entity_id: c.id,
       dedupe_key: `commov:${c.id}`,

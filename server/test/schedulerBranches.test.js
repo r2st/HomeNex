@@ -142,6 +142,36 @@ test('an overdue commission on an unnamed lead is still chaseable', async () => 
   assert.match(rows[0].body, /919750010003/, 'the number stands in for the missing name')
 })
 
+// The sweep flips every overdue row in one statement and joins the lead in with it,
+// so a second overdue deal must still get its own, correctly-named notification.
+test('one sweep chases every overdue commission, each named after its own lead', async () => {
+  const leads = await Promise.all([
+    upsertLead(agentId, '919750010004', 'Overdue Ojas'),
+    upsertLead(agentId, '919750010005', 'Overdue Ira'),
+  ])
+  for (const lead of leads) {
+    await createCommission(agentId, {
+      lead_id: lead.id,
+      deal_value_paise: 3_000_000_00,
+      commission_pct: 2,
+      expected_payout_date: '2020-01-01',
+      status: 'expected',
+    })
+  }
+  assert.equal(await commissionOverdueSweepForAgent(agentId), 2)
+  const { rows } = await query(
+    `SELECT body FROM notifications
+     WHERE agent_id = $1 AND type = 'commission_overdue' AND (body LIKE '%Ojas%' OR body LIKE '%Ira%')
+     ORDER BY body`,
+    [agentId],
+  )
+  assert.deepEqual(rows.map((r) => r.body.match(/Overdue \w+/)[0]), ['Overdue Ira', 'Overdue Ojas'])
+  const stillExpected = (
+    await query(`SELECT COUNT(*)::int AS n FROM commissions WHERE agent_id = $1 AND status = 'expected'`, [agentId])
+  ).rows[0].n
+  assert.equal(stillExpected, 0, 'nothing overdue is left behind')
+})
+
 // --- Stale follow-up sweep ----------------------------------------------------
 
 test('the stale sweep honours an explicit limit', async () => {
