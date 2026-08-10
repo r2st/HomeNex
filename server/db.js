@@ -1811,12 +1811,26 @@ export async function ensurePropertySlug(id, agentId) {
 }
 
 // Record one public page view — the engagement signal agents see on the property card.
+//
+// The row and the denormalised counter are written by ONE statement, so they can never
+// disagree. As two statements they were two implicit transactions: a crash, a dropped
+// connection or a statement timeout between them left properties.page_views permanently
+// short of the rows in property_page_views, and nothing ever recomputes it. It also made
+// a reader that had just seen the Nth view row able to read a counter still on N-1 —
+// which is exactly what made the micro-page view test flaky. One round trip instead of
+// two is a bonus on an endpoint every WhatsApp recipient hits.
+//
+// A data-modifying CTE is guaranteed to run exactly once and to completion whether or
+// not the primary query reads its output, so the INSERT happens even though the UPDATE
+// ignores it.
 export async function recordPropertyView(propertyId, referrer = null, leadId = null) {
   await q(
-    'INSERT INTO property_page_views (property_id, referrer, lead_id) VALUES ($1, $2, $3)',
+    `WITH view AS (
+       INSERT INTO property_page_views (property_id, referrer, lead_id) VALUES ($1, $2, $3)
+     )
+     UPDATE properties SET page_views = page_views + 1 WHERE id = $1`,
     [propertyId, referrer ? String(referrer).slice(0, 500) : null, leadId],
   )
-  await q('UPDATE properties SET page_views = page_views + 1 WHERE id = $1', [propertyId])
 }
 
 export async function propertyViewStats(propertyId) {

@@ -10,7 +10,7 @@ delete process.env.WHATSAPP_APP_SECRET
 const dbName = await createTestDb('micropage')
 
 const { app } = await import('../index.js')
-const { closePool, query } = await import('../db.js')
+const { closePool, query, pool, recordPropertyView } = await import('../db.js')
 
 let server
 let base
@@ -128,8 +128,55 @@ test('page views are tracked as engagement signals', async () => {
     ['https://chat.whatsapp.com/xyz'],
     'exactly one view carried a referrer, and it is the one we sent',
   )
+  // The counter on the property and the rows it counts are written by one statement,
+  // so a reader that can see the third row can never still see a counter of two. As
+  // two statements this assertion was flaky, and in production the counter drifted
+  // permanently low whenever anything interrupted the gap between them.
   const prop = await (await req('GET', `/api/properties/${property.id}`)).json()
+  assert.equal(prop.page_views, page.stats.total, 'page_views drifted from the rows it counts')
   assert.ok(prop.page_views >= 3)
+})
+
+test('a view row is never visible before the counter that counts it', async () => {
+  // The race this guards is microseconds wide in the wild, so provoke it deterministically:
+  // lock the properties row from another connection and the counter UPDATE must wait.
+  //
+  // As two statements the INSERT had already committed by then, so an observer could see
+  // the row while the counter still read one lower — and if the process died in that gap
+  // the counter stayed permanently short, since nothing recomputes it. As one statement
+  // there is nothing to see until the whole thing commits.
+  const rows = async () =>
+    (await query('SELECT COUNT(*)::int AS n FROM property_page_views WHERE property_id = $1', [property.id])).rows[0].n
+  const counter = async () =>
+    (await query('SELECT page_views FROM properties WHERE id = $1', [property.id])).rows[0].page_views
+
+  const rowsBefore = await rows()
+  const counterBefore = await counter()
+  assert.equal(rowsBefore, counterBefore, 'the fixture is already inconsistent')
+
+  const locker = await pool.connect()
+  let recorded
+  try {
+    await locker.query('BEGIN')
+    // FOR NO KEY UPDATE, not FOR UPDATE: it blocks the counter UPDATE (which takes the
+    // same mode on a non-key column) while still permitting the KEY SHARE lock that the
+    // view row's foreign key needs. FOR UPDATE would stall the INSERT too and the two
+    // implementations would look identical.
+    await locker.query('SELECT id FROM properties WHERE id = $1 FOR NO KEY UPDATE', [property.id])
+
+    recorded = recordPropertyView(property.id, 'https://example.test/locked', null)
+    await new Promise((r) => setTimeout(r, 300)) // long enough to have committed, if it were going to
+
+    assert.equal(await rows(), rowsBefore, 'the view row landed while its counter was still blocked')
+    assert.equal(await counter(), counterBefore)
+  } finally {
+    await locker.query('COMMIT').catch(() => {})
+    locker.release()
+  }
+
+  await recorded
+  assert.equal(await rows(), rowsBefore + 1)
+  assert.equal(await counter(), counterBefore + 1)
 })
 
 test('unknown slug returns 404, not the SPA', async () => {
