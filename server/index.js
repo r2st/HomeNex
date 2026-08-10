@@ -193,6 +193,7 @@ import { fetchLeadgenData } from './whatsapp.js'
 import { dbPing, closePool } from './db.js'
 import { securityHeaders, cors, requestLogger, rateLimit, clientIp, errorCodes } from './middleware.js'
 import { validateEnv } from './env.js'
+import { verifyWebhookSignature } from './webhookSignature.js'
 
 const { PORT = 8787, WHATSAPP_VERIFY_TOKEN = 'homenex-verify', WHATSAPP_APP_SECRET } = process.env
 
@@ -346,17 +347,16 @@ app.get('/healthz', (_req, res) => {
     })
 })
 
+// NODE_ENV is read per-request rather than captured at import so the fail-closed
+// branch is observable in tests (and so a process that boots before its environment
+// is finalised can't get stuck on the permissive answer).
 function verifySignature(req) {
-  if (!WHATSAPP_APP_SECRET) return true // signature check requires the app secret
-  const sig = req.get('x-hub-signature-256')
-  if (!sig || !req.rawBody) return false
-  const expected =
-    'sha256=' + crypto.createHmac('sha256', WHATSAPP_APP_SECRET).update(req.rawBody).digest('hex')
-  try {
-    return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))
-  } catch {
-    return false
-  }
+  return verifyWebhookSignature({
+    secret: WHATSAPP_APP_SECRET,
+    isProd: process.env.NODE_ENV === 'production',
+    signature: req.get('x-hub-signature-256'),
+    rawBody: req.rawBody,
+  })
 }
 
 // Core pipeline for one inbound buyer message on the shared WhatsApp number:
@@ -2285,7 +2285,13 @@ if (process.env.NODE_ENV !== 'test') {
     console.log(`HomeNex server on :${PORT}`)
     if (!whatsappConfigured()) console.log('⚠ WhatsApp credentials missing — dashboard works, sends disabled')
     if (!aiConfigured()) console.log('⚠ OPENROUTER_API_KEY missing — AI replies/extraction disabled')
-    if (!WHATSAPP_APP_SECRET) console.log('⚠ WHATSAPP_APP_SECRET missing — webhook signature check disabled')
+    if (!WHATSAPP_APP_SECRET) {
+      console.log(
+        process.env.NODE_ENV === 'production'
+          ? '⚠ WHATSAPP_APP_SECRET missing — inbound webhooks are being REJECTED (401) until it is set'
+          : '⚠ WHATSAPP_APP_SECRET missing — webhook signature check disabled (dev only)',
+      )
+    }
   })
 
   // Graceful shutdown: stop the background jobs and rate-limit sweeps, stop accepting

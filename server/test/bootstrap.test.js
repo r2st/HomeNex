@@ -10,10 +10,23 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import net from 'node:net'
 import { fileURLToPath } from 'node:url'
+import pg from 'pg'
 import { createTestDb, dropTestDb } from './helpers.js'
 
 const dbName = await createTestDb('bootstrap')
 const DATABASE_URL = process.env.DATABASE_URL
+
+// A one-shot connection rather than importing ../db.js: this file's subject is the
+// child process, and pulling in the pool here would mean owning its shutdown too.
+async function query(sql, params) {
+  const client = new pg.Client({ connectionString: DATABASE_URL })
+  await client.connect()
+  try {
+    return await client.query(sql, params)
+  } finally {
+    await client.end()
+  }
+}
 const ENTRYPOINT = fileURLToPath(new URL('../index.js', import.meta.url))
 
 // A port the OS just told us is free. Racy in principle, private to this box in
@@ -98,7 +111,7 @@ test('a production boot warns about the missing optional services and serves /he
   })
   // The banner and its three warnings are logged in one go but can reach us in
   // separate chunks, so wait for the last of them before reading the buffer.
-  await srv.waitFor(/webhook signature check disabled/, 'the startup warnings', { stream: 'stdout' })
+  await srv.waitFor(/inbound webhooks are being REJECTED/, 'the startup warnings', { stream: 'stdout' })
 
   assert.match(srv.out(), new RegExp(`HomeNex server on :${srv.port}`))
   assert.match(srv.out(), /sends disabled/, 'sends are announced as disabled')
@@ -113,6 +126,40 @@ test('a production boot warns about the missing optional services and serves /he
 
   srv.child.kill('SIGTERM')
   assert.deepEqual(await srv.exited, { code: 0, signal: null }, 'SIGTERM is a clean exit')
+})
+
+// The whole point of the fail-closed change: this is the one place the check runs in
+// a REAL production process (NODE_ENV=production is set by the parent, not faked in
+// a unit test), against the real express stack and the real public route.
+test('a production deploy with no app secret rejects unsigned webhooks', async () => {
+  const srv = await boot({ WHATSAPP_APP_SECRET: '' })
+  await srv.waitFor(/HomeNex server on :/, 'the listen banner', { stream: 'stdout' })
+
+  const payload = {
+    entry: [{ changes: [{ value: {
+      metadata: { phone_number_id: 'pnid-forged' },
+      messages: [{ id: 'wamid.forged.1', from: '919888899999', type: 'text', text: { body: 'Hi' } }],
+    } }] }],
+  }
+  const post = (headers = {}) =>
+    fetch(`http://127.0.0.1:${srv.port}/webhook`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: JSON.stringify(payload),
+    })
+
+  // No secret configured means nothing can produce a signature we'd accept, so every
+  // shape of request is refused — not just the unsigned one.
+  assert.equal((await post()).status, 401, 'an unsigned webhook was accepted in production')
+  assert.equal((await post({ 'x-hub-signature-256': 'sha256=' + 'a'.repeat(64) })).status, 401)
+
+  // And the forged message never made it into the database.
+  await new Promise((r) => setTimeout(r, 200))
+  const { rows } = await query(`SELECT COUNT(*)::int AS n FROM messages WHERE wa_message_id = 'wamid.forged.1'`)
+  assert.equal(rows[0].n, 0, 'a rejected webhook still persisted its message')
+
+  srv.child.kill('SIGTERM')
+  await srv.exited
 })
 
 test('SIGTERM drains the server instead of dropping it', async () => {

@@ -33,7 +33,18 @@ export function validateEnv(env = process.env) {
   const hasWhatsApp = env.WHATSAPP_ACCESS_TOKEN && env.WHATSAPP_PHONE_NUMBER_ID
   if (!hasWhatsApp) warnings.push('WhatsApp credentials missing — the dashboard works but messages can\'t be sent.')
   if (!env.OPENROUTER_API_KEY) warnings.push('OPENROUTER_API_KEY missing — AI replies and lead extraction are disabled.')
-  if (!env.WHATSAPP_APP_SECRET) warnings.push('WHATSAPP_APP_SECRET missing — inbound webhook signatures are not verified.')
+  // In production an absent app secret is not a "signatures unverified" downgrade —
+  // verifyWebhookSignature() fails closed there, so the webhook rejects EVERYTHING
+  // until the secret is set. Say so plainly; a silently dead inbound pipeline is much
+  // harder to notice than a refused message. It stays a warning rather than a fatal
+  // error so the dashboard still boots for agents already using it.
+  if (!env.WHATSAPP_APP_SECRET) {
+    warnings.push(
+      isProd
+        ? 'WHATSAPP_APP_SECRET missing — inbound webhooks will be REJECTED (401) until it is set.'
+        : 'WHATSAPP_APP_SECRET missing — inbound webhook signatures are not verified (dev only; production fails closed).',
+    )
+  }
 
   // A pool size that isn't a positive integer would make pg throw at connect time.
   if (env.PG_POOL_SIZE !== undefined && !(Number(env.PG_POOL_SIZE) > 0)) {
