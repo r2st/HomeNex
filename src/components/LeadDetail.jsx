@@ -6,6 +6,7 @@ import { buyerProfileIsEmpty } from '../lib/buyerProfile.js'
 import { shouldShowScoreBreakdown } from '../lib/scoreDisplay.js'
 import { glossary } from '../lib/glossary.js'
 import { visitStatusLabel } from '../lib/labels.js'
+import { presetDate, FOLLOWUP_PRESETS } from '../lib/followupPresets.js'
 
 const LOST_REASONS = [
   'Bought elsewhere',
@@ -341,30 +342,6 @@ function CrmEditor({ lead, onSaved }) {
     </section>
   )
 }
-
-// One-tap follow-up presets. Date-based presets land at 10am local (agents call in
-// the morning); "Custom" opens the datetime picker.
-function presetDate(kind) {
-  const d = new Date()
-  d.setSeconds(0, 0)
-  if (kind === 'tomorrow') {
-    d.setDate(d.getDate() + 1)
-    d.setHours(10, 0)
-  } else if (kind === '3days') {
-    d.setDate(d.getDate() + 3)
-    d.setHours(10, 0)
-  } else if (kind === 'nextweek') {
-    d.setDate(d.getDate() + 7)
-    d.setHours(10, 0)
-  }
-  return d
-}
-
-const FOLLOWUP_PRESETS = [
-  { kind: 'tomorrow', label: 'Tomorrow 10am' },
-  { kind: '3days', label: 'In 3 days' },
-  { kind: 'nextweek', label: 'Next week' },
-]
 
 function FollowupsSection({ lead, refresh }) {
   const [custom, setCustom] = useState(false)

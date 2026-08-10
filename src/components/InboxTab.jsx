@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, usePoll, fmtTime, fmtAgo, parseTs } from '../api.js'
+import { api, usePoll, fmtTime, fmtAgo } from '../api.js'
 import { Sheet, Field, inputCls, InfoTip } from './ui.jsx'
 import { glossary } from '../lib/glossary.js'
 import { replyModeBadge, REPLY_MODE_HELP } from '../lib/replyMode.js'
+import { windowState, fmtCountdown } from '../lib/waWindow.js'
+import { varsOf, fillKnown } from '../lib/templateVars.js'
 
 // Colour classes for the reply-mode badge tones (keeps green/white theme).
 const REPLY_TONE = {
@@ -11,35 +13,6 @@ const REPLY_TONE = {
 }
 
 const ROLE_LABEL = { ai: 'HomeNex AI', agent: 'You' }
-
-// WhatsApp 24h service window state, derived from the last inbound message.
-// Leads without an anchor (pre-tracking) are treated as open.
-function windowState(lead, now) {
-  if (!lead?.last_inbound_at) return { known: false, open: true, msLeft: null }
-  const expires = parseTs(lead.last_inbound_at).getTime() + 24 * 3600_000
-  return { known: true, open: expires > now, msLeft: expires - now }
-}
-
-const fmtCountdown = (ms) => {
-  const h = Math.floor(ms / 3600_000)
-  const m = Math.floor((ms % 3600_000) / 60_000)
-  return h > 0 ? `${h}h ${m}m` : `${Math.max(1, m)}m`
-}
-
-// The variable names in a body, e.g. "Hi {{name}} about {{property}}" -> [name, property].
-const varsOf = (body) => {
-  const out = []
-  for (const m of String(body || '').matchAll(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g))
-    if (!out.includes(m[1])) out.push(m[1])
-  return out
-}
-
-// Client-side fill for quick replies: substitute what we know ({{name}} from the
-// lead), leaving other placeholders for the agent to complete in the draft box.
-const fillKnown = (body, lead) =>
-  String(body || '').replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (full, key) =>
-    key === 'name' && lead?.name ? lead.name : full,
-  )
 
 const LabelChip = ({ label, onRemove }) => (
   <span
