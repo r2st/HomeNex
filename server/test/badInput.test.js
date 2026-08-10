@@ -210,6 +210,15 @@ test('the agent-facing support, billing and template-review routes 404 cleanly',
   await expectStatus(404, 'DELETE', '/api/groups/999999')
 })
 
+// createTicket validates before it ever reaches Postgres, so these errors carry no
+// pg code. The route must still answer 400 with the reason, not fall through to a 500.
+test('opening a ticket without a subject or a message is a 400 that says which', async () => {
+  const noSubject = await expectStatus(400, 'POST', '/api/support/tickets', { subject: '   ', body: 'It broke' })
+  assert.match(noSubject.error, /subject is required/i)
+  const noBody = await expectStatus(400, 'POST', '/api/support/tickets', { subject: 'Help', body: '   ' })
+  assert.match(noBody.error, /message is required/i)
+})
+
 test('a ticket reply still needs a body even on a ticket the agent owns', async () => {
   const ticket = await json('POST', '/api/support/tickets', { subject: 'Help', body: 'Something is wrong' })
   await expectStatus(400, 'POST', `/api/support/tickets/${ticket.id}/reply`, { body: '   ' })

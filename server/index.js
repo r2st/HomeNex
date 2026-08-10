@@ -827,15 +827,13 @@ app.put('/api/agent/phone-config', ah(async (req, res) => {
 app.put('/api/agent/wa-phone', ah(async (req, res) => {
   const { wa_phone_number } = req.body ?? {}
   if (!wa_phone_number) return res.status(400).json({ error: 'wa_phone_number is required' })
-  try {
-    const norm = normalizePhone(wa_phone_number)
-    if (norm.replace(/\D/g, '').length < 10) return res.status(400).json({ error: 'Enter a valid phone number' })
-    // A single number is used for login and WhatsApp Business, so the WABA number may
-    // match the agent's login number — no "must differ" check.
-    res.json(await setAgentWaPhone(req.agent.id, norm))
-  } catch (err) {
-    res.status(400).json({ error: err.message })
-  }
+  // normalizePhone is total, and the only remaining failure is the UPDATE itself —
+  // an infrastructure fault, which ah() turns into a 500 rather than blaming the client.
+  const norm = normalizePhone(wa_phone_number)
+  if (norm.replace(/\D/g, '').length < 10) return res.status(400).json({ error: 'Enter a valid phone number' })
+  // A single number is used for login and WhatsApp Business, so the WABA number may
+  // match the agent's login number — no "must differ" check.
+  res.json(await setAgentWaPhone(req.agent.id, norm))
 }))
 
 // --- Dashboard API — every route is scoped to the logged-in agent. ---
@@ -2076,7 +2074,8 @@ app.post('/api/support/tickets', ah(async (req, res) => {
     const ticket = await createTicket(req.agent.id, pick(req.body ?? {}, ['subject', 'body', 'category', 'priority']))
     res.json(ticket)
   } catch (err) {
-    if (!pgBadRequest(err)) return res.status(400).json({ error: err.message })
+    // createTicket reports both missing-field validation and bad column values the
+    // same way — as the client's fault. Same shape as the reply route below.
     res.status(400).json({ error: err.message })
   }
 }))
