@@ -292,3 +292,33 @@ test('setAdmin db helper toggles the flag', async () => {
   assert.equal((await setAdmin(plainAgent.id, true)).is_admin, 1)
   assert.equal((await setAdmin(plainAgent.id, false)).is_admin, 0)
 })
+
+// Body-parser leaves req.body undefined when a request carries no JSON content-type.
+// The admin routes read `req.body ?? {}`; that fallback has to hold, because these
+// routes flip admin rights and suspend accounts and must fail closed, not 500.
+test('no admin write route 500s on a request with no body', async () => {
+  const bare = (method, url) =>
+    fetch(base + url, { method, headers: { authorization: `Bearer ${adminToken}` } })
+
+  const routes = [
+    ['PUT', `/api/admin/agents/${plainAgent.id}`],
+    ['PUT', `/api/admin/agents/${plainAgent.id}/admin`],
+    ['PUT', `/api/admin/agents/${plainAgent.id}/active`],
+    ['PUT', `/api/admin/agents/${plainAgent.id}/waba`],
+    ['POST', '/api/admin/plans'],
+    ['PUT', '/api/admin/plans/999999'],
+  ]
+  const broken = []
+  for (const [method, url] of routes) {
+    const res = await bare(method, url)
+    if (res.status >= 500) broken.push(`${method} ${url} -> ${res.status}`)
+  }
+  assert.deepEqual(broken, [], 'admin routes that mishandled an absent body')
+
+  // The two boolean toggles must specifically refuse, not read undefined as false and
+  // quietly revoke admin or suspend the account.
+  assert.equal((await bare('PUT', `/api/admin/agents/${plainAgent.id}/admin`)).status, 400)
+  assert.equal((await bare('PUT', `/api/admin/agents/${plainAgent.id}/active`)).status, 400)
+  const untouched = await (await req('GET', `/api/admin/agents/${plainAgent.id}`)).json()
+  assert.equal(untouched.is_active, 1, 'the account was not suspended by an empty request')
+})
