@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { varsOf, fillKnown, missingVars } from './templateVars.js'
+import { varsOf, fillKnown, missingVars, unfilledVars } from './templateVars.js'
 
 test('varsOf lists placeholders in first-appearance order', () => {
   assert.deepEqual(varsOf('Hi {{name}} about {{property}}'), ['name', 'property'])
@@ -61,6 +61,41 @@ test('a lead name containing braces does not create a new placeholder', () => {
   const out = fillKnown('Hi {{name}}', { name: '{{property}}' })
   assert.equal(out, 'Hi {{property}}')
   assert.deepEqual(missingVars('Hi {{name}}', { name: 'Priya' }), [])
+})
+
+test('unfilledVars names the variables the agent has left blank', () => {
+  const body = 'Hi {{name}}, {{property}} is available at {{price}}'
+  assert.deepEqual(unfilledVars(body, {}), ['name', 'property', 'price'])
+  assert.deepEqual(unfilledVars(body, { name: 'Priya' }), ['property', 'price'])
+  assert.deepEqual(unfilledVars(body, { name: 'Priya', property: 'Tower A', price: '90L' }), [])
+})
+
+test('unfilledVars treats whitespace-only input as blank', () => {
+  // A space bar press must not unlock a paid send.
+  assert.deepEqual(unfilledVars('Hi {{name}}', { name: '   ' }), ['name'])
+  assert.deepEqual(unfilledVars('Hi {{name}}', { name: '\t\n' }), ['name'])
+  assert.deepEqual(unfilledVars('Hi {{name}}', { name: ' Priya ' }), [])
+})
+
+test('unfilledVars accepts non-string values the input might produce', () => {
+  assert.deepEqual(unfilledVars('Flat {{count}}', { count: 0 }), [])
+  assert.deepEqual(unfilledVars('Flat {{count}}', { count: null }), ['count'])
+  assert.deepEqual(unfilledVars('Flat {{count}}', { count: undefined }), ['count'])
+})
+
+test('unfilledVars is empty for templates with no variables', () => {
+  assert.deepEqual(unfilledVars('No variables at all', {}), [])
+  assert.deepEqual(unfilledVars('', {}), [])
+  assert.deepEqual(unfilledVars(null, {}), [])
+})
+
+test('unfilledVars survives a missing vars object', () => {
+  assert.deepEqual(unfilledVars('Hi {{name}}'), ['name'])
+  assert.deepEqual(unfilledVars('Hi {{name}}', null), ['name'])
+})
+
+test('unfilledVars reports each variable once even if repeated', () => {
+  assert.deepEqual(unfilledVars('{{name}} {{name}} {{name}}', {}), ['name'])
 })
 
 test('missingVars reports only what the agent still has to fill in', () => {

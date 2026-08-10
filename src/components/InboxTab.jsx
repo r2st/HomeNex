@@ -4,7 +4,7 @@ import { Sheet, Field, inputCls, InfoTip } from './ui.jsx'
 import { glossary } from '../lib/glossary.js'
 import { replyModeBadge, REPLY_MODE_HELP } from '../lib/replyMode.js'
 import { windowState, fmtCountdown } from '../lib/waWindow.js'
-import { varsOf, fillKnown } from '../lib/templateVars.js'
+import { varsOf, fillKnown, unfilledVars } from '../lib/templateVars.js'
 
 // Colour classes for the reply-mode badge tones (keeps green/white theme).
 const REPLY_TONE = {
@@ -247,6 +247,7 @@ function TemplateComposer({ lead, onSent, onError }) {
         {(templates || []).map((t) => {
           const names = varsOf(t.body)
           const isOpen = openId === t.id
+          const unfilled = isOpen ? unfilledVars(t.body, vars) : []
           return (
             <div key={t.id} className="bg-white border border-line rounded-xl px-3.5 py-2.5">
               <button onClick={() => open(t)} className="w-full text-left">
@@ -276,9 +277,16 @@ function TemplateComposer({ lead, onSent, onError }) {
                       />
                     </Field>
                   ))}
+                  {/* The server rejects a template with a blank variable, and this
+                      send is a paid one — say so here rather than after a round trip. */}
+                  {unfilled.length > 0 && (
+                    <p className="text-[11px] text-ink-soft px-0.5">
+                      Fill in {unfilled.map((n) => n.replace('_', ' ')).join(', ')} to send this.
+                    </p>
+                  )}
                   <button
                     onClick={() => sendTemplate(t)}
-                    disabled={sendingId != null}
+                    disabled={sendingId != null || unfilled.length > 0}
                     className="w-full bg-brand text-white font-bold text-[13px] rounded-xl py-2.5 disabled:opacity-40 active:scale-[0.99] transition"
                   >
                     {sendingId === t.id ? 'Sending…' : 'Send template'}

@@ -31,3 +31,13 @@ export function fillKnown(body, lead) {
 export function missingVars(body, lead) {
   return varsOf(fillKnown(body, lead))
 }
+
+// Which of a template's variables the agent has not filled in yet.
+//
+// Out-of-window replies go out as paid, approved WhatsApp templates, and the
+// server refuses one with a blank variable. Checking the same thing here lets
+// the composer disable Send and name the empty field instead of spending a round
+// trip to come back with "Fill in: property".
+export function unfilledVars(body, vars = {}) {
+  return varsOf(body).filter((name) => !String(vars?.[name] ?? '').trim())
+}
