@@ -322,6 +322,24 @@ test('stats returns numbers (bigint counts parsed)', async () => {
   assert.ok(Array.isArray(s.sources))
 })
 
+test('stats().hotNow and dashboard().hotLeads follow decayed temp, not the stale AI temp', async () => {
+  const other = await db.createAgent('Hot Count Tester', '+919899000099', null, hashPassword('secret123'))
+  const hot = await db.upsertLead(other.id, '919899000201', 'Once Hot')
+  await db.addMessage(hot.id, 'buyer', 'looking urgently')
+  await db.applyExtraction(hot.id, { temp: 'Hot', score: 90 })
+  // Silence it: the AI's raw `temp` column stays 'Hot' forever, but the decayed
+  // effective_temp should cool — and that's what hotNow/hotLeads must honor.
+  await db.query(`UPDATE messages SET created_at = now() - interval '5 days' WHERE lead_id = $1`, [hot.id])
+  await db.query(`UPDATE leads SET last_inbound_at = now() - interval '5 days' WHERE id = $1`, [hot.id])
+  await db.recomputeLeadScore(hot.id)
+
+  const s = await db.stats(other.id)
+  assert.equal(s.hotNow, 0, 'a silent lead must not count as hot just because the AI once said Hot')
+
+  const d = await db.dashboard(other.id)
+  assert.equal(d.hotLeads.length, 0)
+})
+
 test('normalizePhone canonicalizes Indian numbers', () => {
   assert.equal(db.normalizePhone('9876543210'), '+919876543210')
   assert.equal(db.normalizePhone('+91 98765 43210'), '+919876543210')

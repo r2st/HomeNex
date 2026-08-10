@@ -601,6 +601,9 @@ function QuickMatchSection({ lead }) {
                 <p className="text-[11.5px] text-ink-soft truncate">
                   {[spec, p.price_paise != null && paiseToDisplay(p.price_paise)].filter(Boolean).join(' · ')}
                 </p>
+                {Array.isArray(p.match_reasons) && p.match_reasons.length > 0 && (
+                  <p className="text-[10.5px] text-brand-deep truncate mt-0.5">✓ {p.match_reasons.join(' · ')}</p>
+                )}
               </div>
               <button
                 onClick={() => !state && send(p)}

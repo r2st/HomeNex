@@ -69,6 +69,28 @@ test('score decay: a Hot lead that goes silent cools down and is persisted', asy
   assert.ok(row.last_decay_at)
 })
 
+test('score decay: the hard qualification rule keeps a lead Hot even after it goes silent', async () => {
+  const lead = await upsertLead(agentId, '919888810011', 'Qualified Quiet Qasim')
+  await addMessage(lead.id, 'buyer', 'Budget 90 lakh, need it in 2 months')
+  await addMessage(lead.id, 'buyer', 'Yes I can visit this weekend')
+  await applyExtraction(lead.id, { temp: 'Warm', score: 55, budget_min_l: 80, budget_max_l: 90, timeline: '2 months' })
+  await createSiteVisit(agentId, { lead_id: lead.id, scheduled_at: new Date(Date.now() + 86_400_000).toISOString() })
+
+  const fresh = await recomputeLeadScore(lead.id)
+  assert.equal(fresh.temperature, 'Hot')
+
+  // Three days of silence would normally cool a Warm-fit lead to Cold — but the
+  // hard rule (budget + near-term timeline + 2 replies + visit agreed) is a
+  // business-level qualification signal that decay must not erase.
+  await backdateMessages(lead.id, 3)
+  await backdateInbound(lead.id, 72)
+  const cooled = await recomputeLeadScore(lead.id)
+  assert.equal(cooled.temperature, 'Hot')
+
+  const row = (await query('SELECT effective_temp FROM leads WHERE id = $1', [lead.id])).rows[0]
+  assert.equal(row.effective_temp, 'Hot')
+})
+
 test('GET /api/leads/:id returns live decayed scoring fields', async () => {
   const lead = await upsertLead(agentId, '919888810002', 'Detail Dan')
   await addMessage(lead.id, 'buyer', 'hi')

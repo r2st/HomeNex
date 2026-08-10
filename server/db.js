@@ -2,8 +2,9 @@ import pg from 'pg'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { decayLead, hybridScore } from './scoring.js'
-import { worklistItem, rankWorklist, worklistCounts } from './worklist.js'
+import { decayLead, hybridScore, ruleSignals } from './scoring.js'
+import { worklistItem, rankWorklist, worklistCounts, followupPriority } from './worklist.js'
+import { rankPropertyMatches } from './matching.js'
 import { gstBreakdown, GST_RATE } from './money.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -1158,7 +1159,13 @@ export async function stats(agentId) {
        AND created_at >= date_trunc('day', now() AT TIME ZONE $2) AT TIME ZONE $2`,
     [agentId, TZ],
   )
-  const hotNow = await one(`SELECT COUNT(*) FROM leads WHERE agent_id = $1 AND temp = 'Hot'`, [agentId])
+  // Decayed/rule-hybrid temperature, not the AI's one-time categorical guess — a
+  // lead scored Hot at extraction time but silent for a week must not still
+  // count as "hot now" (see scoring.js decay + hybridScore).
+  const hotNow = await one(
+    `SELECT COUNT(*) FROM leads WHERE agent_id = $1 AND COALESCE(effective_temp, temp) = 'Hot'`,
+    [agentId],
+  )
   const active24h = await one(
     `SELECT COUNT(DISTINCT lead_id) FROM messages WHERE ${myMessages} AND created_at >= now() - interval '1 day'`,
     [agentId],
@@ -1439,55 +1446,17 @@ export async function leadStageHistory(leadId, agentId) {
 
 // --- Quick match: inventory that fits a lead's budget / BHK / locality ---
 //
-// A property matches when it is available and every criterion the lead HAS is met
-// (a lead with no budget still matches on BHK+locality). Ranked by how many
-// criteria matched, then freshest first.
+// Candidate fetch is SQL (available, agent-scoped); scoring, filtering and the
+// explainable match_reasons are the pure/tested matching.js module — see there
+// for the exact rules.
 export async function propertyMatchesForLead(leadId, agentId) {
   const lead = await getLeadForAgent(leadId, agentId)
   if (!lead) return null
-  const localities = Array.isArray(lead.preferred_localities) ? lead.preferred_localities : []
-  const params = [agentId]
-  const where = [`agent_id = $1`, `status = 'available'`]
-
-  // Budget: a property fits if its price is within the lead's range. Allow a 10%
-  // stretch over budget_max so a slightly-over listing still surfaces.
-  if (lead.budget_max != null) {
-    params.push(Math.round(lead.budget_max * 1.1))
-    where.push(`(price_paise IS NULL OR price_paise <= $${params.length})`)
-  }
-  if (lead.budget_min != null) {
-    params.push(Math.round(lead.budget_min * 0.9))
-    where.push(`(price_paise IS NULL OR price_paise >= $${params.length})`)
-  }
-  if (lead.bhk) {
-    params.push(lead.bhk)
-    where.push(`(bhk IS NULL OR bhk = $${params.length})`)
-  }
-  if (lead.property_type) {
-    params.push(lead.property_type)
-    where.push(`(property_type IS NULL OR property_type = $${params.length})`)
-  }
-
-  // Locality match is a ranking signal (not a hard filter): score +1 when the
-  // property's locality matches any of the lead's preferred localities.
-  let localityScore = '0'
-  if (localities.length) {
-    params.push(localities.map((l) => `%${l}%`))
-    localityScore = `(locality ILIKE ANY ($${params.length}::text[]))::int`
-  }
-
-  const { rows } = await q(
-    `SELECT *,
-       (${localityScore}
-        + (bhk IS NOT NULL AND bhk = $${params.length + 1})::int
-        + (price_paise IS NOT NULL)::int) AS match_score
-     FROM properties
-     WHERE ${where.join(' AND ')}
-     ORDER BY match_score DESC, updated_at DESC
-     LIMIT 20`,
-    [...params, lead.bhk || ''],
+  const { rows: properties } = await q(
+    `SELECT * FROM properties WHERE agent_id = $1 AND status = 'available'`,
+    [agentId],
   )
-  return rows
+  return rankPropertyMatches(lead, properties)
 }
 
 // --- CRM: properties (agent inventory) ---
@@ -2280,9 +2249,13 @@ export async function dashboard(agentId) {
   ).rows
   const hotLeads = (
     await q(
-      `SELECT id, name, wa_id, score, stage, pipeline_type, ai_summary, next_step, updated_at
-       FROM leads WHERE agent_id = $1 AND temp = 'Hot' AND closed_at IS NULL
-       ORDER BY score DESC NULLS LAST, updated_at DESC LIMIT 10`,
+      // Decayed/rule-hybrid temperature (see stats()/scoring.js) — a lead the AI
+      // called Hot at extraction time but that has gone quiet must fall off this
+      // widget, and one the hard rule just promoted must appear even if its raw
+      // AI temp was Warm.
+      `SELECT id, name, wa_id, score, effective_score, stage, pipeline_type, ai_summary, next_step, updated_at
+       FROM leads WHERE agent_id = $1 AND COALESCE(effective_temp, temp) = 'Hot' AND closed_at IS NULL
+       ORDER BY COALESCE(effective_score, score) DESC NULLS LAST, updated_at DESC LIMIT 10`,
       [agentId],
     )
   ).rows
@@ -2354,16 +2327,28 @@ export async function computeLeadDecay(lead, now = Date.now()) {
 }
 
 // Recompute and PERSIST a lead's engagement/effective score + temperature.
+//
+// Temperature is decay's, UNLESS the hard qualification rule has fired (budget
+// stated + near-term timeline + 2+ replies + visit agreed) — that rule is a
+// business-level "this buyer is qualified" signal and must not be lost just
+// because engagement went quiet for a day (see scoring.hybridScore). We do NOT
+// also pull in the LLM-band promotion hybridScore applies for live/detail views:
+// that one is meant to keep a strong-but-quiet lead visible in the UI, not to
+// stop decay from cooling a silent lead in the persisted field that drives
+// notifications, dashboard counts and segment membership.
 export async function recomputeLeadScore(leadId, now = Date.now()) {
   const lead = await getLead(leadId)
   if (!lead) return null
-  const d = decayLead(lead, await leadEngagementSignals(leadId), now)
+  const signals = await leadEngagementSignals(leadId)
+  const d = decayLead(lead, signals, now)
+  const rules = ruleSignals(lead, signals)
+  const temperature = rules.hotRule ? 'Hot' : d.temperature
   await q(
     `UPDATE leads SET engagement_score = $2, effective_score = $3, effective_temp = $4,
        score_factors = $5, last_decay_at = now() WHERE id = $1`,
-    [leadId, d.engagementScore, d.effectiveScore, d.temperature, JSON.stringify(d.factors)],
+    [leadId, d.engagementScore, d.effectiveScore, temperature, JSON.stringify({ ...d.factors, rule_hot: rules.hotRule })],
   )
-  return d
+  return { ...d, temperature }
 }
 
 // Recompute every non-closed lead for an agent (the twice-daily decay job, and
@@ -2584,6 +2569,7 @@ export async function worklist(agentId, now = new Date()) {
       title: f.name || f.wa_id,
       reason: f.note ? `Overdue follow-up: ${f.note}` : 'Follow-up is overdue.',
       recencyAt: f.due_at,
+      priority: followupPriority(f.due_at),
     }))
   }
 

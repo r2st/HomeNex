@@ -110,6 +110,17 @@ test('siteVisitWaReminders sends a T-1-day reminder for a next-day visit', async
   assert.match(sent[0], /tomorrow/i)
 })
 
+test('siteVisitWaReminders mirrors the buyer\'s own language (Hinglish thread gets a Hinglish reminder)', async () => {
+  const lead = await upsertLead(agentId, '919888830006', 'Hinglish Hema')
+  await addMessage(lead.id, 'buyer', '2bhk chahiye, budget 80 lakh tak, kal visit kar sakte hain kya')
+  await createSiteVisit(agentId, { lead_id: lead.id, scheduled_at: new Date(Date.now() + 90 * 60_000).toISOString() })
+
+  const sent = []
+  const fakeSend = async (to, text) => { sent.push(text); return 'wamid.HI' }
+  assert.equal(await siteVisitWaRemindersForAgent(agentId, Date.now(), fakeSend), 1)
+  assert.match(sent[0], /ghante mein hai/, 'T-2h reminder should mirror the Hinglish buyer, not default to English')
+})
+
 test('siteVisitWaReminders is a no-op when WhatsApp is unconfigured (default sender)', async () => {
   const lead = await upsertLead(agentId, '919888830005', 'Quiet Qamar')
   await createSiteVisit(agentId, { lead_id: lead.id, scheduled_at: new Date(Date.now() + 90 * 60_000).toISOString() })

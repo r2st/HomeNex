@@ -152,6 +152,7 @@ import {
 } from './db.js'
 import { paiseToDisplay } from './money.js'
 import { bookingConfirmationText } from './siteVisit.js'
+import { detectConversationLanguage } from './language.js'
 import { generateReply, extractLead, suggestReplies, aiConfigured, categorizeInquiry, buildAutofillSuggestions } from './ai.js'
 import { emiReplyFor, parseEmiQuery, formatEmiMessage } from './emi.js'
 import { FESTIVALS, getFestival, personalizeGreeting } from './festivals.js'
@@ -1360,11 +1361,14 @@ app.post('/api/site-visits', ah(async (req, res) => {
     // Fire the automated WhatsApp booking confirmation (best-effort: a WhatsApp
     // outage or closed service window must not fail the scheduling itself).
     const property = property_id ? await getProperty(property_id, req.agent.id) : null
+    // Mirror the buyer's own language/register (see language.js) — a booking
+    // confirmation landing in English mid-Hindi/Hinglish thread reads as a bot.
+    const lang = detectConversationLanguage(await getMessages(lead.id))
     const text = bookingConfirmationText({
       lead_name: lead.name, lead_wa_id: lead.wa_id, scheduled_at: visit.scheduled_at,
       property_title: property?.title, property_locality: property?.locality, property_city: property?.city,
       pickup_required: visit.pickup_required, pickup_location: visit.pickup_location,
-    }, { timezone: req.agent.timezone })
+    }, { timezone: req.agent.timezone, lang })
     let confirmation_sent = false
     try {
       const waMsgId = await sendText(lead.wa_id, text, req.agent.wa_phone_number_id)

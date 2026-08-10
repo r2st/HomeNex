@@ -1,7 +1,7 @@
 // Pure unit tests for the worklist ranker (no DB).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { worklistItem, rankWorklist, worklistCounts, WORKLIST_TYPES, PRIORITY_RANK } from '../worklist.js'
+import { worklistItem, rankWorklist, worklistCounts, followupPriority, WORKLIST_TYPES, PRIORITY_RANK } from '../worklist.js'
 
 test('worklistItem stamps priority + action from the type table', () => {
   const item = worklistItem('service_window_closing', { lead_id: 3, title: 'Ravi', reason: 'closing' })
@@ -40,6 +40,30 @@ test('rankWorklist drops nulls and caps the list', () => {
   many.push(null)
   const ranked = rankWorklist(many, { limit: 50 })
   assert.equal(ranked.length, 50)
+})
+
+test('followupPriority stays high just past due, escalates to critical once badly overdue', () => {
+  const now = Date.now()
+  assert.equal(followupPriority(new Date(now - 3600_000).toISOString(), now), 'high') // 1h overdue
+  assert.equal(followupPriority(new Date(now - 47 * 3600_000).toISOString(), now), 'high') // 47h overdue
+  assert.equal(followupPriority(new Date(now - 48 * 3600_000).toISOString(), now), 'critical') // 48h overdue
+  assert.equal(followupPriority(new Date(now - 5 * 86_400_000).toISOString(), now), 'critical') // 5 days
+  assert.equal(followupPriority(null, now), 'high') // no due date: default
+})
+
+test('worklistItem accepts a priority override (escalated overdue follow-up outranks a merely-high item)', () => {
+  const now = Date.now()
+  const items = [
+    worklistItem('hot_lead_waiting', { lead_id: 1, title: 'a', reason: '', recencyAt: new Date(now).toISOString() }),
+    worklistItem('overdue_followup', {
+      lead_id: 2, entity_type: 'followup', entity_id: 9, title: 'b', reason: '',
+      recencyAt: new Date(now - 5 * 86_400_000).toISOString(),
+      priority: followupPriority(new Date(now - 5 * 86_400_000).toISOString(), now),
+    }),
+  ]
+  assert.equal(items[1].priority, 'critical')
+  const ranked = rankWorklist(items)
+  assert.equal(ranked[0].lead_id, 2) // critical (escalated followup) beats high (hot lead)
 })
 
 test('worklistCounts rolls up by type and priority', () => {

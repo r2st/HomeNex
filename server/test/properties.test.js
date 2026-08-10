@@ -48,6 +48,49 @@ after(async () => {
   await dropTestDb(dbName)
 })
 
+test('GET /api/leads/:id/property-matches ranks fitting inventory and explains why', async () => {
+  // Own agent — the property-count assertions later in this file depend on an
+  // exact tally for the shared `agentId`, so inventory created here must not
+  // land in that agent's pool.
+  const out = await (await req('POST', '/api/auth/signup', { name: 'Match Agent', phone: '+919800000097', password: 'secret123' })).json()
+  const matchToken = out.token
+  const matchAgentId = out.agent.id
+  const mreq = (method, url, body) => req(method, url, body, matchToken)
+
+  const lead = await upsertLead(matchAgentId, '919888900001', 'Match Mira')
+  await mreq('PUT', `/api/leads/${lead.id}`, {
+    bhk: '2', budget_min: 60_0000000, budget_max: 90_0000000, preferred_localities: ['Baner'],
+  })
+
+  const fits = await (await mreq('POST', '/api/properties', {
+    title: 'Baner Fit', bhk: '2', locality: 'Baner', city: 'Pune', price_paise: 80_0000000, status: 'available',
+  })).json()
+  const wrongBhk = await (await mreq('POST', '/api/properties', {
+    title: 'Baner Studio', bhk: '1', locality: 'Baner', city: 'Pune', price_paise: 80_0000000, status: 'available',
+  })).json()
+  const overBudget = await (await mreq('POST', '/api/properties', {
+    title: 'Baner Penthouse', bhk: '2', locality: 'Baner', city: 'Pune', price_paise: 500_0000000, status: 'available',
+  })).json()
+  const sold = await (await mreq('POST', '/api/properties', {
+    title: 'Sold Baner Flat', bhk: '2', locality: 'Baner', city: 'Pune', price_paise: 80_0000000, status: 'sold',
+  })).json()
+
+  const matches = await (await mreq('GET', `/api/leads/${lead.id}/property-matches`)).json()
+  const ids = matches.map((m) => m.id)
+  assert.ok(ids.includes(fits.id))
+  assert.ok(!ids.includes(wrongBhk.id), 'a stated BHK conflict must be excluded')
+  assert.ok(!ids.includes(overBudget.id), 'far over budget must be excluded')
+  assert.ok(!ids.includes(sold.id), 'sold inventory must never appear')
+
+  const top = matches.find((m) => m.id === fits.id)
+  assert.ok(top.match_score > 0)
+  assert.ok(top.match_reasons.some((r) => r.includes('Baner')))
+})
+
+test('GET /api/leads/:id/property-matches 404s for an unknown lead', async () => {
+  assert.equal((await req('GET', '/api/leads/999999/property-matches')).status, 404)
+})
+
 test('money helpers format paise as ₹ L / ₹ Cr', () => {
   assert.equal(paiseToDisplay(45_0000000), '₹ 45L')
   assert.equal(paiseToDisplay(1_20_0000000), '₹ 1.2Cr')

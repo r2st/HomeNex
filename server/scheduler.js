@@ -19,10 +19,12 @@ import {
   createNotification,
   createFollowup,
   addMessage,
+  getMessages,
   logActivity,
 } from './db.js'
 import { sendText, whatsappConfigured } from './whatsapp.js'
 import { reminderT1Text, reminderT2Text } from './siteVisit.js'
+import { detectConversationLanguage } from './language.js'
 
 const today = (now) => new Date(now).toISOString().slice(0, 10)
 
@@ -223,20 +225,19 @@ export async function siteVisitWaRemindersForAgent(agentId, now = Date.now(), se
   for (const v of rows) {
     const hoursUntil = (new Date(v.scheduled_at).getTime() - now) / 3600_000
     let column = null
-    let text = null
     // Inside the final ~2h, only the T-2h reminder (with the pin) is relevant — a
     // same-day booking must never fall through to a "your visit is tomorrow" note.
     if (hoursUntil <= 2.5) {
-      if (!v.reminder_t2_sent_at) {
-        column = 'reminder_t2_sent_at'
-        text = reminderT2Text(v, opts)
-      }
+      if (!v.reminder_t2_sent_at) column = 'reminder_t2_sent_at'
     } else if (hoursUntil <= 25 && !v.reminder_t1_sent_at) {
       column = 'reminder_t1_sent_at'
-      text = reminderT1Text(v, opts)
     }
     if (!column) continue
     try {
+      // Mirror the buyer's own language/register (see language.js) — a reminder
+      // landing in English mid-Hindi/Hinglish thread reads as a canned bot message.
+      const lang = detectConversationLanguage(await getMessages(v.lead_id))
+      const text = column === 'reminder_t2_sent_at' ? reminderT2Text(v, { ...opts, lang }) : reminderT1Text(v, { ...opts, lang })
       await deliverVisitMessage(agent, v, text, send)
       await query(`UPDATE site_visits SET ${column} = now() WHERE id = $1`, [v.id])
       n++

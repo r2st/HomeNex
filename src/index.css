@@ -103,3 +103,16 @@ body {
   background-image: radial-gradient(rgba(27, 122, 74, 0.055) 1.5px, transparent 1.5px);
   background-size: 22px 22px;
 }
+
+/* iOS Safari auto-zooms the page on focus of any form field rendered below 16px —
+   jarring on a phone-shaped PWA where agents fill in forms constantly. The design
+   system's inputs run 13-14px for visual density, so bump just the focus size back
+   up on real mobile viewports (not the desktop preview of the phone frame, which is
+   still narrower than this breakpoint's typical device but reports a wider window). */
+@media (max-width: 640px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}

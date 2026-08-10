@@ -27,13 +27,15 @@ export const WORKLIST_TYPES = {
 }
 
 // Build one worklist item. `recencyAt` is what breaks ties within a priority band
-// (more recent / more overdue first). Returns null for an unknown type.
-export function worklistItem(type, { lead_id = null, entity_type = 'lead', entity_id = null, title, reason, recencyAt = null, meta = {} } = {}) {
+// (more recent / more overdue first). `priority` overrides the type's default
+// (used to escalate a badly-overdue follow-up to critical). Returns null for an
+// unknown type.
+export function worklistItem(type, { lead_id = null, entity_type = 'lead', entity_id = null, title, reason, recencyAt = null, meta = {}, priority = null } = {}) {
   const def = WORKLIST_TYPES[type]
   if (!def) return null
   return {
     type,
-    priority: def.priority,
+    priority: priority || def.priority,
     action: def.action,
     lead_id,
     entity_type,
@@ -43,6 +45,18 @@ export function worklistItem(type, { lead_id = null, entity_type = 'lead', entit
     recency_at: recencyAt ? new Date(recencyAt).toISOString() : null,
     meta,
   }
+}
+
+// An overdue follow-up left untouched for a couple of days isn't "get to it
+// today" anymore — it's a buyer going cold while nobody's watching. Escalate it
+// to critical so it can't get lost under the day's other high-priority items.
+export const OVERDUE_FOLLOWUP_ESCALATE_HOURS = 48
+
+export function followupPriority(dueAt, now = Date.now()) {
+  const base = WORKLIST_TYPES.overdue_followup.priority
+  if (!dueAt) return base
+  const overdueHours = (now - new Date(dueAt).getTime()) / 3600_000
+  return overdueHours >= OVERDUE_FOLLOWUP_ESCALATE_HOURS ? 'critical' : base
 }
 
 // Sort by priority rank, then by recency (newest/most-overdue first), and cap.
