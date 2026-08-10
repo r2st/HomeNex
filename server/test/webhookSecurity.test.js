@@ -185,8 +185,14 @@ test('a leadgen webhook mapped to an agent by form id becomes a real lead', asyn
   })
   try {
     assert.equal((await postSigned(leadgenPayload({ leadgen_id: 'lg-1', form_id: 'form-abc', ad_id: 'ad-1' }))).status, 200)
-    const lead = await until(() => getLeadByAgentWaId(agentId, '919876543210'))
-    assert.ok(lead, 'the leadgen never produced a lead')
+    // Wait for the SOURCE STAMP, not merely for the row: ingestLead() inserts the
+    // lead before it writes source_channel/source_meta, so polling on existence
+    // alone can win the race and read a half-built row.
+    const lead = await until(async () => {
+      const l = await getLeadByAgentWaId(agentId, '919876543210')
+      return l?.source_channel ? l : null
+    })
+    assert.ok(lead, 'the leadgen never produced a fully-stamped lead')
     assert.equal(lead.name, 'Leadgen Lakshmi')
     assert.equal(lead.source_channel, 'meta_lead_ad')
     assert.equal(lead.source_meta.ad_name, 'Baner 2BHK Launch')

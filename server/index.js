@@ -1661,8 +1661,14 @@ app.post('/api/labels', ah(async (req, res) => {
 }))
 
 app.delete('/api/labels/:id', ah(async (req, res) => {
-  const ok = await deleteLabel(Number(req.params.id), req.agent.id)
-  if (!ok) return res.status(403).json({ error: 'System labels cannot be deleted', code: 'LABEL_SYSTEM' })
+  const outcome = await deleteLabel(Number(req.params.id), req.agent.id)
+  // A label that isn't there is a 404. Only a real, protected system label earns
+  // the 403 — otherwise a stale id (or another workspace's label) came back as
+  // "System labels cannot be deleted", which is both wrong and confusing.
+  if (outcome === 'system') {
+    return res.status(403).json({ error: 'System labels cannot be deleted', code: 'LABEL_SYSTEM' })
+  }
+  if (outcome === 'missing') return res.status(404).json({ error: 'not found' })
   res.json({ ok: true })
 }))
 

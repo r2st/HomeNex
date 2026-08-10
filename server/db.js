@@ -3373,9 +3373,14 @@ export async function createLabel(agentId, { name, color }) {
 }
 
 // System labels are part of the lifecycle vocabulary and can't be deleted.
+// Returns 'deleted' | 'system' | 'missing' rather than a bare boolean, so the route
+// can tell "you may not delete this" apart from "there is nothing here". A single
+// false conflated the two and made a stale id look like a permissions problem.
 export async function deleteLabel(id, agentId) {
   const res = await q('DELETE FROM labels WHERE id = $1 AND agent_id = $2 AND is_system = false', [id, agentId])
-  return res.rowCount > 0
+  if (res.rowCount > 0) return 'deleted'
+  const { rows } = await q('SELECT is_system FROM labels WHERE id = $1 AND agent_id = $2', [id, agentId])
+  return rows[0]?.is_system ? 'system' : 'missing'
 }
 
 export async function leadLabels(leadId) {
