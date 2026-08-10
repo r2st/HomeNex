@@ -11,7 +11,7 @@ delete process.env.WHATSAPP_APP_SECRET
 const dbName = await createTestDb('pipelinevisits')
 
 const { app } = await import('../index.js')
-const { closePool, query, upsertLead, applyExtraction } = await import('../db.js')
+const { closePool, query, upsertLead, applyExtraction, recomputeLeadScore } = await import('../db.js')
 
 let server, base, token, agentId
 
@@ -168,4 +168,69 @@ test('booking a visit reports confirmation_sent=false when WhatsApp is unconfigu
   // The scheduling itself still succeeded and no confirmation timestamp was stamped.
   const { rows } = await query('SELECT confirmation_sent_at FROM site_visits WHERE id = $1', [visit.id])
   assert.equal(rows[0].confirmation_sent_at, null)
+})
+
+// --- Booking a visit must not cool the lead (regression) ----------------------
+//
+// The scheduled_at of a booked visit sits in the FUTURE. It used to be fed to the
+// decay engine as if it were past activity, producing a negative age, a recency of
+// 0, and an effective score of fit * 0.3 — so the act of booking a site visit
+// dropped the buyer out of the Hot list, the hot-lead push notification and the
+// "hot lead waiting" worklist card. See scoring.js decayLead / upcomingVisitWeight.
+
+test('REGRESSION: booking a site visit keeps the lead Hot end-to-end', async () => {
+  const lead = await upsertLead(agentId, '919888810060', 'Visit Vinod')
+  await applyExtraction(lead.id, { temp: 'Hot', score: 92, budget_max_l: 90, timeline: '2 months' })
+  // A buyer who messaged minutes ago: unambiguously Hot before the booking.
+  await query(
+    `INSERT INTO messages (lead_id, role, text, created_at) VALUES ($1, 'buyer', 'ready to see it', now() - interval '10 minutes')`,
+    [lead.id],
+  )
+
+  await recomputeLeadScore(lead.id)
+  const before = (await query('SELECT effective_score, effective_temp FROM leads WHERE id = $1', [lead.id])).rows[0]
+  assert.equal(before.effective_temp, 'Hot')
+
+  const res = await req('POST', '/api/site-visits', {
+    lead_id: lead.id,
+    scheduled_at: new Date(Date.now() + 2 * 86400_000).toISOString(),
+  })
+  assert.equal(res.status, 200)
+
+  // The booking route rescores inline, so the persisted row is already correct —
+  // no waiting for the twice-daily decay pass.
+  const after = (await query('SELECT effective_score, effective_temp, score_factors FROM leads WHERE id = $1', [lead.id])).rows[0]
+  assert.equal(after.effective_temp, 'Hot', 'booking a visit flipped the lead out of Hot')
+  assert.ok(
+    Number(after.effective_score) >= Number(before.effective_score),
+    `booking dropped the score ${before.effective_score} -> ${after.effective_score}`,
+  )
+  const factors = typeof after.score_factors === 'string' ? JSON.parse(after.score_factors) : after.score_factors
+  assert.ok(factors.last_signal_age_h >= 0, 'a future visit must never produce a negative signal age')
+  assert.equal(factors.commitment, 0.8, 'a visit two days out is a strong forward commitment')
+
+  // And the lead is still in the agent's Hot list.
+  const hot = await (await req('GET', '/api/dashboard')).json()
+  assert.ok(hot.hotLeads.some((l) => l.id === lead.id), 'lead fell off the Hot list after booking')
+})
+
+test('a quiet lead with a visit on the calendar is not cooled by the decay pass', async () => {
+  const lead = await upsertLead(agentId, '919888810061', 'Quiet Qadir')
+  await applyExtraction(lead.id, { temp: 'Hot', score: 85 })
+  // Silent for three days — on engagement alone this lead is Cold.
+  await query(
+    `INSERT INTO messages (lead_id, role, text, created_at) VALUES ($1, 'buyer', 'hi', now() - interval '3 days')`,
+    [lead.id],
+  )
+
+  await recomputeLeadScore(lead.id)
+  const silent = (await query('SELECT effective_temp FROM leads WHERE id = $1', [lead.id])).rows[0]
+  assert.equal(silent.effective_temp, 'Cold')
+
+  await req('POST', '/api/site-visits', {
+    lead_id: lead.id,
+    scheduled_at: new Date(Date.now() + 20 * 3600_000).toISOString(),
+  })
+  const booked = (await query('SELECT effective_temp FROM leads WHERE id = $1', [lead.id])).rows[0]
+  assert.equal(booked.effective_temp, 'Hot', 'a visit tomorrow should hold the lead live')
 })

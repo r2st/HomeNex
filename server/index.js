@@ -1420,6 +1420,11 @@ app.post('/api/site-visits', ah(async (req, res) => {
       lead_id: lead.id, property_id, scheduled_at, pickup_required, pickup_location, builder_preregistered,
     })
     await logActivity(req.agent.id, lead.id, 'agent', `Site visit scheduled for ${lead.name || lead.wa_id}`)
+    // A booked visit is the strongest buying signal there is, and it feeds both the
+    // hard Hot rule and the decay's commitment term — recompute now so the hot-lead
+    // count, notifications and worklist reflect it immediately instead of at the next
+    // twice-daily decay pass. Best-effort: never fail the booking over a rescore.
+    await recomputeLeadScore(lead.id).catch((e) => console.error('rescore on visit booking failed', e.message))
     // Fire the automated WhatsApp booking confirmation (best-effort: a WhatsApp
     // outage or closed service window must not fail the scheduling itself).
     const property = property_id ? await getProperty(property_id, req.agent.id) : null

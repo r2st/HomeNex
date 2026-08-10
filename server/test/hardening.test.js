@@ -199,3 +199,88 @@ test('security headers are present on a real response', async () => {
   assert.equal(res.headers.get('x-frame-options'), 'SAMEORIGIN')
   assert.equal(res.headers.get('x-powered-by'), null) // disabled
 })
+
+// --- clientIp fallbacks -------------------------------------------------------
+
+test('clientIp falls back to the socket address, then to a constant', () => {
+  assert.equal(clientIp({ socket: { remoteAddress: '203.0.113.7' } }), '203.0.113.7')
+  assert.equal(clientIp({ get: () => null, socket: { remoteAddress: '203.0.113.8' } }), '203.0.113.8')
+  // An XFF header of only separators yields no usable hop.
+  assert.equal(clientIp({ get: () => ' , ,', socket: { remoteAddress: '203.0.113.9' } }), '203.0.113.9')
+  assert.equal(clientIp({}), 'unknown')
+})
+
+test('clientIp uses the single hop when the proxy chain has just one', () => {
+  assert.equal(clientIp({ get: (h) => (h === 'x-forwarded-for' ? '198.51.100.4' : null) }), '198.51.100.4')
+})
+
+// --- rate limiter window rollover --------------------------------------------
+
+test('rateLimit: the bucket resets once the window has elapsed', async () => {
+  const limiter = rateLimit({ windowMs: 20, max: 1, key: () => 'k' })
+  const call = () =>
+    new Promise((res) =>
+      limiter({}, { setHeader() {}, status() { return { json() { res(429) } } } }, () => res(200)),
+    )
+  assert.equal(await call(), 200)
+  assert.equal(await call(), 429)
+  await new Promise((r) => setTimeout(r, 40))
+  assert.equal(await call(), 200, 'a new window starts fresh')
+  limiter.stop()
+})
+
+test('rateLimit: the sweep drops expired buckets so the map cannot grow forever', async () => {
+  const limiter = rateLimit({ windowMs: 15, max: 1, key: (r) => r.k })
+  const call = (k) =>
+    new Promise((res) =>
+      limiter({ k }, { setHeader() {}, status() { return { json() { res(429) } } } }, () => res(200)),
+    )
+  for (let i = 0; i < 5; i++) assert.equal(await call(`ip-${i}`), 200)
+  // After the window and one sweep tick, every key is forgotten and allowed again.
+  await new Promise((r) => setTimeout(r, 50))
+  for (let i = 0; i < 5; i++) assert.equal(await call(`ip-${i}`), 200)
+  limiter.stop()
+})
+
+test('rateLimit: a custom message is returned instead of the default', async () => {
+  const limiter = rateLimit({ windowMs: 1000, max: 0, key: () => 'k', message: 'Too many login attempts.' })
+  const body = await new Promise((res) =>
+    limiter({}, { setHeader() {}, status() { return { json: res } } }, () => res(null)),
+  )
+  assert.equal(body.error, 'Too many login attempts.')
+  assert.equal(body.code, 'RATE_LIMITED')
+  limiter.stop()
+})
+
+// --- request logger -----------------------------------------------------------
+
+test('requestLogger logs one line per finished request', async () => {
+  const { requestLogger } = await import('../middleware.js')
+  const lines = []
+  const mw = requestLogger({ log: (l) => lines.push(l) })
+  const mini = express()
+  mini.use(mw)
+  mini.get('/thing', (_q, s) => s.status(201).json({ ok: true }))
+  const srv = await new Promise((r) => {
+    const s = mini.listen(0, () => r(s))
+  })
+  try {
+    await fetch(`http://127.0.0.1:${srv.address().port}/thing?q=1`)
+    await new Promise((r) => setTimeout(r, 20))
+    assert.equal(lines.length, 1)
+    assert.match(lines[0], /^GET \/thing\?q=1 201 [\d.]+ms$/)
+  } finally {
+    srv.close()
+  }
+})
+
+test('requestLogger skips static assets, uploads and the favicon', async () => {
+  const { requestLogger } = await import('../middleware.js')
+  const lines = []
+  const mw = requestLogger({ log: (l) => lines.push(l) })
+  const next = () => {}
+  for (const path of ['/uploads/a.jpg', '/assets/app.js', '/favicon.ico']) {
+    mw({ path, method: 'GET', originalUrl: path, on() {} }, { on() {} }, next)
+  }
+  assert.equal(lines.length, 0)
+})

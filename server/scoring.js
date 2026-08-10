@@ -19,6 +19,9 @@
 
 const MINUTE = 60_000
 const DAY_MS = 24 * 3600_000
+// How far ahead of `now` a "past" timestamp may sit before we call it bad data
+// rather than clock skew between the app server and the database.
+const CLOCK_SKEW_MS = 5 * MINUTE
 
 const clamp100 = (n) => Math.max(0, Math.min(100, Math.round(n)))
 const round2 = (n) => Math.round(n * 100) / 100
@@ -38,6 +41,22 @@ export function signalRecencyWeight(ageMs) {
   if (min <= 1440) return 0.15 // ≤ 24h
   if (min <= 2880) return 0.05 // ≤ 48h
   return 0.02
+}
+
+// A site visit BOOKED FOR LATER is a commitment, not stale activity. It lives in
+// the future, so it can never have a "recency" — feeding it to signalRecencyWeight
+// as an age would yield a negative age and score 0, which is how booking a visit
+// used to *cool* a lead (see decayLead). Instead an upcoming visit keeps the lead
+// live, more strongly the nearer it is. Returns 0 for a visit already in the past
+// (that one is real activity and decays normally) or a missing/invalid value.
+export function upcomingVisitWeight(msUntil) {
+  if (msUntil == null || Number.isNaN(msUntil) || msUntil <= 0) return 0
+  const h = msUntil / 3600_000
+  if (h <= 24) return 1.0 // tomorrow or sooner — as live as a lead gets
+  if (h <= 72) return 0.8 // ≤ 3 days
+  if (h <= 168) return 0.6 // ≤ 1 week
+  if (h <= 336) return 0.4 // ≤ 2 weeks
+  return 0.25 // booked, but far out
 }
 
 // Clustered activity in the last 24h means the buyer is in the middle of deciding.
@@ -86,37 +105,70 @@ export function fitScoreFor(lead = {}) {
 //
 // Returns { fitScore, engagementScore, effectiveScore, temperature, factors }.
 export function decayLead(lead = {}, signals = {}, now = Date.now()) {
-  const events = []
-  const push = (t) => {
-    if (t == null) return
-    const ms = new Date(t).getTime()
-    if (!Number.isNaN(ms)) events.push(ms)
-  }
-  push(signals.lastBuyerAt ?? lead.last_inbound_at)
-  for (const t of signals.pageViews || []) push(t)
-  for (const t of signals.siteVisits || []) push(t)
+  // Two buckets, because they mean opposite things. `past` is activity that has
+  // already happened and therefore decays. `upcoming` is a site visit on the
+  // calendar — a forward commitment that must never be read as an "age".
+  const past = []
+  const upcoming = []
 
-  const mostRecent = events.length ? Math.max(...events) : null
+  const toMs = (t) => {
+    if (t == null) return null
+    const ms = new Date(t).getTime()
+    return Number.isNaN(ms) ? null : ms
+  }
+
+  // Messages and micro-page views can only have happened in the past. A slightly
+  // future timestamp is clock skew between the app and the database — treat it as
+  // "just now". Anything further ahead is bad data and is ignored outright, rather
+  // than being allowed to zero out the recency of the lead's real activity.
+  const pushActivity = (t) => {
+    const ms = toMs(t)
+    if (ms == null) return
+    if (ms <= now) past.push(ms)
+    else if (ms - now <= CLOCK_SKEW_MS) past.push(now)
+  }
+  // A site visit is past activity once it has happened, and a commitment until then.
+  const pushVisit = (t) => {
+    const ms = toMs(t)
+    if (ms == null) return
+    if (ms <= now) past.push(ms)
+    else upcoming.push(ms)
+  }
+
+  pushActivity(signals.lastBuyerAt ?? lead.last_inbound_at)
+  for (const t of signals.pageViews || []) pushActivity(t)
+  for (const t of signals.siteVisits || []) pushVisit(t)
+
+  const mostRecent = past.length ? Math.max(...past) : null
   const recency = mostRecent == null ? 0 : signalRecencyWeight(now - mostRecent)
-  const velocity = engagementVelocity(events, now)
+  const nextVisitAt = upcoming.length ? Math.min(...upcoming) : null
+  const commitment = nextVisitAt == null ? 0 : upcomingVisitWeight(nextVisitAt - now)
+  const velocity = engagementVelocity(past, now)
   const fitScore = fitScoreFor(lead)
 
-  // Engagement is purely "how live is this lead right now" — recency + clustering.
-  const engagementScore = clamp100(100 * recency + 100 * velocity)
+  // "How live is this lead right now" is the better of the two: a buyer who messaged
+  // ten minutes ago is live, and so is a quiet buyer who is walking a flat tomorrow.
+  // Taking the max means booking a visit can only ever help a lead, never cool it.
+  const liveness = Math.max(recency, commitment)
 
-  // Effective = fit decayed by recency (floor 0.3 so a strong lead never fully
+  // Engagement is purely liveness + clustering.
+  const engagementScore = clamp100(100 * liveness + 100 * velocity)
+
+  // Effective = fit decayed by liveness (floor 0.3 so a strong lead never fully
   // vanishes) plus the velocity bonus for a buyer actively clicking around.
-  const effectiveScore = clamp100(fitScore * (0.3 + 0.7 * recency) + 100 * velocity)
+  const effectiveScore = clamp100(fitScore * (0.3 + 0.7 * liveness) + 100 * velocity)
 
   const temperature = effectiveScore >= 65 ? 'Hot' : effectiveScore >= 35 ? 'Warm' : 'Cold'
 
   const factors = {
     fit: fitScore,
     recency: round2(recency),
+    commitment: round2(commitment),
     velocity: round2(velocity),
     engagement: engagementScore,
     page_views: (signals.pageViews || []).length,
     last_signal_age_h: mostRecent == null ? null : round1((now - mostRecent) / 3600_000),
+    next_visit_in_h: nextVisitAt == null ? null : round1((nextVisitAt - now) / 3600_000),
   }
   return { fitScore, engagementScore, effectiveScore, temperature, factors }
 }
@@ -204,10 +256,10 @@ function buildReason(temperature, source, rules, lead, decay) {
   if (rules.timelineSoon) bits.push('near-term timeline')
   if (rules.engaged) bits.push('actively replying')
   if (rules.visitAgreed) bits.push('visit agreed')
-  const engagementNote =
-    decay.factors.last_signal_age_h == null
-      ? 'no recent activity'
-      : `last active ${decay.factors.last_signal_age_h}h ago`
+  const notes = []
+  if (decay.factors.last_signal_age_h != null) notes.push(`last active ${decay.factors.last_signal_age_h}h ago`)
+  if (decay.factors.next_visit_in_h != null) notes.push(`site visit booked in ${decay.factors.next_visit_in_h}h`)
+  const engagementNote = notes.length ? notes.join(', ') : 'no recent activity'
   const lead_in = source === 'llm' ? 'AI assessment' : 'engagement'
   return `${temperature} by ${lead_in}: ${bits.length ? bits.join(', ') + '; ' : ''}${engagementNote} (effective score ${decay.effectiveScore}).`
 }

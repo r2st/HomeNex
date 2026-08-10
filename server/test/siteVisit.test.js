@@ -69,3 +69,81 @@ test('a visit with no pickup omits the pickup line in every language', () => {
     assert.ok(!bookingConfirmationText(noPickup, { lang }).toLowerCase().includes('pickup'))
   }
 })
+
+// --- Partial / missing data branches -----------------------------------------
+//
+// Real visits are booked with far less than the fixture above: no property, no
+// pickup, an unnamed lead. None of those may produce a broken line or a stray icon.
+
+test('an unnamed lead (name defaults to the wa_id) gets no greeting name', () => {
+  const anon = { ...visit, lead_name: '919888800001' }
+  const text = bookingConfirmationText(anon)
+  assert.ok(text.startsWith('Your site visit is confirmed'), text)
+  assert.ok(!text.includes('Hi 919888800001'))
+  // Hindi and Hinglish take the same no-name branch.
+  assert.ok(bookingConfirmationText(anon, { lang: 'hindi' }).startsWith('आपकी'))
+  assert.ok(bookingConfirmationText(anon, { lang: 'hinglish' }).startsWith('Aapki'))
+})
+
+test('a null lead_name is handled like an unnamed lead', () => {
+  const text = bookingConfirmationText({ ...visit, lead_name: null })
+  assert.ok(!/^Hi /.test(text))
+})
+
+test('only the first name is greeted', () => {
+  assert.match(bookingConfirmationText(visit), /^Hi Ravi! /)
+})
+
+test('a visit with no property at all omits the property line', () => {
+  const bare = { scheduled_at: visit.scheduled_at, pickup_required: false }
+  for (const [lang, fn] of [['english', bookingConfirmationText], ['hindi', reminderT1Text], ['hinglish', reminderT2Text]]) {
+    const text = fn(bare, { lang })
+    assert.ok(!text.includes('🏠'), `${lang} leaked a property line`)
+  }
+})
+
+test('a property with a title but no locality still renders a property line', () => {
+  const titleOnly = { ...visit, property_locality: null, property_city: null }
+  const text = bookingConfirmationText(titleOnly)
+  assert.match(text, /🏠 Kolte Patil 24K/)
+  assert.ok(!text.includes('—'), 'no dangling separator when there is no locality')
+})
+
+test('a property with a locality but no title renders just the place', () => {
+  const localityOnly = { ...visit, property_title: null }
+  assert.match(bookingConfirmationText(localityOnly), /🏠 Hinjewadi, Pune/)
+})
+
+test('pickup with no stated pickup point still announces the pickup', () => {
+  const noPoint = { ...visit, pickup_location: null }
+  assert.match(bookingConfirmationText(noPoint), /🚗 Pickup arranged$/m)
+  assert.match(reminderT1Text(noPoint), /🚗 Pickup — please be ready\./)
+  assert.match(reminderT2Text(noPoint), /🚗 Pickup is on the way\./)
+  assert.match(bookingConfirmationText(noPoint, { lang: 'hinglish' }), /🚗 Pickup arranged hai$/m)
+  assert.match(reminderT2Text(noPoint, { lang: 'hindi' }), /🚗 पिकअप रवाना हो चुका है।/)
+})
+
+test('reminderT2Text omits the pin when the property has no place at all', () => {
+  const placeless = { ...visit, property_locality: null, property_city: null }
+  assert.ok(!reminderT2Text(placeless).includes('📍 Location:'))
+  assert.ok(!reminderT2Text(placeless, { lang: 'hindi' }).includes('📍 Location:'))
+})
+
+test('mapsLink works from either half of the place on its own', () => {
+  assert.equal(mapsLink('Baner', null), 'https://maps.google.com/?q=Baner')
+  assert.equal(mapsLink(null, 'Pune'), 'https://maps.google.com/?q=Pune')
+  assert.equal(mapsLink('', ''), null)
+})
+
+test('scheduled_at is accepted as a Date as well as an ISO string', () => {
+  const asDate = { ...visit, scheduled_at: new Date(visit.scheduled_at) }
+  assert.equal(bookingConfirmationText(asDate), bookingConfirmationText(visit))
+})
+
+test('an explicit timezone changes the rendered local time', () => {
+  const ist = bookingConfirmationText(visit)
+  const utc = bookingConfirmationText(visit, { timezone: 'UTC' })
+  assert.notEqual(ist, utc)
+  assert.match(ist, /3:30 pm/i) // 10:00 UTC = 15:30 IST
+  assert.match(utc, /10:00 am/i)
+})

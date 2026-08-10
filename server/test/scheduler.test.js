@@ -139,3 +139,79 @@ test('recomputeScoresForAgent returns the number of live leads scored', async ()
   const n = await recomputeScoresForAgent(agentId)
   assert.ok(n >= 1)
 })
+
+test('detectHotLeads also nudges a Hot lead whose last message is still unanswered', async () => {
+  const { recomputeLeadScore } = await import('../db.js')
+  const lead = await upsertLead(agentId, '919888820090', 'Waiting Wasim')
+  await applyExtraction(lead.id, { temp: 'Hot', score: 95 })
+  await addMessage(lead.id, 'buyer', 'Can we see it this weekend?')
+  await recomputeLeadScore(lead.id)
+
+  const fired = await detectHotLeadsForAgent(agentId)
+  assert.ok(fired >= 1)
+  const notes = (
+    await query(`SELECT * FROM notifications WHERE agent_id = $1 AND dedupe_key = $2`, [agentId, `hotwait:${lead.id}:${new Date().toISOString().slice(0, 10)}`])
+  ).rows
+  assert.equal(notes.length, 1)
+  assert.match(notes[0].title, /Hot lead waiting/)
+  assert.match(notes[0].body, /Score 95/)
+
+  // Same day, same lead — deduped, so the agent isn't nagged every half hour.
+  await detectHotLeadsForAgent(agentId)
+  const again = (await query('SELECT COUNT(*)::int AS n FROM notifications WHERE agent_id = $1 AND dedupe_key = $2', [agentId, `hotwait:${lead.id}:${new Date().toISOString().slice(0, 10)}`])).rows[0]
+  assert.equal(again.n, 1)
+})
+
+test('detectHotLeads stays quiet once the agent has answered the hot lead', async () => {
+  const { recomputeLeadScore } = await import('../db.js')
+  const lead = await upsertLead(agentId, '919888820091', 'Answered Anita')
+  await applyExtraction(lead.id, { temp: 'Hot', score: 91 })
+  await addMessage(lead.id, 'buyer', 'Interested')
+  await addMessage(lead.id, 'agent', 'On it — sending options now.')
+  await recomputeLeadScore(lead.id)
+
+  await detectHotLeadsForAgent(agentId)
+  const { rows } = await query(
+    `SELECT COUNT(*)::int AS n FROM notifications WHERE agent_id = $1 AND entity_id = $2 AND type = 'hot_lead_waiting'`,
+    [agentId, lead.id],
+  )
+  assert.equal(rows[0].n, 0, 'the last message is the agent’s — nothing is waiting')
+})
+
+test('runJobForAllAgents isolates a failing agent so the rest of the tick still runs', async () => {
+  const { runJobForAllAgents } = await import('../scheduler.js')
+  const seen = []
+  const errs = []
+  const realError = console.error
+  console.error = (...a) => errs.push(a.join(' '))
+  try {
+    const total = await runJobForAllAgents(async (id) => {
+      seen.push(id)
+      if (id === agentId) throw new Error('boom')
+      return 2
+    })
+    assert.ok(seen.includes(agentId))
+    assert.equal(total, 2 * (seen.length - 1), 'every other agent still contributed')
+    assert.ok(errs.some((e) => /scheduler job failed for agent/.test(e) && /boom/.test(e)))
+  } finally {
+    console.error = realError
+  }
+})
+
+test('runJobForAllAgents treats a job returning nothing as zero actions', async () => {
+  const { runJobForAllAgents } = await import('../scheduler.js')
+  assert.equal(await runJobForAllAgents(async () => undefined), 0)
+  assert.equal(await runJobForAllAgents(async () => null), 0)
+})
+
+test('runJobForAllAgents skips deactivated agents', async () => {
+  const { runJobForAllAgents } = await import('../scheduler.js')
+  const { createAgent } = await import('../db.js')
+  const { hashPassword } = await import('../auth.js')
+  const gone = await createAgent('Gone Girish', '+919800000079', null, hashPassword('secret123'))
+  await query('UPDATE agents SET is_active = 0, deactivated_at = now() WHERE id = $1', [gone.id])
+
+  const seen = []
+  await runJobForAllAgents(async (id) => { seen.push(id); return 0 })
+  assert.ok(!seen.includes(gone.id), 'a deactivated workspace gets no background work')
+})

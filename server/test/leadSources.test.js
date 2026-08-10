@@ -285,3 +285,168 @@ test('syndication previews all portals and exports one', async () => {
   assert.equal(after.saved.length, 1)
   assert.equal((await req('POST', `/api/properties/${property.id}/syndicate`, { portal: 'olx' })).status, 400)
 })
+
+// --------------------------- ingest failure + auto-reply branches ---------------------------
+
+test('ingestLead refuses a lead with no usable phone and records the failure', async () => {
+  for (const phone of [null, '', '12345', 'not-a-number']) {
+    const out = await ingestLead({ agent, channel: 'walk_in', phone, name: 'No Number Nandini' })
+    assert.deepEqual(out, { ok: false, reason: 'no_phone' }, JSON.stringify(phone))
+  }
+  const { rows } = await query(
+    `SELECT status, error, contact_name FROM lead_source_events
+     WHERE agent_id = $1 AND status = 'failed' AND contact_name = 'No Number Nandini'`,
+    [agent.id],
+  )
+  assert.equal(rows.length, 4)
+  assert.equal(rows[0].error, 'no valid phone')
+  assert.equal(rows[0].contact_name, 'No Number Nandini')
+  // Nothing was created for an unreachable enquiry.
+  assert.ok(!(await getLeadByAgentWaId(agent.id, '12345')))
+})
+
+// The instant WhatsApp intro is best-effort: it must report *why* it did not send
+// rather than throwing, because the lead itself has already been created by then.
+test('the auto-reply intro reports skipped:not_configured with WhatsApp off', async () => {
+  const out = await ingestLead({ agent, channel: 'portal_email', portal: '99acres', phone: '9876500061', name: 'Intro Ila' })
+  assert.equal(out.ok, true)
+  assert.equal(out.isNew, true)
+  assert.equal(out.autoReplyStatus, 'skipped:not_configured')
+})
+
+test('autoReply:false skips the intro without touching WhatsApp at all', async () => {
+  const out = await ingestLead({ agent, channel: 'walk_in', phone: '9876500062', name: 'Silent Sunil', autoReply: false })
+  assert.equal(out.autoReplyStatus, 'skipped:disabled')
+})
+
+test('a second touch on the same number merges instead of creating, and sends no intro', async () => {
+  await ingestLead({ agent, channel: 'walk_in', phone: '9876500063', name: 'Repeat Rekha' })
+  const second = await ingestLead({ agent, channel: 'portal_email', portal: 'housing', phone: '+91 98765 00063' })
+  assert.equal(second.ok, true)
+  assert.equal(second.isNew, false)
+  assert.equal(second.autoReplyStatus, 'skipped:disabled', 'the intro only fires for a genuinely new lead')
+  const { rows } = await query(
+    `SELECT status FROM lead_source_events WHERE agent_id = $1 AND contact_phone = '+919876500063' ORDER BY id`,
+    [agent.id],
+  )
+  assert.deepEqual(rows.map((r) => r.status), ['created', 'merged'])
+})
+
+test('the intro reports skipped:no_template when WhatsApp is live but no template is set', async () => {
+  const saved = { ...process.env }
+  process.env.WHATSAPP_ACCESS_TOKEN = 'test-token'
+  process.env.WHATSAPP_PHONE_NUMBER_ID = 'test-pnid'
+  delete process.env.WHATSAPP_LEAD_INTRO_TEMPLATE
+  try {
+    const out = await ingestLead({ agent, channel: 'walk_in', phone: '9876500064', name: 'Template-less Tara' })
+    assert.equal(out.autoReplyStatus, 'skipped:no_template')
+  } finally {
+    Object.assign(process.env, saved)
+    delete process.env.WHATSAPP_ACCESS_TOKEN
+    delete process.env.WHATSAPP_PHONE_NUMBER_ID
+  }
+})
+
+test('the intro reports sent, with the buyer/source/business names as template params', async () => {
+  const realFetch = global.fetch
+  const calls = []
+  process.env.WHATSAPP_ACCESS_TOKEN = 'test-token'
+  process.env.WHATSAPP_PHONE_NUMBER_ID = 'test-pnid'
+  process.env.WHATSAPP_LEAD_INTRO_TEMPLATE = 'lead_intro'
+  global.fetch = async (url, options) => {
+    calls.push({ url: String(url), body: JSON.parse(options.body) })
+    return { ok: true, status: 200, json: async () => ({ messages: [{ id: 'wamid.intro' }] }), headers: { get: () => null } }
+  }
+  try {
+    const out = await ingestLead({
+      agent, channel: 'portal_email', portal: '99acres', phone: '9876500065',
+      name: 'Sent Sameer', source_ref: 'Baner Heights',
+    })
+    assert.equal(out.autoReplyStatus, 'sent')
+    assert.equal(calls.length, 1)
+    const params = calls[0].body.template.components[0].parameters.map((p) => p.text)
+    assert.deepEqual(params.slice(0, 2), ['Sent Sameer', 'Baner Heights'])
+    assert.equal(calls[0].body.template.name, 'lead_intro')
+    assert.equal(calls[0].body.template.language.code ?? calls[0].body.template.language, 'en')
+  } finally {
+    global.fetch = realFetch
+    delete process.env.WHATSAPP_ACCESS_TOKEN
+    delete process.env.WHATSAPP_PHONE_NUMBER_ID
+    delete process.env.WHATSAPP_LEAD_INTRO_TEMPLATE
+  }
+})
+
+test('the intro falls back to generic params when name and source are unknown', async () => {
+  const realFetch = global.fetch
+  const calls = []
+  process.env.WHATSAPP_ACCESS_TOKEN = 'test-token'
+  process.env.WHATSAPP_PHONE_NUMBER_ID = 'test-pnid'
+  process.env.WHATSAPP_LEAD_INTRO_TEMPLATE = 'lead_intro'
+  global.fetch = async (_url, options) => {
+    calls.push(JSON.parse(options.body))
+    return { ok: true, status: 200, json: async () => ({ messages: [{ id: 'wamid.x' }] }), headers: { get: () => null } }
+  }
+  try {
+    await ingestLead({ agent, channel: 'phone', phone: '9876500066' })
+    const params = calls[0].template.components[0].parameters.map((p) => p.text)
+    assert.equal(params[0], 'there')
+    assert.equal(params[1], 'your enquiry')
+    assert.ok(params[2], 'the business/agent name always resolves to something')
+  } finally {
+    global.fetch = realFetch
+    delete process.env.WHATSAPP_ACCESS_TOKEN
+    delete process.env.WHATSAPP_PHONE_NUMBER_ID
+    delete process.env.WHATSAPP_LEAD_INTRO_TEMPLATE
+  }
+})
+
+test('a WhatsApp failure is recorded on the event, and never loses the lead', async () => {
+  const realFetch = global.fetch
+  process.env.WHATSAPP_ACCESS_TOKEN = 'test-token'
+  process.env.WHATSAPP_PHONE_NUMBER_ID = 'test-pnid'
+  process.env.WHATSAPP_LEAD_INTRO_TEMPLATE = 'lead_intro'
+  global.fetch = async () => { throw new Error('network down') }
+  try {
+    const out = await ingestLead({ agent, channel: 'walk_in', phone: '9876500067', name: 'Failed Farah' })
+    assert.equal(out.ok, true)
+    assert.match(out.autoReplyStatus, /^failed:/)
+    assert.ok(out.lead, 'the lead survives a dead WhatsApp')
+    const { rows } = await query(
+      'SELECT auto_reply_status, status FROM lead_source_events WHERE id = $1', [out.event.id],
+    )
+    assert.match(rows[0].auto_reply_status, /^failed:/)
+    assert.equal(rows[0].status, 'created')
+  } finally {
+    global.fetch = realFetch
+    delete process.env.WHATSAPP_ACCESS_TOKEN
+    delete process.env.WHATSAPP_PHONE_NUMBER_ID
+    delete process.env.WHATSAPP_LEAD_INTRO_TEMPLATE
+  }
+})
+
+test('formatListingForPortal renders sub-lakh prices in plain rupees', () => {
+  const cheap = formatListingForPortal({ title: 'Parking slot', price_paise: 4500000 }, 'nobroker')
+  assert.equal(cheap.price_display, '₹45,000')
+  const lakhs = formatListingForPortal({ title: 'Studio', price_paise: 4500000_00 }, 'nobroker')
+  assert.equal(lakhs.price_display, '₹45 L')
+  const crores = formatListingForPortal({ title: 'Villa', price_paise: 25000000_00 }, 'nobroker')
+  assert.equal(crores.price_display, '₹2.5 Cr')
+  const unpriced = formatListingForPortal({ title: 'Ask us' }, 'nobroker')
+  assert.equal(unpriced.price_display, null)
+  assert.equal(unpriced.price_per_sqft, null)
+})
+
+test('freeEntryWindow reports an open, an expired and an absent window', () => {
+  assert.equal(freeEntryWindow({}), null)
+  assert.equal(freeEntryWindow(null), null)
+  const open = freeEntryWindow({ free_entry_at: new Date(Date.now() - 3600_000).toISOString() })
+  assert.equal(open.open, true)
+  assert.ok(open.hours_left > 70 && open.hours_left <= 71)
+  const closed = freeEntryWindow({ free_entry_at: new Date(Date.now() - 80 * 3600_000).toISOString() })
+  assert.equal(closed.open, false)
+  assert.equal(closed.hours_left, 0)
+})
+
+test('ingestAddress builds the workspace inbox address from the token', () => {
+  assert.match(ingestAddress('abc123'), /^lead-abc123@/)
+})

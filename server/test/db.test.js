@@ -345,3 +345,62 @@ test('normalizePhone canonicalizes Indian numbers', () => {
   assert.equal(db.normalizePhone('+91 98765 43210'), '+919876543210')
   assert.equal(db.normalizePhone('+1 (365) 555-1234'), '+13655551234')
 })
+
+// === Auth primitives ===
+//
+// The failure branches matter more than the happy path here: every one of them is
+// what stops a malformed or forged credential from being accepted.
+
+test('verifyPassword accepts the right password and rejects everything else', async () => {
+  const { verifyPassword } = await import('../auth.js')
+  const stored = hashPassword('correct horse battery')
+  assert.equal(verifyPassword('correct horse battery', stored), true)
+  assert.equal(verifyPassword('wrong', stored), false)
+})
+
+test('verifyPassword returns false (never throws) on a malformed stored hash', async () => {
+  const { verifyPassword } = await import('../auth.js')
+  // No salt separator, a non-hex hash, and a truncated hash all reach timingSafeEqual
+  // with mismatched buffers — that throws, and must be caught into a plain `false`.
+  assert.equal(verifyPassword('secret123', 'no-separator-at-all'), false)
+  assert.equal(verifyPassword('secret123', 'salt:zzzz'), false)
+  assert.equal(verifyPassword('secret123', 'salt:ab'), false)
+  assert.equal(verifyPassword('secret123', ':'), false)
+})
+
+test('verifyToken rejects missing, malformed and forged tokens', async () => {
+  const { issueToken, verifyToken } = await import('../auth.js')
+  const good = await issueToken(agent.id)
+  assert.equal((await verifyToken(good)).id, agent.id)
+
+  assert.equal(await verifyToken(null), null)
+  assert.equal(await verifyToken(''), null)
+  assert.equal(await verifyToken('no-dot'), null, 'no signature part')
+  assert.equal(await verifyToken(`${agent.id}.`), null, 'empty signature')
+  assert.equal(await verifyToken(`.${good.split('.')[1]}`), null, 'empty id')
+  // A signature of the right length but the wrong bytes.
+  const [id, sig] = good.split('.')
+  const flipped = sig[0] === 'a' ? `b${sig.slice(1)}` : `a${sig.slice(1)}`
+  assert.equal(await verifyToken(`${id}.${flipped}`), null, 'forged signature')
+  // A signature of the WRONG length makes timingSafeEqual throw — caught, not 500.
+  assert.equal(await verifyToken(`${id}.abc`), null, 'short signature')
+})
+
+test("verifyToken rejects a valid signature over an agent id that doesn't exist", async () => {
+  const { issueToken, verifyToken } = await import('../auth.js')
+  assert.equal(await verifyToken(await issueToken(9_999_999)), null)
+})
+
+test('verifyToken stops working the moment an agent is deactivated', async () => {
+  const { issueToken, verifyToken } = await import('../auth.js')
+  const victim = await db.createAgent('Deactivated Dev', '+919899000777', null, hashPassword('secret123'))
+  const token = await issueToken(victim.id)
+  assert.equal((await verifyToken(token)).id, victim.id)
+
+  await db.query('UPDATE agents SET is_active = 0, deactivated_at = now() WHERE id = $1', [victim.id])
+  assert.equal(await verifyToken(token), null, 'a deactivated agent keeps no live session')
+})
+
+test('hashPassword salts every hash, so identical passwords store differently', () => {
+  assert.notEqual(hashPassword('same'), hashPassword('same'))
+})

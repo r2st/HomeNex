@@ -2,12 +2,15 @@
 // bare "empty" placeholder. Pure — no React — so it can be unit-tested.
 
 export function stageEmptyText(stageName) {
-  const key = String(stageName || '').trim().toLowerCase()
+  const name = String(stageName || '').trim()
+  const key = name.toLowerCase()
   if (key === 'new') return 'New leads from WhatsApp will appear here'
   if (key === 'lost') return 'Leads you mark as lost show up here'
   if (key === 'closed' || key === 'registered/closed' || key === 'won')
     return 'Closed deals will appear here'
-  return `Drag leads here as they reach ${stageName || 'this stage'}`
+  // Trimmed, so a whitespace-only column name reads as a sentence rather than
+  // trailing off ("...as they reach    ").
+  return `Drag leads here as they reach ${name || 'this stage'}`
 }
 
 // A small icon to pair with the empty text, again keyed by stage.

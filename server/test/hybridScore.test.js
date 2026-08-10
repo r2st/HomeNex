@@ -96,3 +96,50 @@ test('hybridScore always returns the decay breakdown for auditability', () => {
   assert.ok('effectiveScore' in h.decay)
   assert.ok('factors' in h.decay)
 })
+
+// --- Booking a site visit (regression) ---------------------------------------
+
+test('REGRESSION: booking a visit raises the hybrid score, never lowers it', () => {
+  const now = Date.now()
+  // Deliberately NOT rule-eligible (no timeline), so the score has to survive on
+  // the decay path alone — the rule can't paper over a broken decay.
+  const lead = { score: 88, budget_max_l: 90 }
+  const before = { buyerReplies: 3, lastBuyerAt: now - HOUR }
+  const after = { ...before, visitAgreed: true, siteVisits: [now + 2 * 24 * HOUR] }
+
+  const b = hybridScore(lead, before, now)
+  const a = hybridScore(lead, after, now)
+
+  assert.equal(b.temperature, 'Hot')
+  assert.equal(a.temperature, 'Hot')
+  assert.ok(a.score >= b.score, `score fell on booking: ${b.score} -> ${a.score}`)
+  assert.equal(a.rules.hotRule, false, 'this lead is not rule-eligible')
+})
+
+test('the reason names the booked visit so the agent can see why the lead is live', () => {
+  const now = Date.now()
+  const h = hybridScore({ score: 70 }, { lastBuyerAt: now - 3 * 24 * HOUR, siteVisits: [now + 20 * HOUR] }, now)
+  assert.equal(h.temperature, 'Hot')
+  assert.match(h.reason, /site visit booked in 20h/)
+  assert.match(h.reason, /last active 72h ago/)
+})
+
+test('a lead whose visit has passed with no follow-up cools again', () => {
+  const now = Date.now()
+  const lead = { score: 85 }
+  const dayBeforeVisit = hybridScore(lead, { siteVisits: [now + 20 * HOUR] }, now)
+  // Same visit, four days later: it is now three days in the past and nothing else
+  // has happened. Nothing is holding the lead up any more.
+  const afterwards = hybridScore(lead, { siteVisits: [now - 3 * 24 * HOUR] }, now)
+
+  assert.equal(dayBeforeVisit.temperature, 'Hot')
+  assert.equal(afterwards.temperature, 'Cold')
+})
+
+test('the hard Hot rule still wins over a decayed score after the visit has passed', () => {
+  const now = Date.now()
+  const lead = { budget_max_l: 80, timeline: '2 months', ai_score: 'cold' }
+  const h = hybridScore(lead, { buyerReplies: 4, visitAgreed: true, siteVisits: [now - 6 * 24 * HOUR] }, now)
+  assert.equal(h.temperature, 'Hot')
+  assert.equal(h.source, 'rule')
+})

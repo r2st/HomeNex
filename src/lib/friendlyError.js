@@ -54,7 +54,9 @@ export function friendlyMessage(input) {
   // Prefer a real, human server message (but not the bare "HTTP 500" fallback).
   if (serverMessage && !looksTechnical(serverMessage)) return serverMessage
 
-  if (status && STATUS_MESSAGE[status]) return STATUS_MESSAGE[status]
+  // Not `status && ...`: status 0 is the table's own "no response at all" entry, and
+  // a truthiness check would skip straight past it to the generic line.
+  if (STATUS_MESSAGE[status]) return STATUS_MESSAGE[status]
   if (status >= 500) return STATUS_MESSAGE[500]
   if (status >= 400) return STATUS_MESSAGE[400]
   return GENERIC
