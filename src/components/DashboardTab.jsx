@@ -93,7 +93,7 @@ function SectionHeader({ children, badge }) {
 
 // The Home tab: everything the agent needs to act on right now.
 export default function DashboardTab({ agent, onGoTo, onOpenConversation, onOpenLead, onSignOut }) {
-  const { data: d, error } = usePoll(api.dashboard, 6000)
+  const { data: d, error, loading } = usePoll(api.dashboard, 6000)
   const { data: stats } = usePoll(api.stats, 10000)
   const { data: work } = usePoll(api.worklist, 15000)
   const { data: notif } = usePoll(() => api.notifications(), 20000)
@@ -192,6 +192,21 @@ export default function DashboardTab({ agent, onGoTo, onOpenConversation, onOpen
         <p className="mt-6 text-[12.5px] text-hot bg-amber-wash rounded-xl px-4 py-3">
           Can't reach the HomeNex server: {error.message}
         </p>
+      )}
+
+      {/* Every section below is `{data && …}`, so before the first response Home was
+          a greeting over empty space with nothing to say it was still working. This
+          is the screen agents open the app to, and on a site-visit connection the
+          first load is the slowest thing they see. */}
+      {loading && !d && !error && (
+        <div className="mt-5 space-y-2.5" aria-busy="true" aria-label="Loading your day">
+          <div className="grid grid-cols-2 gap-2.5">
+            {[0, 1, 2, 3].map((i) => (
+              <div key={i} className="rounded-2xl border border-line bg-card shadow-card h-[74px] animate-pulse" />
+            ))}
+          </div>
+          <div className="rounded-2xl border border-line bg-card shadow-card h-[120px] animate-pulse" />
+        </div>
       )}
 
       {showOnboarding && (

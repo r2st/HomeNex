@@ -100,7 +100,7 @@ function PortalRow({ portal, integration, onSaved }) {
 // bits (portal connection keys, ad form id, regenerating the address) live under a
 // collapsed "Advanced" section so the default screen stays layman-simple.
 export default function LeadSourcesScreen() {
-  const { data, refresh: refreshSources } = usePoll(() => api.leadSources(), 8000, [])
+  const { data, error, loading, refresh: refreshSources } = usePoll(() => api.leadSources(), 8000, [])
   const { data: portals, refresh: refreshPortals } = usePoll(() => api.portalIntegrations(), 15000, [])
   const refresh = () => {
     refreshSources()
@@ -175,6 +175,18 @@ export default function LeadSourcesScreen() {
       {/* Ingestion feed */}
       <section>
         <p className="text-[10.5px] font-bold tracking-[0.16em] text-ink-soft mb-2 px-1">RECENT LEADS CAPTURED</p>
+        {/* "No captured leads yet" is a claim about the agent's portal setup — it must
+            not be what a failed or in-flight request looks like. */}
+        {error && !data && (
+          <p className="text-[12.5px] text-hot bg-amber-wash rounded-xl px-4 py-3">
+            Can't load your captured leads: {error.message}
+          </p>
+        )}
+        {loading && !data && !error && (
+          <p className="text-[12.5px] text-ink-faint px-1" aria-busy="true">
+            Loading captured leads…
+          </p>
+        )}
         {data && data.events.length === 0 && (
           <p className="text-[12.5px] text-ink-faint px-1">No captured leads yet. Leads from portals, ads and walk-ins appear here.</p>
         )}

@@ -29,7 +29,7 @@ function SubScreen({ title, onBack, children }) {
 
 function FollowupsScreen({ onBack, onOpenLead }) {
   const [filter, setFilter] = useState('pending') // pending | today | all
-  const { data: followups, refresh } = usePoll(
+  const { data: followups, error, loading, refresh } = usePoll(
     () => api.followups(filter === 'all' ? {} : filter === 'today' ? { pending: '1', today: '1' } : { pending: '1' }),
     6000,
     [filter],
@@ -49,6 +49,18 @@ function FollowupsScreen({ onBack, onOpenLead }) {
           </Chip>
         ))}
       </div>
+      {/* A missed follow-up is money, so "we couldn't load them" must never look the
+          same as "you have none" — this screen used to render both as a blank card. */}
+      {error && !followups && (
+        <p className="mt-6 text-[12.5px] text-hot bg-amber-wash rounded-xl px-4 py-3">
+          Can't load your follow-ups: {error.message}
+        </p>
+      )}
+      {loading && !followups && !error && (
+        <p className="mt-6 text-[12.5px] text-ink-faint" aria-busy="true">
+          Loading your follow-ups…
+        </p>
+      )}
       {followups && followups.length === 0 && (
         <p className="mt-6 text-[12.5px] text-ink-faint">Nothing here. Schedule follow-ups from any lead.</p>
       )}
@@ -85,7 +97,7 @@ function FollowupsScreen({ onBack, onOpenLead }) {
 
 function SiteVisitsScreen({ onBack, onOpenLead }) {
   const [filter, setFilter] = useState('upcoming') // today | upcoming | all
-  const { data: visits, refresh } = usePoll(
+  const { data: visits, error, loading, refresh } = usePoll(
     () => api.siteVisits(filter === 'today' ? { today: '1' } : {}),
     6000,
     [filter],
@@ -110,6 +122,16 @@ function SiteVisitsScreen({ onBack, onOpenLead }) {
           </Chip>
         ))}
       </div>
+      {error && !visits && (
+        <p className="mt-6 text-[12.5px] text-hot bg-amber-wash rounded-xl px-4 py-3">
+          Can't load your site visits: {error.message}
+        </p>
+      )}
+      {loading && !visits && !error && (
+        <p className="mt-6 text-[12.5px] text-ink-faint" aria-busy="true">
+          Loading your site visits…
+        </p>
+      )}
       {visits && shown.length === 0 && (
         <p className="mt-6 text-[12.5px] text-ink-faint">No site visits. Schedule one from any lead.</p>
       )}

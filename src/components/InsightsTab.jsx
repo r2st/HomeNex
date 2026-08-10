@@ -10,15 +10,25 @@ function fmtSeconds(s) {
 export default function InsightsTab() {
   const { data: stats, error } = usePoll(api.stats, 8000)
 
-  if (error)
+  // Only take over the screen when there is nothing to show. This polls every 8s, and
+  // returning the error first meant one dropped request — a lift, a tunnel, a flaky
+  // café Wi-Fi — replaced the whole charts screen with a red banner, then the next
+  // poll put it back. Numbers that were correct 8 seconds ago are far more useful
+  // than a blank page, so once data has loaded the failure becomes a strip above it.
+  if (!stats)
     return (
       <div className="px-5 pt-7">
-        <p className="text-[12.5px] text-hot bg-amber-wash rounded-xl px-4 py-3">
-          Can't reach the HomeNex server: {error.message}
-        </p>
+        {error ? (
+          <p className="text-[12.5px] text-hot bg-amber-wash rounded-xl px-4 py-3">
+            Can't reach the HomeNex server: {error.message}
+          </p>
+        ) : (
+          <p className="text-center text-[13px] text-ink-faint pt-16" aria-busy="true">
+            Loading…
+          </p>
+        )}
       </div>
     )
-  if (!stats) return <p className="text-center text-[13px] text-ink-faint pt-16">Loading…</p>
 
   const kpis = [
     { label: 'Avg first response', value: fmtSeconds(stats.avgFirstResponseS), sub: 'buyer message → first reply', accent: true },
@@ -36,6 +46,12 @@ export default function InsightsTab() {
         <h1 className="font-display text-[28px] font-semibold text-ink">Your numbers with HomeNex</h1>
         <p className="text-[13px] text-ink-soft mt-0.5">Computed live from your real conversations</p>
       </header>
+
+      {error && (
+        <p className="mt-4 text-[12px] text-gold bg-amber-wash rounded-xl px-4 py-2.5">
+          Showing the last numbers HomeNex could load — the server isn't answering right now.
+        </p>
+      )}
 
       <div className="grid grid-cols-2 gap-2.5 mt-5">
         {kpis.map((k, i) => (

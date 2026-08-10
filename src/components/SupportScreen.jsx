@@ -101,13 +101,33 @@ function TicketThread({ id, onBack }) {
 export default function SupportScreen() {
   const [tab, setTab] = useState('help')
   const [tickets, setTickets] = useState(null)
+  const [ticketsError, setTicketsError] = useState(null)
   const [billing, setBilling] = useState(null)
+  const [billingError, setBillingError] = useState(null)
   const [openId, setOpenId] = useState(null)
 
-  const loadTickets = () => api.supportTickets().then(setTickets).catch(() => {})
+  // Both loads used to swallow their failure into an empty catch. The state that
+  // produced was indistinguishable from "still loading" and never resolved: the help
+  // tab sat with no list and no explanation, and the billing tab — gated on
+  // `billing &&` — rendered nothing at all, on the one screen an agent opens when
+  // something is already wrong.
+  const loadTickets = () =>
+    api
+      .supportTickets()
+      .then((rows) => {
+        setTickets(rows)
+        setTicketsError(null)
+      })
+      .catch((err) => setTicketsError(err))
   useEffect(() => {
     loadTickets()
-    api.billing().then(setBilling).catch(() => {})
+    api
+      .billing()
+      .then((b) => {
+        setBilling(b)
+        setBillingError(null)
+      })
+      .catch((err) => setBillingError(err))
   }, [])
 
   if (openId) return <TicketThread id={openId} onBack={() => { setOpenId(null); loadTickets() }} />
@@ -122,6 +142,16 @@ export default function SupportScreen() {
       {tab === 'help' && (
         <div className="mt-4 space-y-3">
           <NewTicket onCreated={loadTickets} />
+          {ticketsError && !tickets && (
+            <p className="text-[12.5px] text-hot bg-amber-wash rounded-xl px-4 py-3">
+              Can't load your support requests: {ticketsError.message}
+            </p>
+          )}
+          {!tickets && !ticketsError && (
+            <p className="text-[12.5px] text-ink-faint" aria-busy="true">
+              Loading your support requests…
+            </p>
+          )}
           {tickets && tickets.length === 0 && <p className="text-[12.5px] text-ink-faint">No support requests yet.</p>}
           <div className="space-y-2">
             {(tickets || []).map((t) => (
@@ -135,6 +165,15 @@ export default function SupportScreen() {
             ))}
           </div>
         </div>
+      )}
+
+      {tab === 'billing' && !billing && (
+        <p
+          className={`mt-4 text-[12.5px] ${billingError ? 'text-hot bg-amber-wash rounded-xl px-4 py-3' : 'text-ink-faint'}`}
+          {...(billingError ? {} : { 'aria-busy': 'true' })}
+        >
+          {billingError ? `Can't load your plan right now: ${billingError.message}` : 'Loading your plan…'}
+        </p>
       )}
 
       {tab === 'billing' && billing && (
