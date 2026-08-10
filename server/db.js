@@ -3828,10 +3828,18 @@ export async function claimTeamLead(teamId, agentId, leadId) {
 // Which team member already owns a lead from this sender? Inbound routing uses
 // this so a returning buyer stays with their agent instead of being re-shuffled
 // by round-robin on every message.
+// Ownership is resolved through team_members, not the denormalized leads.team_id:
+// stampLeadTeam runs several awaits after the lead row is inserted, so a second
+// message arriving inside that window would see team_id still NULL, miss the owner,
+// and let round-robin hand the same sender to another member — creating a duplicate
+// lead, because the UNIQUE key on leads is (agent_id, wa_id).
 export async function teamLeadOwnerForWaId(teamId, waId) {
   return (
     await q(
-      'SELECT agent_id FROM leads WHERE team_id = $1 AND wa_id = $2 AND agent_id IS NOT NULL ORDER BY id LIMIT 1',
+      `SELECT l.agent_id FROM leads l
+       JOIN team_members tm ON tm.agent_id = l.agent_id
+       WHERE tm.team_id = $1 AND l.wa_id = $2
+       ORDER BY l.id LIMIT 1`,
       [teamId, waId],
     )
   ).rows[0]?.agent_id ?? null

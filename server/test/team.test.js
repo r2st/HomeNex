@@ -19,6 +19,7 @@ const {
   updateTeam,
   getAgentTeam,
   pickRoundRobin,
+  teamLeadOwnerForWaId,
   autoAssignTeamLead,
   distributeTeamPool,
   updateMember,
@@ -218,6 +219,34 @@ test('round-robin cycles through members who accept leads', async () => {
   assert.deepEqual(new Set(picks).size >= 1 ? [...new Set(picks)].sort() : [], [amit.id, bhavna.id].sort())
   assert.equal(picks[0], picks[2], 'cursor wraps around two members')
   assert.notEqual(picks[0], picks[1])
+})
+
+// Regression: the inbound path inserts the lead first and stamps leads.team_id a few
+// awaits later. A second message from the same sender landing inside that window used
+// to miss the existing owner, so round-robin handed them to another member — and since
+// leads is UNIQUE on (agent_id, wa_id), that produced a duplicate lead.
+test('a returning sender is recognised before the team stamp lands', async () => {
+  const team = await getAgentTeam(owner.id)
+  await query(
+    `INSERT INTO leads (agent_id, wa_id, name, pipeline_type, stage)
+     VALUES ($1, 'unstamped-rr-1', 'Early Eshaan', 'buy_primary', 'New')`,
+    [amit.id],
+  )
+  assert.equal(
+    await teamLeadOwnerForWaId(team.id, 'unstamped-rr-1'),
+    amit.id,
+    'the owner is found through team_members, not the not-yet-written team_id',
+  )
+})
+
+test('a sender owned by an agent outside the team is not treated as the team’s', async () => {
+  const team = await getAgentTeam(owner.id)
+  await query(
+    `INSERT INTO leads (agent_id, wa_id, name, pipeline_type, stage)
+     VALUES ($1, 'outsider-rr-1', 'Solo Sender', 'buy_primary', 'New')`,
+    [solo.id],
+  )
+  assert.equal(await teamLeadOwnerForWaId(team.id, 'outsider-rr-1'), null)
 })
 
 test('locality strategy routes to the member who covers that area', async () => {
