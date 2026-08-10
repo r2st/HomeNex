@@ -2862,10 +2862,16 @@ export async function worklist(agentId, now = new Date()) {
 // criteria. Contacts join leads by phone (contacts.phone without '+' == leads.wa_id).
 function segmentWhere(criteria = {}, params) {
   const conds = []
-  if (criteria.locality) {
-    params.push(criteria.locality.toLowerCase())
+  // Localities are free text an agent types, so they're compared case- and
+  // whitespace-insensitively. The preferred_localities arm searches for the name
+  // inside the JSON array with strpos rather than ILIKE: a locality is agent-typed,
+  // and under ILIKE a name holding '%' or '_' would stop being a name and start
+  // being a pattern — a segment criterion of "%" matched every contact the agent had.
+  const locality = String(criteria.locality ?? '').trim().toLowerCase()
+  if (locality) {
+    params.push(locality)
     conds.push(`EXISTS (SELECT 1 FROM leads l WHERE replace(c.phone,'+','') = l.wa_id AND l.agent_id = c.agent_id
-      AND (lower(l.locality) = $${params.length} OR l.preferred_localities::text ILIKE '%'||$${params.length}||'%'))`)
+      AND (lower(btrim(l.locality)) = $${params.length} OR strpos(lower(l.preferred_localities::text), $${params.length}) > 0))`)
   }
   if (criteria.intent) {
     params.push(criteria.intent)
@@ -2981,10 +2987,19 @@ export async function removeGroupMember(id, agentId, contactId) {
 // would answer to "constructor"/"toString" with something truthy that has no
 // .values, turning a bad dimension into a 500 instead of the 400 it is.
 const AUTO_GROUP_DIMENSIONS = Object.assign(Object.create(null), {
+  // "Andheri", "andheri", "ANDHERI" and "Andheri " are one locality that four
+  // agents typed four ways, not four localities. A plain DISTINCT saw four values
+  // and built four groups holding the same contacts — while the match rule compared
+  // case-insensitively, so three of them claimed each other's members and the
+  // trailing-space one matched nobody but itself. DISTINCT ON the folded form
+  // collapses them to one group; ORDER BY picks the same representative spelling on
+  // every re-run, which is what keeps the top-up idempotent.
   locality: {
     label: 'Locality',
-    values: `SELECT DISTINCT l.locality AS v FROM leads l WHERE l.agent_id = $1 AND l.locality IS NOT NULL AND l.locality <> ''`,
-    match: `(lower(l.locality) = lower(vals.v) OR l.preferred_localities::text ILIKE '%'||lower(vals.v)||'%')`,
+    values: `SELECT DISTINCT ON (lower(btrim(l.locality))) btrim(l.locality) AS v
+               FROM leads l WHERE l.agent_id = $1 AND btrim(l.locality) <> ''
+              ORDER BY lower(btrim(l.locality)), btrim(l.locality)`,
+    match: `(lower(btrim(l.locality)) = lower(vals.v) OR strpos(lower(l.preferred_localities::text), lower(vals.v)) > 0)`,
   },
   intent: {
     label: 'Intent',

@@ -213,3 +213,74 @@ test('query count is flat in the number of distinct values', async () => {
   assert.equal(qWide, 4, `30 localities cost ${qWide} queries, not a flat 4`)
   assert.equal((await autoGroupContacts(wide.id, 'locality')).length, 30)
 })
+
+// --- Free-text localities: the same place typed four ways ------------------
+
+test('case and whitespace variants of one locality collapse into one group', async () => {
+  // Four agents (or one agent on four days) typing the same Mumbai suburb. A plain
+  // DISTINCT saw four values and built four groups over the same three or four
+  // contacts, so the address book grew a duplicate every time someone typed it
+  // differently — and the trailing-space spelling matched nobody but itself.
+  const spelt = await db.createAgent('Spelling', '+919812000006', null, hashPassword('secret123'))
+  for (const [i, locality] of ['Andheri', 'andheri', 'ANDHERI', 'Andheri '].entries()) {
+    await seed(spelt, `98124000${String(i).padStart(2, '0')}`, `Sp${i}`, { locality })
+  }
+
+  const groups = await autoGroupContacts(spelt.id, 'locality')
+  assert.equal(groups.length, 1, `four spellings produced ${groups.map((g) => g.name).join(' | ')}`)
+  assert.equal(groups[0].member_count, 4, 'every spelling belongs to the one group')
+  assert.match(groups[0].name, /^Locality: ANDHERI|Andheri|andheri$/i)
+  assert.equal((await groupMembers(groups[0].id, spelt.id)).length, 4)
+})
+
+test('re-running picks the same representative spelling, so it tops up rather than forks', async () => {
+  const spelt = await db.createAgent('Spelling Two', '+919812000007', null, hashPassword('secret123'))
+  await seed(spelt, '9812410001', 'First', { locality: 'Kondhwa' })
+  const first = await autoGroupContacts(spelt.id, 'locality')
+
+  // A later lead spells it differently — the group must not fork.
+  await seed(spelt, '9812410002', 'Second', { locality: 'KONDHWA' })
+  const second = await autoGroupContacts(spelt.id, 'locality')
+
+  assert.equal(second.length, 1)
+  assert.equal(second[0].id, first[0].id, 'the second run must reuse the first run\'s group')
+  assert.equal(second[0].name, first[0].name)
+  assert.equal(second[0].member_count, 2)
+})
+
+test('a locality holding a LIKE wildcard is a name, not a pattern', async () => {
+  // preferred_localities used to be searched with ILIKE '%'||value||'%', so an
+  // agent-typed locality of "%" became a pattern that matched every contact they
+  // had — one bad row silently swept the whole address book into one group.
+  const wild = await db.createAgent('Wildcard', '+919812000008', null, hashPassword('secret123'))
+  await seed(wild, '9812420001', 'Percent', { locality: '%' })
+  await seed(wild, '9812420002', 'Bandra Bha', { locality: 'Bandra', preferred_localities: ['Powai'] })
+  await seed(wild, '9812420003', 'Under Uma', { locality: '_ndheri' })
+  await seed(wild, '9812420004', 'Andheri Ani', { locality: 'Andheri' })
+
+  const groups = await autoGroupContacts(wild.id, 'locality')
+  const size = (name) => named(groups, name).member_count
+  assert.equal(size('Locality: %'), 1, '"%" is one agent\'s typo, not a match-all')
+  assert.equal(size('Locality: Bandra'), 1)
+  assert.equal(size('Locality: _ndheri'), 1, '"_" must not stand in for a character')
+  assert.equal(size('Locality: Andheri'), 1)
+
+  // The dynamic-segment path shares the rule and must agree.
+  assert.deepEqual((await db.resolveSegment(wild.id, { locality: '%' })).map((c) => c.name), ['Percent'])
+  assert.deepEqual((await db.resolveSegment(wild.id, { locality: '_ndheri' })).map((c) => c.name), ['Under Uma'])
+})
+
+test('a segment criterion matches a locality regardless of how it was typed', async () => {
+  const seg = await db.createAgent('Segment', '+919812000009', null, hashPassword('secret123'))
+  await seed(seg, '9812430001', 'Upper', { locality: 'VIMAN NAGAR' })
+  await seed(seg, '9812430002', 'Padded', { locality: ' Viman Nagar ' })
+  await seed(seg, '9812430003', 'Shopper', { locality: 'Hadapsar', preferred_localities: ['Viman Nagar'] })
+
+  for (const typed of ['viman nagar', 'Viman Nagar', '  VIMAN NAGAR  ']) {
+    const names = (await db.resolveSegment(seg.id, { locality: typed })).map((c) => c.name).sort()
+    assert.deepEqual(names, ['Padded', 'Shopper', 'Upper'], `criterion "${typed}" resolved ${names.join()}`)
+  }
+  // A criterion that is nothing but whitespace is no criterion at all, not a
+  // strpos('') match that returns the whole address book as "matching".
+  assert.equal((await db.resolveSegment(seg.id, { locality: '   ' })).length, 3)
+})
