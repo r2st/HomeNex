@@ -2289,17 +2289,9 @@ export async function listAuditLogs(agentId, limit = 100) {
 
 // Raw engagement signals for one lead: last inbound, attributed micro-page views,
 // and site-visit times. Feeds decayLead().
-export async function leadEngagementSignals(leadId) {
-  const { rows } = await q(
-    `SELECT
-       (SELECT MAX(created_at) FROM messages WHERE lead_id = $1 AND role = 'buyer') AS last_buyer_at,
-       (SELECT COUNT(*) FROM messages WHERE lead_id = $1 AND role = 'buyer') AS buyer_replies,
-       (SELECT COUNT(*) FROM site_visits WHERE lead_id = $1) AS visit_count,
-       ARRAY(SELECT viewed_at FROM property_page_views WHERE lead_id = $1 ORDER BY viewed_at DESC LIMIT 50) AS page_views,
-       ARRAY(SELECT scheduled_at FROM site_visits WHERE lead_id = $1) AS site_visits`,
-    [leadId],
-  )
-  const r = rows[0] || {}
+// Shape one signals row (from either the single or the batched query) into the
+// object decayLead()/ruleSignals() expect. Kept separate so both paths agree.
+function toSignals(r = {}) {
   return {
     lastBuyerAt: r.last_buyer_at,
     pageViews: r.page_views || [],
@@ -2309,6 +2301,34 @@ export async function leadEngagementSignals(leadId) {
     buyerReplies: Number(r.buyer_replies) || 0,
     visitAgreed: (Number(r.visit_count) || 0) > 0,
   }
+}
+
+// The correlated sub-selects that make up one signals row. `ref` is the lead-id
+// expression to correlate against, so the same SQL serves the single-lead lookup
+// ($1) and the batched one (l.id over an unnested id array).
+const SIGNALS_SELECT = (ref) => `
+       (SELECT MAX(created_at) FROM messages WHERE lead_id = ${ref} AND role = 'buyer') AS last_buyer_at,
+       (SELECT COUNT(*) FROM messages WHERE lead_id = ${ref} AND role = 'buyer') AS buyer_replies,
+       (SELECT COUNT(*) FROM site_visits WHERE lead_id = ${ref}) AS visit_count,
+       ARRAY(SELECT viewed_at FROM property_page_views WHERE lead_id = ${ref} ORDER BY viewed_at DESC LIMIT 50) AS page_views,
+       ARRAY(SELECT scheduled_at FROM site_visits WHERE lead_id = ${ref}) AS site_visits`
+
+export async function leadEngagementSignals(leadId) {
+  const { rows } = await q(`SELECT ${SIGNALS_SELECT('$1')}`, [leadId])
+  return toSignals(rows[0])
+}
+
+// Signals for many leads in ONE round trip, returned as a Map keyed by lead id.
+// Same sub-selects as the single-lead version, correlated against an unnested
+// array of ids instead of a scalar parameter.
+async function leadEngagementSignalsBatch(leadIds) {
+  if (!leadIds.length) return new Map()
+  const { rows } = await q(
+    `SELECT l.id AS lead_id, ${SIGNALS_SELECT('l.id')}
+     FROM unnest($1::int[]) AS l(id)`,
+    [leadIds],
+  )
+  return new Map(rows.map((r) => [r.lead_id, toSignals(r)]))
 }
 
 // Rules + LLM hybrid temperature for a lead (see scoring.hybridScore). Does not
@@ -2336,30 +2356,70 @@ export async function computeLeadDecay(lead, now = Date.now()) {
 // that one is meant to keep a strong-but-quiet lead visible in the UI, not to
 // stop decay from cooling a silent lead in the persisted field that drives
 // notifications, dashboard counts and segment membership.
+// The pure part: lead + signals -> the five persisted score columns. No I/O, so
+// the single-lead and bulk paths cannot drift apart.
+function scoreRow(lead, signals, now) {
+  const d = decayLead(lead, signals, now)
+  const rules = ruleSignals(lead, signals)
+  const temperature = rules.hotRule ? 'Hot' : d.temperature
+  return { decay: d, temperature, factors: { ...d.factors, rule_hot: rules.hotRule } }
+}
+
 export async function recomputeLeadScore(leadId, now = Date.now()) {
   const lead = await getLead(leadId)
   if (!lead) return null
   const signals = await leadEngagementSignals(leadId)
-  const d = decayLead(lead, signals, now)
-  const rules = ruleSignals(lead, signals)
-  const temperature = rules.hotRule ? 'Hot' : d.temperature
+  const { decay: d, temperature, factors } = scoreRow(lead, signals, now)
   await q(
     `UPDATE leads SET engagement_score = $2, effective_score = $3, effective_temp = $4,
        score_factors = $5, last_decay_at = now() WHERE id = $1`,
-    [leadId, d.engagementScore, d.effectiveScore, temperature, JSON.stringify({ ...d.factors, rule_hot: rules.hotRule })],
+    [leadId, d.engagementScore, d.effectiveScore, temperature, JSON.stringify(factors)],
   )
   return { ...d, temperature }
 }
 
 // Recompute every non-closed lead for an agent (the twice-daily decay job, and
 // called on-demand when the worklist is opened so its ranking is honest).
+//
+// Set-based on purpose: this runs synchronously inside GET /api/worklist, and the
+// old row-at-a-time loop cost three round trips per open lead (fetch, signals,
+// update). An agent with a few hundred live leads paid for hundreds of sequential
+// round trips before the page could render. Now it is three queries total,
+// regardless of lead count.
 export async function recomputeAgentScores(agentId, now = Date.now()) {
-  const { rows } = await q(
-    'SELECT id FROM leads WHERE agent_id = $1 AND closed_at IS NULL',
+  const { rows: leads } = await q(
+    'SELECT * FROM leads WHERE agent_id = $1 AND closed_at IS NULL',
     [agentId],
   )
-  for (const { id } of rows) await recomputeLeadScore(id, now)
-  return rows.length
+  if (!leads.length) return 0
+
+  const signalsById = await leadEngagementSignalsBatch(leads.map((l) => l.id))
+
+  const ids = []
+  const engagement = []
+  const effective = []
+  const temps = []
+  const factors = []
+  for (const lead of leads) {
+    const s = scoreRow(lead, signalsById.get(lead.id) || toSignals(), now)
+    ids.push(lead.id)
+    engagement.push(s.decay.engagementScore)
+    effective.push(s.decay.effectiveScore)
+    temps.push(s.temperature)
+    factors.push(JSON.stringify(s.factors))
+  }
+
+  // One UPDATE ... FROM over unnested column arrays — a single statement, so the
+  // whole recompute lands atomically.
+  await q(
+    `UPDATE leads SET engagement_score = v.engagement_score, effective_score = v.effective_score,
+       effective_temp = v.effective_temp, score_factors = v.score_factors, last_decay_at = now()
+     FROM unnest($1::int[], $2::int[], $3::int[], $4::text[], $5::jsonb[])
+       AS v(id, engagement_score, effective_score, effective_temp, score_factors)
+     WHERE leads.id = v.id`,
+    [ids, engagement, effective, temps, factors],
+  )
+  return leads.length
 }
 
 // --- Property view analytics (surfaces property_page_views, which was written by
@@ -2750,18 +2810,19 @@ export async function groupMembers(id, agentId) {
 export async function addGroupMembers(id, agentId, contactIds) {
   const group = await getGroup(id, agentId)
   if (!group || group.kind !== 'static') return null
-  let added = 0
-  for (const cid of contactIds) {
-    // Only insert contacts the agent actually owns; ignore duplicates.
-    const r = await q(
-      `INSERT INTO contact_group_members (group_id, contact_id)
-       SELECT $1, $2 WHERE EXISTS (SELECT 1 FROM contacts WHERE id = $2 AND agent_id = $3)
-       ON CONFLICT DO NOTHING`,
-      [id, cid, agentId],
-    )
-    added += r.rowCount
-  }
-  return added
+  if (!contactIds?.length) return 0
+  // One INSERT ... SELECT for the whole batch. The join against contacts is what
+  // enforces ownership (ids belonging to another agent simply don't match), and
+  // selecting from contacts also collapses any duplicate ids in the input.
+  // autoGroupContacts calls this once per distinct value, so the old per-contact
+  // loop made the cost of auto-grouping quadratic in a big address book.
+  const r = await q(
+    `INSERT INTO contact_group_members (group_id, contact_id)
+     SELECT $1, c.id FROM contacts c WHERE c.id = ANY($2::int[]) AND c.agent_id = $3
+     ON CONFLICT DO NOTHING`,
+    [id, contactIds, agentId],
+  )
+  return r.rowCount
 }
 
 export async function removeGroupMember(id, agentId, contactId) {
