@@ -2913,29 +2913,89 @@ export async function removeGroupMember(id, agentId, contactId) {
   ).rowCount > 0
 }
 
+// The three auto-grouping dimensions. `match` is the same rule segmentWhere
+// applies for that criterion, rewritten to compare against a value column so the
+// whole dimension can be resolved in one pass instead of one query per value.
+// Null-prototype: `by` comes straight off the request body, and a plain object
+// would answer to "constructor"/"toString" with something truthy that has no
+// .values, turning a bad dimension into a 500 instead of the 400 it is.
+const AUTO_GROUP_DIMENSIONS = Object.assign(Object.create(null), {
+  locality: {
+    label: 'Locality',
+    values: `SELECT DISTINCT l.locality AS v FROM leads l WHERE l.agent_id = $1 AND l.locality IS NOT NULL AND l.locality <> ''`,
+    match: `(lower(l.locality) = lower(vals.v) OR l.preferred_localities::text ILIKE '%'||lower(vals.v)||'%')`,
+  },
+  intent: {
+    label: 'Intent',
+    values: `SELECT DISTINCT l.intent AS v FROM leads l WHERE l.agent_id = $1 AND l.intent IS NOT NULL`,
+    match: `l.intent = vals.v`,
+  },
+  temp: {
+    label: 'Temp',
+    values: `SELECT DISTINCT COALESCE(l.effective_temp, l.temp) AS v FROM leads l WHERE l.agent_id = $1 AND COALESCE(l.effective_temp, l.temp) IS NOT NULL`,
+    match: `COALESCE(l.effective_temp, l.temp) = vals.v`,
+  },
+})
+
 // One-click auto-grouping: scan the agent's leads, create a static group per
 // distinct value (locality / intent / temperature), and populate it with the
 // matching contacts. Idempotent — re-running tops up membership, never duplicates.
+//
+// Four statements total, whatever the number of distinct values. The old shape
+// ran a group lookup, a segment resolve and a membership insert per value, so an
+// agent working forty localities paid ~160 round trips for one button press.
 export async function autoGroupContacts(agentId, by) {
-  const dimensions = {
-    locality: { label: 'Locality', values: `SELECT DISTINCT l.locality AS v FROM leads l WHERE l.agent_id = $1 AND l.locality IS NOT NULL AND l.locality <> ''` },
-    intent: { label: 'Intent', values: `SELECT DISTINCT l.intent AS v FROM leads l WHERE l.agent_id = $1 AND l.intent IS NOT NULL` },
-    temp: { label: 'Temp', values: `SELECT DISTINCT COALESCE(l.effective_temp, l.temp) AS v FROM leads l WHERE l.agent_id = $1 AND COALESCE(l.effective_temp, l.temp) IS NOT NULL` },
-  }
-  const dim = dimensions[by]
+  const dim = AUTO_GROUP_DIMENSIONS[by]
   if (!dim) throw new Error('unknown grouping dimension')
   const values = (await q(dim.values, [agentId])).rows.map((r) => r.v).filter(Boolean)
-  const groups = []
-  for (const value of values) {
-    const name = `${dim.label}: ${value}`
-    let group = (await q('SELECT * FROM contact_groups WHERE agent_id = $1 AND name = $2', [agentId, name])).rows[0]
-    if (!group) group = await createGroup(agentId, { name })
-    const criteria = by === 'locality' ? { locality: value } : by === 'intent' ? { intent: value } : { temp: value }
-    const contacts = await resolveSegment(agentId, criteria)
-    if (contacts.length) await addGroupMembers(group.id, agentId, contacts.map((c) => c.id))
-    groups.push({ ...group, member_count: contacts.length })
-  }
-  return groups
+  if (!values.length) return []
+  const prefix = `${dim.label}: `
+  const names = values.map((v) => prefix + v)
+
+  // Create the missing groups in one statement — UNIQUE (agent_id, name) is what
+  // makes re-running a top-up rather than a duplicate — then read them all back,
+  // both the ones just created and the ones that were already there.
+  await q(
+    `INSERT INTO contact_groups (agent_id, name) SELECT $1, n FROM unnest($2::text[]) AS n
+     ON CONFLICT (agent_id, name) DO NOTHING`,
+    [agentId, names],
+  )
+  const byName = new Map(
+    (
+      await q('SELECT * FROM contact_groups WHERE agent_id = $1 AND name = ANY($2::text[])', [agentId, names])
+    ).rows.map((g) => [g.name, g]),
+  )
+
+  // One statement resolves every value's segment, tops up all the memberships and
+  // reports the segment sizes: `ins` is a data-modifying CTE, so it runs even
+  // though the outer SELECT only reads `pairs`. Membership is gated on
+  // kind = 'static' for the same reason addGroupMembers is — a dynamic group of
+  // the same name resolves its members live and must not gain explicit rows.
+  const counts = new Map(
+    (
+      await q(
+        `WITH vals AS (${dim.values}),
+              pairs AS (
+                SELECT DISTINCT vals.v AS v, c.id AS contact_id
+                  FROM vals
+                  JOIN contacts c ON c.agent_id = $1 AND c.opt_in_status <> 'opted_out'
+                  JOIN leads l ON l.wa_id = replace(c.phone, '+', '') AND l.agent_id = c.agent_id
+                 WHERE ${dim.match}
+              ),
+              ins AS (
+                INSERT INTO contact_group_members (group_id, contact_id)
+                SELECT g.id, p.contact_id FROM pairs p
+                  JOIN contact_groups g
+                    ON g.agent_id = $1 AND g.name = $2::text || p.v AND g.kind = 'static'
+                ON CONFLICT DO NOTHING
+              )
+         SELECT v, COUNT(*)::int AS member_count FROM pairs GROUP BY v`,
+        [agentId, prefix],
+      )
+    ).rows.map((r) => [r.v, r.member_count]),
+  )
+
+  return values.map((v) => ({ ...byName.get(prefix + v), member_count: counts.get(v) || 0 }))
 }
 
 // ===========================================================================
