@@ -1970,7 +1970,7 @@ export async function listCommissions(agentId, { status } = {}) {
   return rows.map(withAmount)
 }
 
-export async function getCommission(id, agentId) {
+async function getCommission(id, agentId) {
   return withAmount((await q('SELECT * FROM commissions WHERE id = $1 AND agent_id = $2', [id, agentId])).rows[0])
 }
 
@@ -2015,7 +2015,7 @@ export function suggestRentalCommissionPaise(deal) {
 // (UNIQUE(lead_id)); returns the new deal, or null if one already existed. For a
 // rental deal it also auto-creates the expected 1-month-rent commission so the
 // receivable lands in the ledger immediately.
-export async function captureDealForLead(lead) {
+async function captureDealForLead(lead) {
   const isRental = (lead.pipeline_type || 'buy_primary') === 'rental'
   const dealType = isRental ? 'rental' : 'sale'
   // Best guess at the deal's property: the most recent site visit this lead had.
@@ -3275,8 +3275,10 @@ export async function listPortalIntegrations(agentId) {
   return rows.map(maskPortalIntegration)
 }
 
-// Raw row incl. secrets — server-internal use (making portal API calls).
-export async function getPortalIntegrationRaw(agentId, portal) {
+// Raw row incl. secrets — module-private on purpose: everything that leaves db.js
+// goes through maskPortalIntegration, so the api_key/api_secret can't be handed to a
+// route by accident.
+async function getPortalIntegrationRaw(agentId, portal) {
   const { rows } = await q(
     'SELECT * FROM portal_integrations WHERE agent_id = $1 AND portal = $2',
     [agentId, portal],
@@ -3619,7 +3621,7 @@ export async function deleteMessageTemplate(id, agentId) {
 
 // The team id an agent belongs to, or null. Cheap single-column lookup used on
 // the inbound hot path, so it stays a bare SELECT rather than a join.
-export async function agentTeamId(agentId) {
+async function agentTeamId(agentId) {
   return (await q('SELECT team_id FROM team_members WHERE agent_id = $1', [agentId])).rows[0]?.team_id ?? null
 }
 
@@ -3633,7 +3635,7 @@ export async function getAgentTeam(agentId) {
   return rows[0] ? { ...rows[0], is_owner: rows[0].role === 'owner' } : null
 }
 
-export async function getTeamById(teamId) {
+async function getTeamById(teamId) {
   return (await q('SELECT * FROM teams WHERE id = $1', [teamId])).rows[0] || null
 }
 
@@ -3703,7 +3705,7 @@ export async function listTeamMembers(teamId) {
   ).rows
 }
 
-export async function isTeamMember(teamId, agentId) {
+async function isTeamMember(teamId, agentId) {
   return Boolean(
     (await q('SELECT 1 FROM team_members WHERE team_id = $1 AND agent_id = $2', [teamId, agentId])).rows[0],
   )
@@ -3880,7 +3882,7 @@ export async function pickRoundRobin(teamId) {
 }
 
 // Member whose localities overlap the lead's locality; falls back to round-robin.
-export async function pickByLocality(teamId, locality) {
+async function pickByLocality(teamId, locality) {
   if (!locality) return pickRoundRobin(teamId)
   const loc = String(locality).toLowerCase().trim()
   const members = await assignableMembers(teamId)
