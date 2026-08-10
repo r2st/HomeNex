@@ -93,6 +93,29 @@ test('POST /autofill/apply writes accepted fields and 404s an unknown lead', asy
   assert.equal((await req('POST', '/api/leads/999999/autofill/apply', { accepted: { budget_max: 1 } })).status, 404)
 })
 
+// name and intent are written by their own statements, outside the generic CRM
+// allowlist — so accepting only those leaves the CRM update with nothing to do.
+test('accepting only the name and intent skips the CRM write entirely', async () => {
+  const res = await req('POST', `/api/leads/${leadId}/autofill/apply`, {
+    accepted: { name: '  Renamed Rhea  ', intent: 'rent' },
+  })
+  assert.equal(res.status, 200)
+  const lead = await res.json()
+  assert.equal(lead.name, 'Renamed Rhea', 'trimmed on the way in')
+  assert.equal(lead.intent, 'rent')
+})
+
+test('a field outside the autofill allowlist is ignored, not written', async () => {
+  const res = await req('POST', `/api/leads/${leadId}/autofill/apply`, {
+    accepted: { stage: 'Registered/Closed', agent_id: 9999, timeline: '1-3 months' },
+  })
+  assert.equal(res.status, 200)
+  const lead = await res.json()
+  assert.equal(lead.timeline, '1-3 months', 'the allowlisted field still lands')
+  assert.notEqual(lead.stage, 'Registered/Closed', 'pipeline columns are not autofillable')
+  assert.notEqual(lead.agent_id, 9999)
+})
+
 test('POST /autofill/apply rejects a missing accepted map', async () => {
   assert.equal((await req('POST', `/api/leads/${leadId}/autofill/apply`, {})).status, 400)
 })

@@ -157,6 +157,26 @@ test('PUT /api/contacts/:id updates notes/labels without touching other fields',
   assert.equal(updated.name, 'Priya Sharma', 'name unchanged')
 })
 
+// The pool has no UNIQUE constraint to lean on — agent_id IS NULL rows are all
+// distinct to Postgres — so upsertUnassignedLead dedupes by hand. A second message
+// from the same unknown sender must top up the row it already made, not add another.
+test('a second message from the same unknown sender reuses the pooled lead', async () => {
+  const first = await upsertUnassignedLead('919700000456', null)
+  assert.equal(first.name, null)
+
+  const second = await upsertUnassignedLead('919700000456', 'Named Later')
+  assert.equal(second.id, first.id, 'same row, not a second pool entry')
+  assert.equal(second.name, 'Named Later', 'a name learned later is filled in')
+
+  // A later nameless message must not wipe the name back out.
+  const third = await upsertUnassignedLead('919700000456', null)
+  assert.equal(third.id, first.id)
+  assert.equal(third.name, 'Named Later')
+
+  const { rows } = await query(`SELECT COUNT(*)::int AS n FROM leads WHERE wa_id = '919700000456'`)
+  assert.equal(rows[0].n, 1)
+})
+
 test('claiming a pooled lead saves the sender as a contact and links the lead', async () => {
   const lead = await upsertUnassignedLead('919700000123', 'Walk-in Buyer')
 

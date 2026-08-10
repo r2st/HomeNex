@@ -159,6 +159,16 @@ test('updateWabaStatus transitions registered -> active', async () => {
   assert.ok(updated.waba_registered_at, 'registered_at should persist')
 })
 
+// Staff can set the display number alongside the Meta ids from the admin portal.
+// It goes through normalizePhone on the way in, and an empty string clears it.
+test('updateWabaStatus stores a normalised display number, and can clear it', async () => {
+  const set = await updateWabaStatus(agentB.id, { status: 'registered', waPhoneNumber: '98765 43210' })
+  assert.equal(set.wa_phone_number, '+919876543210', 'bare 10-digit input gets the +91')
+
+  const cleared = await updateWabaStatus(agentB.id, { status: 'registered', waPhoneNumber: '' })
+  assert.equal(cleared.wa_phone_number, null)
+})
+
 test('updateWabaStatus rejects invalid status', async () => {
   await assert.rejects(
     () => updateWabaStatus(agentA.id, { status: 'invalid' }),

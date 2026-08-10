@@ -225,6 +225,15 @@ test('round-robin cycles through members who accept leads', async () => {
 // awaits later. A second message from the same sender landing inside that window used
 // to miss the existing owner, so round-robin handed them to another member — and since
 // leads is UNIQUE on (agent_id, wa_id), that produced a duplicate lead.
+test('updating a member with nothing to change returns the row untouched', async () => {
+  const team = await getAgentTeam(owner.id)
+  const before = await updateMember(team.id, amit.id, { localities: ['Wakad'] })
+  const after = await updateMember(team.id, amit.id, {})
+  assert.equal(after.id, before.id)
+  assert.deepEqual(after.localities, before.localities, 'no fields, no write')
+  assert.equal(after.accepts_leads, before.accepts_leads)
+})
+
 test('a returning sender is recognised before the team stamp lands', async () => {
   const team = await getAgentTeam(owner.id)
   await query(
