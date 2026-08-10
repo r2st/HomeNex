@@ -158,6 +158,34 @@ export function errorCodes(_req, res, next) {
   next()
 }
 
+// --- Numeric path ids ------------------------------------------------------
+// Every :id in this app is a SERIAL primary key, so a path id is only ever a
+// positive int4. Anything else — `/api/leads/undefined` from a frontend bug, or a
+// deliberate probe — used to travel all the way to Postgres as `WHERE id = 'x'`,
+// where it raised 22P02 (invalid text representation) and surfaced as a 500.
+//
+// Routes that already wrap their query in the pgBadRequest catch turned that into a
+// 400; the ~38 that don't returned "Something went wrong on our side", which is
+// both untrue (it was the caller's input) and a useful map for anyone probing the
+// API for which routes are unguarded. Rejecting the id up front fixes every one of
+// them in the same place, and keeps the guarantee from depending on each new route
+// remembering to catch.
+//
+// The int4 ceiling matters as much as the digits: 9999999999 is all digits and
+// still raises 22003 (out of range) at the database.
+const MAX_INT4 = 2147483647
+export const ID_PARAMS = ['id', 'noteId', 'labelId', 'contactId', 'agentId']
+
+export function validateIdParams(target, names = ID_PARAMS) {
+  for (const name of names) {
+    target.param(name, (req, res, next, value) => {
+      if (/^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= MAX_INT4) return next()
+      res.status(400).json({ error: `Invalid ${name}`, code: 'BAD_ID' })
+    })
+  }
+  return target
+}
+
 // --- Request logger --------------------------------------------------------
 // One structured line per request once the response finishes. Static assets and
 // uploads are skipped to keep the log signal-dense. Disabled under NODE_ENV=test

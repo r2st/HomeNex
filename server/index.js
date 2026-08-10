@@ -191,7 +191,7 @@ import {
 } from './leadSources.js'
 import { fetchLeadgenData } from './whatsapp.js'
 import { dbPing, closePool } from './db.js'
-import { securityHeaders, cors, requestLogger, rateLimit, clientIp, errorCodes } from './middleware.js'
+import { securityHeaders, cors, requestLogger, rateLimit, clientIp, errorCodes, validateIdParams } from './middleware.js'
 import { validateEnv } from './env.js'
 import { verifyWebhookSignature } from './webhookSignature.js'
 
@@ -2129,6 +2129,13 @@ app.use('/api/team', teamRouter)
 
 // --- Admin API (requires admin privileges; see adminRoutes.js) ---
 app.use('/api/admin', adminRouter)
+
+// A malformed path id is the caller's mistake, answered with a 400 before any
+// handler runs. app.param() doesn't reach into a mounted Router, so each of the two
+// sub-routers is armed separately.
+validateIdParams(app)
+validateIdParams(teamRouter)
+validateIdParams(adminRouter)
 
 // Dev/test endpoint: pushes a message through the SAME real pipeline (DB + AI),
 // without an outbound WhatsApp send. Useful before the Meta webhook is wired up.
