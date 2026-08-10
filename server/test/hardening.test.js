@@ -115,8 +115,20 @@ test('rateLimit: separate client IPs get separate buckets', async () => {
   limiter.stop()
 })
 
-test('clientIp: honours the first X-Forwarded-For hop', () => {
-  assert.equal(clientIp({ get: (h) => (h === 'x-forwarded-for' ? '9.9.9.9, 10.0.0.1' : null) }), '9.9.9.9')
+// The limiter key must not be client-choosable. Express resolves req.ip from
+// `trust proxy`, so it wins; a bare shim with only XFF falls back to the LAST hop
+// (the one our proxy appended) — never the attacker-supplied first hop.
+test('clientIp: prefers req.ip, which trust-proxy already resolved', () => {
+  assert.equal(
+    clientIp({ ip: '10.0.0.1', get: (h) => (h === 'x-forwarded-for' ? '9.9.9.9, 10.0.0.1' : null) }),
+    '10.0.0.1',
+  )
+})
+
+test('clientIp: a spoofed X-Forwarded-For prefix cannot become the key', () => {
+  const spoofed = clientIp({ get: (h) => (h === 'x-forwarded-for' ? '9.9.9.9, 10.0.0.1' : null) })
+  assert.notEqual(spoofed, '9.9.9.9') // the attacker-controlled hop
+  assert.equal(spoofed, '10.0.0.1') // the hop our own proxy appended
 })
 
 // --- security headers + CORS (unit) ------------------------------------------

@@ -46,15 +46,29 @@ export function cors(originConfig = process.env.CORS_ORIGIN || '') {
 }
 
 // --- Rate limiter ----------------------------------------------------------
-// Fixed-window counter in a Map, keyed by client IP (honouring one hop of
-// X-Forwarded-For since the app runs behind nginx). Good enough to blunt
+// Fixed-window counter in a Map, keyed by client IP. Good enough to blunt
 // brute-force login attempts and webhook floods on a single node; swap for Redis
 // if HomeNex ever scales horizontally. Buckets are swept lazily on access and by a
 // low-frequency interval so the Map can't grow without bound.
+
+// The rate-limit key must be an address the *client* cannot choose, or the limiter
+// is decorative: a caller who picks their own key just rotates it every request.
+//
+// X-Forwarded-For is client-supplied and only appended to by our proxy, so its
+// LEFTMOST entry is whatever the attacker sent — reading that hop let anyone defeat
+// the login limiter with a header. Express's req.ip already resolves this correctly
+// from `trust proxy` (with one trusted hop it returns the address our own proxy
+// appended, i.e. the real peer), so prefer it. The XFF fallback exists only for
+// bare request shims with no req.ip, and takes the RIGHTMOST hop for the same
+// reason — that is the one closest to us and the hardest to forge.
 export function clientIp(req) {
-  const fwd = req.get('x-forwarded-for')
-  if (fwd) return fwd.split(',')[0].trim()
-  return req.ip || req.socket?.remoteAddress || 'unknown'
+  if (req.ip) return req.ip
+  const fwd = req.get?.('x-forwarded-for')
+  if (fwd) {
+    const hops = String(fwd).split(',').map((h) => h.trim()).filter(Boolean)
+    if (hops.length) return hops[hops.length - 1]
+  }
+  return req.socket?.remoteAddress || 'unknown'
 }
 
 export function rateLimit({ windowMs = 60_000, max = 60, key = clientIp, message } = {}) {

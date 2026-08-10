@@ -2,8 +2,63 @@ import { useEffect, useState } from 'react'
 import { friendlyMessage } from './lib/friendlyError.js'
 
 const TOKEN_KEY = 'homenex-token'
+// Declared here (not next to the queue helpers below) so clearSessionCaches can reach
+// it — the two are the same concern: state scoped to one logged-in agent.
+const QUEUE_KEY = 'homenex-offline-queue'
 export const getToken = () => localStorage.getItem(TOKEN_KEY)
-export const setToken = (t) => (t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY))
+
+// Everything the app holds on behalf of ONE session, dropped whenever the session
+// changes (login, logout, or a 401 that ends it).
+//
+// Two stores outlive a session unless we clear them, and both are cross-agent leaks
+// on a shared office desktop — the normal setup in an Indian brokerage:
+//   1. The service worker caches authenticated API GETs so the CRM stays readable at
+//      a site with no signal. Those entries are keyed by URL alone, with no agent in
+//      the key, so the next person to log in would be served the previous agent's
+//      leads and contacts straight from cache while offline.
+//   2. The offline write queue holds stage moves and follow-ups that failed on a dead
+//      network. Replayed under a different token they would write one agent's edits
+//      into another agent's CRM.
+// Best-effort by design: a private-mode localStorage throw or a browser with no Cache
+// Storage must not break signing in or out.
+export function clearSessionCaches() {
+  try {
+    globalThis.localStorage?.removeItem(QUEUE_KEY)
+  } catch {
+    /* storage unavailable (private mode) — nothing cached to leak either */
+  }
+  const store = globalThis.caches
+  if (!store) return
+  store
+    .keys()
+    .then((names) =>
+      Promise.all(
+        names.map((name) =>
+          store.open(name).then((cache) =>
+            cache.keys().then((requests) =>
+              Promise.all(
+                requests
+                  .filter((r) => {
+                    try {
+                      return new URL(r.url).pathname.startsWith('/api/')
+                    } catch {
+                      return false
+                    }
+                  })
+                  .map((r) => cache.delete(r)),
+              ),
+            ),
+          ),
+        ),
+      ),
+    )
+    .catch(() => {})
+}
+
+export const setToken = (t) => {
+  clearSessionCaches()
+  return t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY)
+}
 
 async function j(res) {
   if (res.status === 401) {
@@ -45,7 +100,6 @@ const put = (url, body) =>
 
 // --- Offline action queue: follow-up creation and stage moves survive dead spots.
 // Failed-by-network writes are stored locally and replayed when connectivity returns.
-const QUEUE_KEY = 'homenex-offline-queue'
 const readQueue = () => {
   try {
     return JSON.parse(localStorage.getItem(QUEUE_KEY) || '[]')

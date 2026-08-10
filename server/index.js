@@ -193,7 +193,7 @@ import {
 } from './leadSources.js'
 import { fetchLeadgenData } from './whatsapp.js'
 import { dbPing, closePool } from './db.js'
-import { securityHeaders, cors, requestLogger, rateLimit } from './middleware.js'
+import { securityHeaders, cors, requestLogger, rateLimit, clientIp } from './middleware.js'
 import { validateEnv } from './env.js'
 
 const { PORT = 8787, WHATSAPP_VERIFY_TOKEN = 'homenex-verify', WHATSAPP_APP_SECRET } = process.env
@@ -316,6 +316,19 @@ if (process.env.NODE_ENV !== 'test') {
   app.use('/webhook', ingestLimiter)
   app.use('/ingest', ingestLimiter)
 }
+
+// Uploads are the one authenticated request that both costs real disk and accepts a
+// 25MB body, so they get their own ceiling — keyed by agent id, not IP, because the
+// cost lands on us per account and a whole office can share one NAT address. This one
+// stays on under test (the suite uploads a handful of files, well under the ceiling);
+// UPLOAD_RATE_LIMIT makes the threshold drivable from a test.
+const uploadLimiter = rateLimit({
+  windowMs: 60_000,
+  max: Number(process.env.UPLOAD_RATE_LIMIT) > 0 ? Number(process.env.UPLOAD_RATE_LIMIT) : 60,
+  key: (req) => (req.agent ? `agent:${req.agent.id}` : `ip:${clientIp(req)}`),
+  message: 'Too many uploads — please wait a minute before uploading more files.',
+})
+rateLimiters.push(uploadLimiter)
 
 // Publicly serve uploaded media so WhatsApp (and the dashboard) can fetch it by URL.
 app.use('/uploads', express.static(UPLOAD_DIR))
@@ -875,8 +888,34 @@ app.post('/api/leads/:id/read', ah(async (req, res) => {
 }))
 
 // Reassign a thread to another agent (owner only). assignee_id null hands it back.
+// The assignee is validated before the write for two reasons: leads.assigned_agent_id
+// is a foreign key, so an unknown id used to surface as an opaque 500 instead of a
+// usable error; and an unchecked id would let an owner push their thread into the
+// inbox of any agent on the platform. A thread may only move to yourself or to a
+// member of your own team.
 app.post('/api/leads/:id/assign-to', ah(async (req, res) => {
-  const lead = await assignLeadTo(req.params.id, req.agent.id, req.body?.assignee_id ?? null)
+  const raw = req.body?.assignee_id ?? null
+  let assigneeId = null
+  if (raw !== null) {
+    assigneeId = Number(raw)
+    if (!Number.isInteger(assigneeId) || assigneeId <= 0) {
+      return res.status(400).json({ error: 'assignee_id must be an agent id or null' })
+    }
+    const target = await getAgent(assigneeId)
+    if (!target || target.is_active !== 1) {
+      return res.status(404).json({ error: 'assignee not found', code: 'ASSIGNEE_NOT_FOUND' })
+    }
+    if (target.id !== req.agent.id) {
+      const [mine, theirs] = await Promise.all([getAgentTeam(req.agent.id), getAgentTeam(target.id)])
+      if (!mine || !theirs || mine.id !== theirs.id) {
+        return res.status(403).json({
+          error: 'You can only reassign a chat to someone on your team.',
+          code: 'NOT_TEAMMATE',
+        })
+      }
+    }
+  }
+  const lead = await assignLeadTo(req.params.id, req.agent.id, assigneeId)
   if (!lead) return res.status(404).json({ error: 'not found' })
   await logActivity(req.agent.id, lead.id, 'agent', `${req.agent.name} reassigned the chat`)
   res.json(lead)
@@ -1179,11 +1218,34 @@ app.get('/api/activity', ah(async (req, res) => res.json(await listActivity(req.
 app.get('/api/network', ah(async (req, res) =>
   res.json({ posts: await listNetworkPosts(), matches: await computeMatches(req.agent.id) }),
 ))
+// A network post is the one thing in HomeNex every agent on the platform can read,
+// so its fields are coerced and bounded here rather than trusted: the budget columns
+// are DOUBLE PRECISION (a non-numeric string reached Postgres as a 500) and the text
+// columns are unbounded (a multi-megabyte post would be broadcast to everyone).
+const NETWORK_TEXT_LIMITS = { broker: 120, firm: 120, text: 2000, config: 60, locality: 120 }
 app.post('/api/network', ah(async (req, res) => {
   const p = req.body ?? {}
-  if (!p.type || !p.broker || !p.text) return res.status(400).json({ error: 'type, broker, text required' })
-  if (!['INVENTORY', 'REQUIREMENT'].includes(p.type)) return res.status(400).json({ error: 'bad type' })
-  res.json(await addNetworkPost(p))
+  const str = (v) => (typeof v === 'string' ? v.trim() : v == null ? '' : String(v).trim())
+  const post = { type: str(p.type) }
+  if (!['INVENTORY', 'REQUIREMENT'].includes(post.type)) {
+    return res.status(400).json({ error: post.type ? 'bad type' : 'type, broker, text required' })
+  }
+  for (const [field, max] of Object.entries(NETWORK_TEXT_LIMITS)) {
+    const value = str(p[field])
+    if (value.length > max) return res.status(400).json({ error: `${field} must be ${max} characters or fewer` })
+    post[field] = value || null
+  }
+  if (!post.broker || !post.text) return res.status(400).json({ error: 'type, broker, text required' })
+  for (const field of ['budget_min_l', 'budget_max_l']) {
+    if (p[field] == null || p[field] === '') {
+      post[field] = null
+      continue
+    }
+    const n = Number(p[field])
+    if (!Number.isFinite(n) || n < 0) return res.status(400).json({ error: `${field} must be a number in lakhs` })
+    post[field] = n
+  }
+  res.json(await addNetworkPost(post))
 }))
 
 // --- Properties: the agent's inventory ---
@@ -1606,7 +1668,7 @@ app.get('/api/media', ah(async (req, res) => res.json(await listMediaAssets(req.
 
 // Register an asset. Two modes: { storage:'url', url } for an already-hosted file,
 // or { storage:'local', data_base64, filename } to upload a file we host at /uploads.
-app.post('/api/media', ah(async (req, res) => {
+app.post('/api/media', uploadLimiter, ah(async (req, res) => {
   const b = req.body ?? {}
   try {
     let asset = pick(b, ['title', 'kind', 'caption'])
@@ -1633,7 +1695,7 @@ app.delete('/api/media/:id', ah(async (req, res) => {
 // Generic file upload → hosted URL. Lets forms (e.g. the property photo/brochure
 // picker) turn a phone-gallery file into a URL we store, without creating a media
 // library record. Returns { url, filename, mime, size }.
-app.post('/api/uploads', ah(async (req, res) => {
+app.post('/api/uploads', uploadLimiter, ah(async (req, res) => {
   const b = req.body ?? {}
   if (!b.data_base64) return res.status(400).json({ error: 'data_base64 is required' })
   try {
@@ -1932,9 +1994,23 @@ app.post('/api/lead-sources/regenerate', ah(async (req, res) => {
 }))
 
 // Map a Meta Lead Ads form to this agent so its leadgen webhooks route here.
+// The mapping is what decides whose CRM an incoming lead lands in, so a form may
+// only ever be claimed once: without this check any logged-in agent could point
+// another workspace's form id at themselves and quietly receive that workspace's
+// Meta Lead Ads leads. Re-claiming a form you already own stays idempotent.
 app.post('/api/lead-sources/leadgen-form', ah(async (req, res) => {
   const formId = String(req.body?.form_id || '').trim()
   if (!formId) return res.status(400).json({ error: 'form_id required' })
+  if (formId.length > 100 || !/^[\w.:-]+$/.test(formId)) {
+    return res.status(400).json({ error: 'form_id must be a plain Meta form identifier' })
+  }
+  const owner = await getMeta(`leadgen_form:${formId}`)
+  if (owner && Number(owner) !== req.agent.id) {
+    return res.status(409).json({
+      error: 'That form is already connected to another HomeNex workspace.',
+      code: 'FORM_TAKEN',
+    })
+  }
   await setMeta(`leadgen_form:${formId}`, String(req.agent.id))
   res.json({ ok: true, form_id: formId })
 }))

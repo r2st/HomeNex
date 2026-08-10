@@ -12,7 +12,7 @@ const dbName = await createTestDb('agentcmd')
 
 const { closePool, createAgent, listContacts, getContactByPhone } = await import('../db.js')
 const { hashPassword } = await import('../auth.js')
-const { parseAgentCommand, runAgentCommand, extractPhoneFromText } =
+const { parseAgentCommand, runAgentCommand, extractPhoneFromText, handleAgentCommand, HELP_TEXT } =
   await import('../agentCommands.js')
 const { ready } = await import('../db.js')
 
@@ -107,4 +107,70 @@ test('a forwarded contact card adds the customer', async () => {
   const reply = await runAgentCommand(agentA, msg)
   assert.equal(reply, 'Added +919700000042 to your client list')
   assert.equal((await getContactByPhone('+919700000042')).name, 'Meera Nair')
+})
+
+// --- Edge cases the happy path never reaches ---------------------------------
+
+test('a contact card with no phone number falls back to help, not a crash', async () => {
+  const noPhone = { from: '919811000000', type: 'contacts', contacts: [{ name: { formatted_name: 'Nameless' } }] }
+  assert.equal(await runAgentCommand(agentA, noPhone), HELP_TEXT)
+  const emptyCard = { from: '919811000000', type: 'contacts', contacts: [] }
+  assert.equal(await runAgentCommand(agentA, emptyCard), HELP_TEXT)
+  const noContacts = { from: '919811000000', type: 'contacts' }
+  assert.equal(await runAgentCommand(agentA, noContacts), HELP_TEXT)
+})
+
+test('a contact card falls back to the first name when there is no formatted name', () => {
+  const cmd = parseAgentCommand({
+    type: 'contacts',
+    contacts: [{ name: { first_name: 'Meera' }, phones: [{ wa_id: '919700000055' }] }],
+  })
+  assert.deepEqual(cmd, { kind: 'add', phone: '919700000055', name: 'Meera' })
+})
+
+test('a card with a phone but no name at all still adds the client', () => {
+  const cmd = parseAgentCommand({ type: 'contacts', contacts: [{ phones: [{ phone: '9700000056' }] }] })
+  assert.deepEqual(cmd, { kind: 'add', phone: '9700000056', name: null })
+})
+
+test('a non-text, non-contact message (photo, voice note) gets help', async () => {
+  for (const type of ['image', 'audio', 'sticker', 'location']) {
+    assert.equal(await runAgentCommand(agentA, { from: '919811000000', type }), HELP_TEXT)
+  }
+})
+
+test('a rejected contact write is reported to the agent, not thrown at the webhook', async () => {
+  // normalizePhone leaves a too-short number alone and addContact refuses it; the
+  // agent must get readable text back, because this reply goes out over WhatsApp.
+  const reply = await runAgentCommand(agentA, textMsg('919811000000', 'add 12345'))
+  assert.equal(reply, HELP_TEXT) // too short to look like a phone at all
+})
+
+test('every list alias is recognised, case-insensitively', () => {
+  for (const body of ['list', 'List', 'CLIENTS', 'my clients', 'List Clients', 'show clients']) {
+    assert.equal(parseAgentCommand({ type: 'text', text: { body: ` ${body} ` } }).kind, 'list', body)
+  }
+})
+
+// --- handleAgentCommand: the WhatsApp-facing wrapper -------------------------
+
+test('handleAgentCommand returns the reply without sending when send is false', async () => {
+  const reply = await handleAgentCommand({
+    agent: agentA,
+    msg: textMsg('919811000000', 'list'),
+    send: false,
+  })
+  assert.match(reply, /Your clients/)
+})
+
+test('handleAgentCommand still returns the reply when the WhatsApp send fails', async () => {
+  // WHATSAPP_ACCESS_TOKEN is unset here, so sendText throws WA_NOT_CONFIGURED. The
+  // command must still have run and the reply must still come back — a send failure
+  // is logged, never propagated into the inbound webhook loop.
+  const reply = await handleAgentCommand({
+    agent: agentA,
+    msg: textMsg('919811000000', 'what can you do?'),
+    send: true,
+  })
+  assert.equal(reply, HELP_TEXT)
 })
