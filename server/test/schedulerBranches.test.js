@@ -1,0 +1,270 @@
+// Branch coverage for scheduler.js: the arms the happy-path suites never take —
+// a lead with no name, a visit already reminded, a send that fails mid-tick, an
+// agent that no longer exists, and the explicit-limit form of the stale sweep.
+import { test, before, after } from 'node:test'
+import assert from 'node:assert/strict'
+import { createTestDb, dropTestDb } from './helpers.js'
+
+process.env.NODE_ENV = 'test'
+delete process.env.OPENROUTER_API_KEY
+delete process.env.WHATSAPP_ACCESS_TOKEN
+delete process.env.WHATSAPP_APP_SECRET
+const dbName = await createTestDb('schedbranches')
+
+const { app } = await import('../index.js')
+const {
+  closePool, query, upsertLead, addMessage, applyExtraction, recomputeLeadScore,
+  createProperty, recordPropertyView, createSiteVisit, createCommission,
+} = await import('../db.js')
+const {
+  serviceWindowWatchForAgent, detectHotLeadsForAgent, generateStaleFollowupsForAgent,
+  siteVisitRemindersForAgent, noResponseNudgeForAgent, siteVisitWaRemindersForAgent,
+  commissionOverdueSweepForAgent,
+} = await import('../scheduler.js')
+
+let server, base, token, agentId
+const MISSING = 987654
+
+const req = (method, url, body, tok = token) =>
+  fetch(base + url, {
+    method,
+    headers: { 'content-type': 'application/json', ...(tok ? { authorization: `Bearer ${tok}` } : {}) },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  })
+
+const backdateInbound = (leadId, hours) =>
+  query(`UPDATE leads SET last_inbound_at = now() - ($2 || ' hours')::interval WHERE id = $1`, [leadId, String(hours)])
+const backdateMessages = (leadId, days) =>
+  query(`UPDATE messages SET created_at = now() - ($2 || ' days')::interval WHERE lead_id = $1`, [leadId, String(days)])
+const notification = async (dedupeKey) =>
+  (await query('SELECT * FROM notifications WHERE agent_id = $1 AND dedupe_key = $2', [agentId, dedupeKey])).rows[0]
+
+// Runs fn with console.error captured, so an expected failure doesn't spam the report.
+const quietly = async (fn) => {
+  const lines = []
+  const real = console.error
+  console.error = (...a) => lines.push(a.join(' '))
+  try {
+    return { result: await fn(), errors: lines }
+  } finally {
+    console.error = real
+  }
+}
+
+before(async () => {
+  await new Promise((resolve) => {
+    server = app.listen(0, () => {
+      base = `http://127.0.0.1:${server.address().port}`
+      resolve()
+    })
+  })
+  const out = await (
+    await req('POST', '/api/auth/signup', { name: 'Branch Bina', phone: '+919750000001', password: 'secret123' })
+  ).json()
+  token = out.token
+  agentId = out.agent.id
+})
+
+after(async () => {
+  server?.close()
+  await closePool()
+  await dropTestDb(dbName)
+})
+
+// --- A lead with no name is addressed by its number ---------------------------
+
+test('every notification falls back to the WhatsApp number when the lead is unnamed', async () => {
+  const waId = '919750010001'
+  const lead = await upsertLead(agentId, waId, null)
+  assert.equal(lead.name, null, 'an inbound number with no profile name')
+  await addMessage(lead.id, 'buyer', 'price?')
+  await backdateInbound(lead.id, 22)
+
+  // Service-window watch.
+  assert.equal(await serviceWindowWatchForAgent(agentId), 1)
+  const windowHour = Math.floor(new Date((await query('SELECT last_inbound_at FROM leads WHERE id = $1', [lead.id])).rows[0].last_inbound_at).getTime() / 3600_000)
+  assert.match((await notification(`sw:${lead.id}:${windowHour}`)).title, new RegExp(waId))
+
+  // No-response nudge (no agent/AI reply has ever gone out on this lead).
+  assert.equal(await noResponseNudgeForAgent(agentId), 1)
+  assert.match((await notification(`noresp:${lead.id}:${windowHour}`)).title, new RegExp(waId))
+
+  // Hot-lead "waiting on you" alert.
+  await applyExtraction(lead.id, { temp: 'Hot', score: 88 })
+  await recomputeLeadScore(lead.id)
+  await detectHotLeadsForAgent(agentId)
+  const day = new Date().toISOString().slice(0, 10)
+  assert.match((await notification(`hotwait:${lead.id}:${day}`)).title, new RegExp(waId))
+
+  // Repeat-view alert.
+  const prop = await createProperty(agentId, { title: 'Anon Heights', locality: 'Wakad', city: 'Pune' })
+  for (let i = 0; i < 3; i++) await recordPropertyView(prop.id, null, lead.id)
+  await detectHotLeadsForAgent(agentId)
+  assert.match((await notification(`hotview:${lead.id}:${day}`)).title, new RegExp(waId))
+
+  // Site-visit reminder.
+  const visit = await createSiteVisit(agentId, {
+    lead_id: lead.id,
+    property_id: prop.id,
+    scheduled_at: new Date(Date.now() + 20 * 3600_000).toISOString(),
+  })
+  assert.equal(await siteVisitRemindersForAgent(agentId), 1)
+  const note = await notification(`visit:${visit.id}`)
+  assert.match(note.title, new RegExp(waId))
+  assert.match(note.body, /for Anon Heights/, 'the property title is named when there is one')
+})
+
+test('a site-visit reminder without a property reads cleanly', async () => {
+  const lead = await upsertLead(agentId, '919750010002', 'Bare Bhavna')
+  const visit = await createSiteVisit(agentId, {
+    lead_id: lead.id,
+    scheduled_at: new Date(Date.now() + 18 * 3600_000).toISOString(),
+  })
+  assert.equal(await siteVisitRemindersForAgent(agentId), 1)
+  const note = await notification(`visit:${visit.id}`)
+  assert.match(note.body, /^Site visit is coming up/, 'no dangling "for undefined"')
+})
+
+test('an overdue commission on an unnamed lead is still chaseable', async () => {
+  const lead = await upsertLead(agentId, '919750010003', null)
+  await createCommission(agentId, {
+    lead_id: lead.id,
+    deal_value_paise: 5_000_000_00,
+    commission_pct: 2,
+    expected_payout_date: '2020-01-01',
+    status: 'expected',
+  })
+  assert.equal(await commissionOverdueSweepForAgent(agentId), 1)
+  const { rows } = await query(
+    `SELECT * FROM notifications WHERE agent_id = $1 AND type = 'commission_overdue'`,
+    [agentId],
+  )
+  assert.match(rows[0].body, /919750010003/, 'the number stands in for the missing name')
+})
+
+// --- Stale follow-up sweep ----------------------------------------------------
+
+test('the stale sweep honours an explicit limit', async () => {
+  for (const n of [1, 2, 3]) {
+    const lead = await upsertLead(agentId, `9197500200${n}0`, `Quiet ${n}`)
+    await addMessage(lead.id, 'buyer', 'will think about it')
+    await backdateMessages(lead.id, 30)
+  }
+  assert.equal(await generateStaleFollowupsForAgent(agentId, { limit: 2 }), 2, 'capped at the limit')
+  assert.ok((await generateStaleFollowupsForAgent(agentId)) >= 1, 'the rest come through on the next pass')
+})
+
+// --- WhatsApp site-visit reminders --------------------------------------------
+
+// Every delivered reminder is mirrored into the transcript keyed by its wamid, and
+// that column is uniquely indexed — so the fake sender has to mint a fresh id per
+// send, exactly as the Graph API does.
+let wamidSeq = 0
+const fakeSender = () => {
+  const sent = []
+  return [sent, async (to, text) => (sent.push({ to, text }), `wamid.BRANCH.${++wamidSeq}`)]
+}
+
+// The reminder job sweeps every upcoming visit an agent has, so each test below
+// gets its own workspace — otherwise one test's leftovers are another's send count.
+let phoneSeq = 0
+const newAgent = async () => {
+  const phone = `+91975003${String(++phoneSeq).padStart(4, '0')}`
+  const out = await (
+    await req('POST', '/api/auth/signup', { name: `Visit ${phoneSeq}`, phone, password: 'secret123' }, null)
+  ).json()
+  return out.agent.id
+}
+
+test('the WhatsApp reminder job is a no-op for an agent that no longer exists', async () => {
+  const [, send] = fakeSender()
+  assert.equal(await siteVisitWaRemindersForAgent(MISSING, Date.now(), send), 0)
+})
+
+test('a visit more than 25 hours out is too early to remind', async () => {
+  const id = await newAgent()
+  const lead = await upsertLead(id, '919751030001', 'Early Esha')
+  const now = Date.now()
+  await createSiteVisit(id, { lead_id: lead.id, scheduled_at: new Date(now + 25.5 * 3600_000).toISOString() })
+
+  const [sent, send] = fakeSender()
+  // Inside the 26h query window but outside the T-1 reminder band.
+  assert.equal(await siteVisitWaRemindersForAgent(id, now, send), 0)
+  assert.equal(sent.length, 0)
+})
+
+test('a visit that already got its reminder is skipped, in both bands', async () => {
+  const id = await newAgent()
+  const lead = await upsertLead(id, '919751030002', 'Done Deepa')
+  const now = Date.now()
+  const soon = await createSiteVisit(id, { lead_id: lead.id, scheduled_at: new Date(now + 90 * 60_000).toISOString() })
+  const tomorrow = await createSiteVisit(id, { lead_id: lead.id, scheduled_at: new Date(now + 23 * 3600_000).toISOString() })
+  await query('UPDATE site_visits SET reminder_t2_sent_at = now() WHERE id = $1', [soon.id])
+  await query('UPDATE site_visits SET reminder_t1_sent_at = now() WHERE id = $1', [tomorrow.id])
+
+  const [sent, send] = fakeSender()
+  assert.equal(await siteVisitWaRemindersForAgent(id, now, send), 0)
+  assert.equal(sent.length, 0, 'neither band re-sends')
+})
+
+test('a reminder renders in the agent’s own timezone', async () => {
+  const id = await newAgent()
+  await query('UPDATE agents SET timezone = $2 WHERE id = $1', [id, 'Asia/Dubai'])
+  const lead = await upsertLead(id, '919751030003', 'Gulf Gita')
+  const now = Date.now()
+  const at = new Date(now + 90 * 60_000)
+  await createSiteVisit(id, { lead_id: lead.id, scheduled_at: at.toISOString() })
+
+  const [sent, send] = fakeSender()
+  assert.equal(await siteVisitWaRemindersForAgent(id, now, send), 1)
+  const dubai = at.toLocaleString('en-IN', {
+    timeZone: 'Asia/Dubai', weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit',
+  })
+  assert.ok(sent[0].text.includes(dubai), `expected the Dubai time in:\n${sent[0].text}`)
+})
+
+test('a failed send is logged and left unstamped, so the next tick retries it', async () => {
+  const id = await newAgent()
+  const lead = await upsertLead(id, '919751030004', 'Flaky Farhan')
+  const now = Date.now()
+  const visit = await createSiteVisit(id, { lead_id: lead.id, scheduled_at: new Date(now + 90 * 60_000).toISOString() })
+
+  const failing = async () => {
+    throw new Error('Graph API is down')
+  }
+  const { result, errors } = await quietly(() => siteVisitWaRemindersForAgent(id, now, failing))
+  assert.equal(result, 0, 'nothing counted as delivered')
+  assert.ok(errors.some((e) => /site-visit reminder failed for visit/.test(e) && /Graph API is down/.test(e)))
+
+  const { rows } = await query('SELECT reminder_t2_sent_at FROM site_visits WHERE id = $1', [visit.id])
+  assert.equal(rows[0].reminder_t2_sent_at, null, 'not marked sent, so it will be retried')
+
+  // And the retry does go through once the sender recovers.
+  const [sent, send] = fakeSender()
+  assert.equal(await siteVisitWaRemindersForAgent(id, now, send), 1)
+  assert.equal(sent.length, 1)
+})
+
+test('one failing visit does not stop the others in the same tick', async () => {
+  const id = await newAgent()
+  const now = Date.now()
+  const ids = []
+  for (const n of [1, 2]) {
+    const lead = await upsertLead(id, `91975104000${n}`, `Batch ${n}`)
+    ids.push((await createSiteVisit(id, {
+      lead_id: lead.id,
+      scheduled_at: new Date(now + 90 * 60_000).toISOString(),
+    })).id)
+  }
+  let calls = 0
+  const flaky = async () => {
+    if (++calls === 1) throw new Error('first one fails')
+    return 'wamid.OK'
+  }
+  const { result } = await quietly(() => siteVisitWaRemindersForAgent(id, now, flaky))
+  assert.equal(result, 1, 'the second visit still went out')
+  const stamped = (
+    await query('SELECT COUNT(*)::int AS n FROM site_visits WHERE id = ANY($1) AND reminder_t2_sent_at IS NOT NULL', [ids])
+  ).rows[0].n
+  assert.equal(stamped, 1)
+})
