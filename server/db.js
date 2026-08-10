@@ -2192,8 +2192,22 @@ export async function createCommissionInvoice(agentId, commissionId, { gst_rate,
   const commission = await getCommission(commissionId, agentId)
   if (!commission) return null
   const subtotal = commissionAmountPaise(commission)
-  if (subtotal <= 0) throw new Error('commission has no amount to invoice')
-  const rate = gst_rate ?? GST_RATE
+  if (subtotal <= 0) fail('This commission has no amount to invoice', 'NO_AMOUNT')
+  // The rate reaches gstBreakdown as arithmetic, so it has to be a real percentage
+  // before it gets there. Unvalidated, a bad one wasn't a 400 but a silently wrong
+  // invoice on the books: gst_rate: -18 billed NEGATIVE tax (a ₹1,000 subtotal
+  // totalling ₹820) and no one was told. Non-numeric input was worse only in being
+  // noisy — NaN reached the INSERT and came back as a Postgres cast error rather
+  // than a sentence an agent can act on.
+  // Number() is not the check to make here: it answers 0 for [] and for '', so a
+  // junk field would have quietly become a 0% invoice rather than a rejection.
+  // Only a real number, or a string that is entirely a number, is a rate.
+  const raw = gst_rate ?? GST_RATE
+  const rate =
+    typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN
+  if (!Number.isFinite(rate) || rate < 0 || rate > 100) {
+    fail('GST rate must be a percentage between 0 and 100', 'INVALID_GST_RATE')
+  }
   const breakdown = gstBreakdown(subtotal, rate)
   // Reading the next number and inserting it is not atomic, so two invoices raised
   // at once pick the same one and the loser hits UNIQUE (agent_id, invoice_number).

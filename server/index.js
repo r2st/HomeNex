@@ -1558,8 +1558,9 @@ app.post('/api/commissions/:id/invoice', ah(async (req, res) => {
     res.json(invoice)
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: 'invoice number already exists' })
-    if (!pgBadRequest(err) && !/no amount to invoice/.test(err.message)) throw err
-    res.status(400).json({ error: err.message })
+    const rejected = err.code === 'NO_AMOUNT' || err.code === 'INVALID_GST_RATE'
+    if (!pgBadRequest(err) && !rejected) throw err
+    res.status(400).json({ error: err.message, ...(rejected && { code: err.code }) })
   }
 }))
 

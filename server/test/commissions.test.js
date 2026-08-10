@@ -12,7 +12,7 @@ delete process.env.WHATSAPP_APP_SECRET
 const dbName = await createTestDb('commissions')
 
 const { app } = await import('../index.js')
-const { closePool, query, upsertLead, commissionAmountPaise, suggestRentalCommissionPaise } = await import('../db.js')
+const { closePool, query, upsertLead, commissionAmountPaise, suggestRentalCommissionPaise, createCommissionInvoice } = await import('../db.js')
 const { gstBreakdown } = await import('../money.js')
 
 let server
@@ -187,6 +187,63 @@ test('invoicing a zero-amount commission is rejected', async () => {
   assert.equal(res.status, 400)
   const body = await res.json()
   assert.match(body.error, /no amount/)
+  assert.equal(body.code, 'NO_AMOUNT')
+})
+
+// The GST rate arrives from the request body and is pure arithmetic by the time it
+// reaches gstBreakdown, so an unchecked one doesn't fail — it books a wrong invoice.
+test('a GST rate outside 0-100 is rejected instead of billed', async () => {
+  const lead = await upsertLead(agentId, '919000000006', 'Rate Rani')
+  const c = await jreq('POST', '/api/commissions', {
+    lead_id: lead.id, commission_flat_paise: 1_00_000, payer_type: 'builder',
+  })
+
+  // NaN/Infinity are omitted: JSON has no way to carry them (they arrive as null,
+  // which is the "use the default" case). They're covered against db.js directly below.
+  for (const gst_rate of [-18, -0.5, 101, 1e9, 'eighteen', '18%', 'NaN', '', '  ', true, {}, [], [18]]) {
+    const res = await req('POST', `/api/commissions/${c.id}/invoice`, { gst_rate })
+    assert.equal(res.status, 400, `gst_rate ${JSON.stringify(gst_rate)} was accepted`)
+    const body = await res.json()
+    assert.equal(body.code, 'INVALID_GST_RATE', `gst_rate ${JSON.stringify(gst_rate)} -> ${body.error}`)
+    assert.match(body.error, /between 0 and 100/)
+  }
+
+  // Nothing was written on the way through.
+  assert.equal((await jreq('GET', `/api/commission-invoices?commission_id=${c.id}`)).length, 0)
+
+  // The rates Indian brokerage actually uses still go through, including 0% — and a
+  // numeric string, which is what an <input> hands the client.
+  for (const gst_rate of [0, 5, 12, 18, 28, 18.5, '12', ' 5 ']) {
+    const inv = await jreq('POST', `/api/commissions/${c.id}/invoice`, { gst_rate })
+    assert.equal(Number(inv.gst_rate), Number(gst_rate))
+    assert.equal(Number(inv.gst_paise), Math.round((1_00_000 * Number(gst_rate)) / 100))
+    assert.equal(Number(inv.subtotal_paise) + Number(inv.gst_paise), Number(inv.total_paise))
+    assert.ok(Number(inv.total_paise) >= Number(inv.subtotal_paise), 'tax is never negative')
+  }
+})
+
+// An omitted rate is the 18% default; an explicit null means the same thing (the
+// client cleared the field), not a silent 0% invoice.
+test('an omitted or null GST rate falls back to the 18% default', async () => {
+  const lead = await upsertLead(agentId, '919000000007', 'Default Deepa')
+  const c = await jreq('POST', '/api/commissions', {
+    lead_id: lead.id, commission_flat_paise: 1_00_000, payer_type: 'builder',
+  })
+  for (const body of [{}, { gst_rate: null }]) {
+    const inv = await jreq('POST', `/api/commissions/${c.id}/invoice`, body)
+    assert.equal(Number(inv.gst_rate), 18)
+    assert.equal(Number(inv.gst_paise), 18_000)
+  }
+
+  // The non-JSON-representable rates, straight at db.js — a non-HTTP caller (the
+  // scheduler, a script) can hand it a real NaN where the wire never could.
+  for (const gst_rate of [NaN, Infinity, -Infinity]) {
+    await assert.rejects(
+      () => createCommissionInvoice(agentId, c.id, { gst_rate }),
+      (err) => err.code === 'INVALID_GST_RATE',
+      `${gst_rate} was accepted`,
+    )
+  }
 })
 
 // --- Invoice numbering. These use a private agent so the sequence is predictable.
