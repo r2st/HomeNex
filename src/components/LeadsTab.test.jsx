@@ -35,10 +35,38 @@ const ANALYTICS = {
   lost_reasons: [{ reason: 'Budget mismatch', n: 3 }],
 }
 
+const pipelineOf = (l) => l.pipeline_type || 'buy_primary'
+const stageOf = (l) => l.stage || 'New'
+
+// GET /api/leads is filtered, ordered and paged by the server, so the mock has to be
+// too — a mock that ignores ?pipeline_type and ?limit would pass whether or not the
+// component actually asked for the right page.
+const servePage = (leads) => ({ query }) => {
+  const matching = leads.filter((l) => !query.pipeline_type || pipelineOf(l) === query.pipeline_type)
+  const offset = Number(query.offset) || 0
+  const limit = Math.min(Number(query.limit) || 100, 500)
+  return matching.slice(offset, offset + limit)
+}
+
+// The real /api/leads/count is a grouped query over every lead the agent can see,
+// unaffected by the page the list is showing.
+const serveCounts = (leads) => () => {
+  const counts = { total: leads.length, unassigned: 0, by_pipeline: {}, by_stage: {} }
+  for (const l of leads) {
+    const type = pipelineOf(l)
+    if (l.unassigned) counts.unassigned += 1
+    counts.by_pipeline[type] = (counts.by_pipeline[type] || 0) + 1
+    const stages = (counts.by_stage[type] ||= {})
+    stages[stageOf(l)] = (stages[stageOf(l)] || 0) + 1
+  }
+  return counts
+}
+
 function setup(t, { leads = [lead()], routes = {} } = {}) {
   const env = installBrowser()
   const net = mockFetch({
-    'GET /api/leads': leads,
+    'GET /api/leads': servePage(leads),
+    'GET /api/leads/count': serveCounts(leads),
     'GET /api/pipeline-stages': STAGES,
     'GET /api/pipeline/analytics': ANALYTICS,
     ...routes,
@@ -297,4 +325,126 @@ test('polling stops when the screen goes away', async (t) => {
   assert.ok(ctx.env.liveIntervals > 0)
   ui.unmount()
   assert.equal(ctx.env.liveIntervals, 0, 'a leaked poll keeps hitting the server after the tab closes')
+})
+
+// --- Paging -----------------------------------------------------------------
+// GET /api/leads is capped server-side. The screen has to ask for the page it wants
+// and say what it isn't showing, or an agent with 400 leads quietly sees 50 and
+// concludes the other 350 were lost.
+
+const manyLeads = (n, over = {}) =>
+  Array.from({ length: n }, (_, i) => lead({ id: i + 1, contact_name: `Buyer ${i + 1}`, ...over }))
+
+test('the first fetch asks for one page, filtered to the selected pipeline', async (t) => {
+  const ctx = setup(t, { leads: manyLeads(3) })
+  await render(<LeadsTab onOpenConversation={() => {}} />)
+
+  const [call] = ctx.net.to('/api/leads', 'GET')
+  assert.equal(call.query.pipeline_type, 'buy_primary', 'the server does the filtering now')
+  assert.equal(call.query.limit, '50', 'one page, not the whole table')
+})
+
+test('switching pipeline refetches from the server rather than re-filtering a page', async (t) => {
+  const ctx = setup(t, {
+    leads: [
+      lead({ id: 1, contact_name: 'Priya Sharma', pipeline_type: 'buy_primary' }),
+      lead({ id: 2, contact_name: 'Amit Rental', pipeline_type: 'rental' }),
+    ],
+  })
+  const ui = await render(<LeadsTab onOpenConversation={() => {}} />)
+
+  await click(ui.byText('Rental'))
+  const last = ctx.net.to('/api/leads', 'GET').at(-1)
+  assert.equal(last.query.pipeline_type, 'rental')
+  assert.match(ui.text(), /Amit Rental/)
+})
+
+test('a full page offers Load more, and the next fetch asks for a bigger page', async (t) => {
+  const ctx = setup(t, { leads: manyLeads(60) })
+  const ui = await render(<LeadsTab onOpenConversation={() => {}} />)
+
+  assert.match(ui.text(), /Showing 50 of 60/)
+  await click(ui.byText('Load more leads'))
+
+  const last = ctx.net.to('/api/leads', 'GET').at(-1)
+  assert.equal(last.query.limit, '100', 'the whole run is refetched, not appended blind')
+  assert.match(ui.text(), /Buyer 60/, 'the rest of the pipeline arrives')
+  assert.doesNotMatch(ui.text(), /Load more leads/, 'a short page means the end')
+})
+
+test('Load more keeps the leads on screen while the bigger page is in flight', async (t) => {
+  const all = manyLeads(60)
+  let hold = null
+  const ctx = setup(t, { leads: all })
+  // First page answers normally; the Load-more fetch is held open so we can look at
+  // the screen mid-flight. If the page size were a usePoll dependency, the hook would
+  // have reset its data to null here and the agent would watch their pipeline vanish.
+  ctx.net.set('GET /api/leads', ({ query }) => {
+    if (Number(query.limit) > 50) return new Promise((resolve) => (hold = resolve))
+    return all.slice(0, 50)
+  })
+  const ui = await render(<LeadsTab onOpenConversation={() => {}} />)
+  assert.match(ui.text(), /Buyer 1/)
+
+  await click(ui.byText('Load more leads'))
+
+  assert.match(ui.text(), /Buyer 1/, 'the loaded page survives the in-flight request')
+  assert.doesNotMatch(ui.text(), /Loading…/, 'and the header does not fall back to a spinner')
+  hold?.(all)
+})
+
+test('a page that exactly fills the limit still offers Load more', async (t) => {
+  setup(t, { leads: manyLeads(50) })
+  const ui = await render(<LeadsTab onOpenConversation={() => {}} />)
+  assert.match(ui.text(), /Load more leads/, 'a full page is indistinguishable from "there is more"')
+})
+
+test('no Load more when everything fits on one page', async (t) => {
+  setup(t, { leads: manyLeads(3) })
+  const ui = await render(<LeadsTab onOpenConversation={() => {}} />)
+  assert.doesNotMatch(ui.text(), /Load more/)
+})
+
+test('the pipeline chips count every lead, not just the page on screen', async (t) => {
+  setup(t, {
+    leads: [
+      ...manyLeads(60, { pipeline_type: 'buy_primary' }),
+      lead({ id: 900, pipeline_type: 'rental' }),
+      lead({ id: 901, pipeline_type: 'rental' }),
+    ],
+  })
+  const ui = await render(<LeadsTab onOpenConversation={() => {}} />)
+
+  assert.match(ui.text(), /Buy \(Primary\)60/, 'the chip shows 60, not the 50 that were fetched')
+  assert.match(ui.text(), /Rental2/, 'and other pipelines are counted without fetching them')
+})
+
+test('the header open-count comes from the server totals, not the page', async (t) => {
+  setup(t, {
+    leads: [
+      ...manyLeads(58, { stage: 'New' }),
+      lead({ id: 800, stage: 'Lost' }),
+      lead({ id: 801, stage: 'Closed' }),
+    ],
+  })
+  const ui = await render(<LeadsTab onOpenConversation={() => {}} />)
+
+  assert.match(ui.text(), /58 open in this pipeline/, 'won and lost excluded, page size ignored')
+})
+
+test('a board column header shows loaded-of-total when the page is partial', async (t) => {
+  setup(t, { leads: manyLeads(60, { stage: 'New' }) })
+  const ui = await render(<LeadsTab onOpenConversation={() => {}} />)
+
+  await click(ui.byText('▦ Board'))
+  assert.match(ui.text(), /50 \/ 60/, 'the column must not claim 50 is the whole stage')
+})
+
+test('a fully loaded column shows a plain count', async (t) => {
+  setup(t, { leads: manyLeads(3, { stage: 'New' }) })
+  const ui = await render(<LeadsTab onOpenConversation={() => {}} />)
+
+  await click(ui.byText('▦ Board'))
+  assert.doesNotMatch(ui.text(), /3 \/ 3/)
+  assert.match(ui.text(), /New3/)
 })

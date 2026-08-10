@@ -159,7 +159,12 @@ export const api = {
   login: (body) => post('/api/auth/login', body),
   me: () => get('/api/auth/me'),
   health: () => get('/api/health'),
+  // Paged. Pass { limit, offset, pipeline_type, stage, q }. The server defaults to the
+  // first 100 and caps at 500, so a caller that wants totals must ask leadCounts()
+  // rather than measuring the array it got back.
   leads: (filters) => get(`/api/leads${qs(filters)}`),
+  // { total, unassigned, by_pipeline: { <type>: n }, by_stage: { <type>: { <stage>: n } } }
+  leadCounts: () => get('/api/leads/count'),
   lead: (id) => get(`/api/leads/${id}`),
   updateLead: (id, body) => put(`/api/leads/${id}`, body),
   moveLeadStage: (id, stage, lost_reason) => queueable('PUT', `/api/leads/${id}/stage`, { stage, lost_reason }),

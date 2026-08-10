@@ -620,9 +620,43 @@ export async function logActivity(agentId, leadId, kind, text) {
   ])
 }
 
+// How many leads one page of GET /api/leads returns when the caller doesn't say, and
+// the most it will return however loudly the caller asks. The list row is wide (every
+// lead column plus the last message, the unread count and the labels), so an agent
+// with 10k leads used to be served a ~12MB JSON body on a phone, every 4 seconds, from
+// two screens at once. 100 fills the longest screen twice over; 500 is the ceiling for
+// the rare caller that genuinely wants a big page.
+export const LEADS_PAGE_DEFAULT = 100
+export const LEADS_PAGE_MAX = 500
+
+// Clamp a caller-supplied page size to [1, LEADS_PAGE_MAX]. Anything that isn't a
+// positive number — absent, '', 'all', NaN, 0, negative — falls back to the default
+// rather than erroring, so an old client that never learned about paging keeps working
+// and simply gets the first page.
+export function leadsPageLimit(raw, fallback = LEADS_PAGE_DEFAULT) {
+  const n = Math.floor(Number(raw))
+  // Infinity is deliberately not a fallback case: `?limit=Infinity` is a caller asking
+  // for as much as it can get, and the answer to that is the cap, not the default.
+  if (Number.isNaN(n) || n < 1) return fallback
+  return Math.min(n, LEADS_PAGE_MAX)
+}
+
+// Same idea for the offset: a missing or nonsensical value means "start at the top".
+export function leadsPageOffset(raw) {
+  const n = Math.floor(Number(raw))
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
+
 // The agent's own leads plus the shared unassigned pool. `unassigned` flags pool rows;
 // `contact_name` is the client name from the agent's contacts, when the sender is known.
-export async function listLeads(agentId, { pipelineType = '', stage = '' } = {}) {
+//
+// Paged by default (see LEADS_PAGE_DEFAULT). `search` matches the lead name, the phone
+// number, or the agent's own contact name for that number — server-side, because a
+// client filtering a page it was handed can only ever search the first page.
+export async function listLeads(
+  agentId,
+  { pipelineType = '', stage = '', search = '', limit, offset } = {},
+) {
   const where = ['(l.agent_id = $1 OR l.agent_id IS NULL)']
   const params = [agentId]
   // Pipeline filters only apply to the agent's own leads; a lead that predates the CRM
@@ -635,6 +669,21 @@ export async function listLeads(agentId, { pipelineType = '', stage = '' } = {})
     params.push(stage)
     where.push(`COALESCE(l.stage, 'New') = $${params.length}`)
   }
+  const term = String(search ?? '').trim()
+  if (term) {
+    // ILIKE with both wildcards escaped so a buyer literally named "100%" can be found
+    // instead of matching everyone.
+    params.push(`%${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`)
+    const like = `$${params.length}`
+    where.push(`(l.name ILIKE ${like} OR l.wa_id ILIKE ${like}
+       OR EXISTS (SELECT 1 FROM contacts c
+                   WHERE c.agent_id = $1 AND replace(c.phone, '+', '') = l.wa_id
+                     AND c.name ILIKE ${like}))`)
+  }
+  params.push(leadsPageLimit(limit))
+  const limitParam = `$${params.length}`
+  params.push(leadsPageOffset(offset))
+  const offsetParam = `$${params.length}`
   const { rows } = await q(
     `SELECT l.*,
        (l.agent_id IS NULL)::int AS unassigned,
@@ -663,10 +712,43 @@ export async function listLeads(agentId, { pipelineType = '', stage = '' } = {})
         WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1
      ) last ON true
      WHERE ${where.join(' AND ')}
-     ORDER BY l.updated_at DESC`,
+     -- id breaks the tie: updated_at alone is not unique (a batch rescore stamps a
+     -- whole set of leads in the same transaction), and a non-deterministic sort makes
+     -- OFFSET paging drop and duplicate rows across pages.
+     ORDER BY l.updated_at DESC, l.id DESC
+     LIMIT ${limitParam} OFFSET ${offsetParam}`,
     params,
   )
   return rows
+}
+
+// Every count the Leads screen needs, in one grouped pass over the agent's leads —
+// the pipeline chips, the per-stage column headers, and the unassigned-pool badge.
+// This exists so the board can show "247 in Qualified" without the client first
+// downloading 247 lead rows to call .length on them.
+//
+// Shape: { total, unassigned, by_pipeline: { <type>: n }, by_stage: { <type>: { <stage>: n } } }
+// A lead that predates the CRM columns counts as buy_primary/New, matching listLeads.
+export async function leadCounts(agentId) {
+  const { rows } = await q(
+    `SELECT COALESCE(l.pipeline_type, 'buy_primary') AS pipeline_type,
+            COALESCE(l.stage, 'New') AS stage,
+            (l.agent_id IS NULL) AS unassigned,
+            COUNT(*)::int AS n
+       FROM leads l
+      WHERE (l.agent_id = $1 OR l.agent_id IS NULL)
+      GROUP BY 1, 2, 3`,
+    [agentId],
+  )
+  const counts = { total: 0, unassigned: 0, by_pipeline: {}, by_stage: {} }
+  for (const r of rows) {
+    counts.total += r.n
+    if (r.unassigned) counts.unassigned += r.n
+    counts.by_pipeline[r.pipeline_type] = (counts.by_pipeline[r.pipeline_type] || 0) + r.n
+    const stages = (counts.by_stage[r.pipeline_type] ||= {})
+    stages[r.stage] = (stages[r.stage] || 0) + r.n
+  }
+  return counts
 }
 
 export async function listActivity(agentId, limit = 30) {
@@ -4049,7 +4131,10 @@ export async function stampLeadTeam(leadId, agentId) {
 
 // Shared team inbox: every lead in the team, optionally filtered to one member,
 // to the unassigned pool, or by stage/pipeline.
-export async function teamLeads(teamId, { memberId = null, stage = '', pipelineType = '', unassigned = false } = {}) {
+export async function teamLeads(
+  teamId,
+  { memberId = null, stage = '', pipelineType = '', unassigned = false, limit, offset } = {},
+) {
   const where = ['l.team_id = $1']
   const params = [teamId]
   if (unassigned) where.push('l.agent_id IS NULL')
@@ -4065,13 +4150,27 @@ export async function teamLeads(teamId, { memberId = null, stage = '', pipelineT
     params.push(stage)
     where.push(`COALESCE(l.stage, 'New') = $${params.length}`)
   }
+  // Paged for the same reason the agent's own list is: a manager's view spans every
+  // member of the team, so it is the larger of the two, not the smaller.
+  params.push(leadsPageLimit(limit))
+  const limitParam = `$${params.length}`
+  params.push(leadsPageOffset(offset))
+  const offsetParam = `$${params.length}`
   return (
     await q(
       `SELECT l.*, a.name AS agent_name, (l.agent_id IS NULL)::int AS unassigned,
-              (SELECT text FROM messages m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) AS last_msg,
-              (SELECT created_at FROM messages m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) AS last_at
+              -- One lateral fetch of the last message, not two correlated subqueries
+              -- reading two columns of the same row (same fix as listLeads).
+              last.text AS last_msg,
+              last.created_at AS last_at
        FROM leads l LEFT JOIN agents a ON a.id = l.agent_id
-       WHERE ${where.join(' AND ')} ORDER BY l.updated_at DESC`,
+       LEFT JOIN LATERAL (
+         SELECT m.text, m.created_at FROM messages m
+          WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1
+       ) last ON true
+       WHERE ${where.join(' AND ')}
+       ORDER BY l.updated_at DESC, l.id DESC
+       LIMIT ${limitParam} OFFSET ${offsetParam}`,
       params,
     )
   ).rows

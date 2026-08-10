@@ -1,11 +1,15 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { api, usePoll, fmtAgo } from '../api.js'
 import { paiseRangeToDisplay } from '../money.js'
 import { Avatar, Chip, Sheet, TEMP_STYLE, inputCls } from './ui.jsx'
 import LeadDetail from './LeadDetail.jsx'
 import QuickAddLead from './QuickAddLead.jsx'
-import { pipelineCounts } from '../lib/pipelineCounts.js'
 import { stageEmptyText, stageEmptyIcon } from '../lib/stageEmpty.js'
+
+// One "Load more" step. Deliberately smaller than the server's 100-lead default page:
+// this is a phone screen, and a broker with 800 leads should not wait on 800 of them
+// to see the top of their pipeline.
+const PAGE_SIZE = 50
 
 const PIPELINES = [
   { id: 'buy_primary', label: 'Buy (Primary)' },
@@ -168,26 +172,50 @@ export default function LeadsTab({ onOpenConversation }) {
   const [lostFor, setLostFor] = useState(null) // { leadId } awaiting a lost reason
   const [moveError, setMoveError] = useState(null)
   const [quickAdd, setQuickAdd] = useState(false)
+  // How many pages of this pipeline are on screen. The poll always asks for the whole
+  // run in one request (pages * PAGE_SIZE) rather than appending pages client-side —
+  // one request stays consistent with itself, and leads that moved stage between polls
+  // can't end up in two columns at once.
+  const [pages, setPages] = useState(1)
 
-  const { data: allLeads, error, refresh } = usePoll(api.leads, 5000, [])
-  const { data: stages } = usePoll(() => api.pipelineStages(pipeline), 60000, [pipeline])
-
-  // A lead with no pipeline yet counts as buy_primary/New (webhook defaults).
-  const leads = useMemo(
-    () => (allLeads || []).filter((l) => (l.pipeline_type || 'buy_primary') === pipeline),
-    [allLeads, pipeline],
+  const limit = PAGE_SIZE * pages
+  // The pipeline filter is applied by the server now: at 10k leads, fetching every
+  // pipeline to show one of them was most of a 12MB body.
+  const { data: leads, error, loading, refresh } = usePoll(
+    () => api.leads({ pipeline_type: pipeline, limit }),
+    5000,
+    [pipeline],
   )
+  const { data: stages } = usePoll(() => api.pipelineStages(pipeline), 60000, [pipeline])
+  // Totals come from a grouped count query, not from measuring the page we were given
+  // — a page of 50 can't tell you there are 800 leads behind it.
+  const { data: counts } = usePoll(api.leadCounts, 15000, [])
+
+  // `pages` is deliberately not a usePoll dep: changing a dep resets the hook's data to
+  // null, which would blank the board on "Load more". Instead the poll closure reads
+  // the current `limit` (usePoll always calls the latest one) and this fires the
+  // request immediately rather than waiting out the interval.
+  useEffect(() => {
+    if (pages > 1) refresh()
+  }, [pages, refresh])
+
   const byStage = useMemo(() => {
     const m = {}
-    for (const l of leads) {
+    for (const l of leads || []) {
       const s = l.stage || 'New'
       ;(m[s] ||= []).push(l)
     }
     return m
   }, [leads])
 
-  const openCount = leads.filter((l) => !TERMINAL.includes(l.stage || 'New')).length
-  const counts = pipelineCounts(allLeads || [])
+  const stageTotals = counts?.by_stage?.[pipeline] || null
+  const pipelineTotal = counts?.by_pipeline?.[pipeline] ?? null
+  const openCount = stageTotals
+    ? Object.entries(stageTotals).reduce((n, [stage, c]) => (TERMINAL.includes(stage) ? n : n + c), 0)
+    : (leads || []).filter((l) => !TERMINAL.includes(l.stage || 'New')).length
+  // A full page means the server had at least that many rows to give.
+  const hasMore = (leads?.length ?? 0) >= limit
+  const chipCounts = counts?.by_pipeline || {}
 
   const move = async (leadId, stage, lostReason) => {
     setMoveError(null)
@@ -215,7 +243,9 @@ export default function LeadsTab({ onOpenConversation }) {
       <header className="rise px-5">
         <h1 className="font-display text-[28px] font-semibold text-ink">Leads</h1>
         <p className="text-[13px] text-ink-soft mt-0.5">
-          {allLeads ? `${openCount} open in this pipeline · qualified by HomeNex AI` : 'Loading…'}
+          {loading && !leads
+            ? 'Loading…'
+            : `${openCount} open in this pipeline · qualified by HomeNex AI`}
         </p>
       </header>
 
@@ -230,15 +260,22 @@ export default function LeadsTab({ onOpenConversation }) {
 
       <div className="flex gap-2 mt-4 px-5 overflow-x-auto no-scrollbar rise rise-1">
         {PIPELINES.map((p) => (
-          <Chip key={p.id} active={pipeline === p.id} onClick={() => setPipeline(p.id)}>
+          <Chip
+            key={p.id}
+            active={pipeline === p.id}
+            onClick={() => {
+              setPipeline(p.id)
+              setPages(1) // a new pipeline starts at its first page, not the last one's depth
+            }}
+          >
             {p.label}
-            {counts[p.id] > 0 && (
+            {chipCounts[p.id] > 0 && (
               <span
                 className={`ml-1.5 text-[10.5px] font-bold tabular-nums rounded-full px-1.5 py-0.5 ${
                   pipeline === p.id ? 'bg-cream/25 text-cream' : 'bg-ink/10 text-ink-soft'
                 }`}
               >
-                {counts[p.id]}
+                {chipCounts[p.id]}
               </span>
             )}
           </Chip>
@@ -249,13 +286,37 @@ export default function LeadsTab({ onOpenConversation }) {
         <Chip active={view === 'stats'} onClick={() => setView('stats')}>📊 Stats</Chip>
       </div>
 
-      {allLeads && allLeads.length === 0 && view !== 'stats' && (
+      {/* Three distinct states, because they need three different answers: still
+          loading, no leads anywhere yet, and leads exist but none in THIS pipeline.
+          The last used to render as the "No leads yet" onboarding copy, which reads
+          as "your WhatsApp number is broken" to an agent who has 200 leads. */}
+      {view !== 'stats' && loading && !leads && (
+        <div className="mx-5 mt-6 space-y-2.5" aria-busy="true" aria-label="Loading leads">
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="bg-card rounded-2xl border border-line shadow-card h-[76px] animate-pulse" />
+          ))}
+        </div>
+      )}
+
+      {view !== 'stats' && leads && leads.length === 0 && (
         <div className="mx-5 mt-6 bg-card rounded-2xl border border-line shadow-card p-5 rise rise-1">
-          <p className="font-bold text-[14.5px] text-ink">No leads yet</p>
-          <p className="text-[12.5px] text-ink-soft leading-relaxed mt-1.5">
-            Every buyer who messages your WhatsApp number becomes a lead here — auto-captured
-            as a contact and dropped into the pipeline.
-          </p>
+          {counts && counts.total > 0 ? (
+            <>
+              <p className="font-bold text-[14.5px] text-ink">Nothing in this pipeline</p>
+              <p className="text-[12.5px] text-ink-soft leading-relaxed mt-1.5">
+                You have {counts.total} lead{counts.total === 1 ? '' : 's'} in other pipelines — switch
+                the tabs above, or move a lead into this one from its detail screen.
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="font-bold text-[14.5px] text-ink">No leads yet</p>
+              <p className="text-[12.5px] text-ink-soft leading-relaxed mt-1.5">
+                Every buyer who messages your WhatsApp number becomes a lead here — auto-captured
+                as a contact and dropped into the pipeline.
+              </p>
+            </>
+          )}
         </div>
       )}
 
@@ -283,8 +344,13 @@ export default function LeadsTab({ onOpenConversation }) {
                   <p className={`text-[11px] font-bold tracking-[0.12em] uppercase ${s.stage_name === 'Lost' ? 'text-hot' : 'text-ink-soft'}`}>
                     {s.stage_name}
                   </p>
+                  {/* The true stage size from the count query, not how many of it
+                      happen to be loaded — "New 4" under a board holding the first
+                      page of 240 would be a lie. */}
                   <span className="text-[10.5px] font-bold text-ink-faint bg-card border border-line rounded-full px-1.5 py-0.5 tabular-nums">
-                    {col.length}
+                    {stageTotals && stageTotals[s.stage_name] > col.length
+                      ? `${col.length} / ${stageTotals[s.stage_name]}`
+                      : col.length}
                   </span>
                 </div>
                 <div
@@ -331,6 +397,24 @@ export default function LeadsTab({ onOpenConversation }) {
                 <LeadCard lead={l} onOpen={() => setSelectedId(l.id)} onDragStart={() => {}} onDragEnd={() => {}} />
               </div>
             ))}
+        </div>
+      )}
+
+      {/* Paging control, shared by Board and List. Kept out of the stats view, which
+          doesn't read the lead rows at all. */}
+      {view !== 'stats' && hasMore && (
+        <div className="px-5 mt-4 text-center">
+          <button
+            onClick={() => setPages((p) => p + 1)}
+            className="w-full bg-card border border-line rounded-2xl px-4 py-3 text-[13px] font-bold text-ink active:scale-[0.99] transition"
+          >
+            Load more leads
+          </button>
+          {pipelineTotal != null && (
+            <p className="text-[11px] text-ink-faint mt-1.5 tabular-nums">
+              Showing {leads.length} of {pipelineTotal}
+            </p>
+          )}
         </div>
       )}
 

@@ -490,3 +490,71 @@ test('the conversation stops polling when it is closed', async (t) => {
   ui.unmount()
   assert.equal(ctx.env.liveIntervals, 0)
 })
+
+// --- Paging -----------------------------------------------------------------
+// The inbox polls every 4 seconds. Unpaged, that was the app's largest repeated
+// payload; the screen now asks for a page and offers to go deeper.
+
+test('the thread list asks for one page rather than every conversation', async (t) => {
+  const ctx = setup(t)
+  await render(<InboxTab leadId={null} onSelectLead={() => {}} />)
+
+  const [call] = ctx.net.to('/api/leads', 'GET')
+  assert.equal(call.query.limit, '50')
+})
+
+test('a full page offers older conversations, and asks for a bigger page', async (t) => {
+  const threads = Array.from({ length: 60 }, (_, i) => thread({ id: i + 1, name: `Client ${i + 1}` }))
+  const env = installBrowser({ now: NOW })
+  const net = mockFetch({
+    'GET /api/leads': ({ query }) => threads.slice(0, Math.min(Number(query.limit) || 100, 500)),
+  })
+  t.after(() => {
+    net.restore()
+    env.restore()
+  })
+  const ui = await render(<InboxTab leadId={null} onSelectLead={() => {}} />)
+
+  assert.match(ui.text(), /Client 1You/) // the rendered text runs together, so anchor on the next node
+  assert.doesNotMatch(ui.text(), /Client 60/)
+
+  await click(ui.byText('Load older conversations'))
+
+  assert.equal(net.to('/api/leads', 'GET').at(-1).query.limit, '100')
+  assert.match(ui.text(), /Client 60/)
+  assert.doesNotMatch(ui.text(), /Load older conversations/, 'a short page means the end')
+})
+
+test('no paging control when every conversation already fits', async (t) => {
+  setup(t)
+  const ui = await render(<InboxTab leadId={null} onSelectLead={() => {}} />)
+  assert.doesNotMatch(ui.text(), /Load older/)
+})
+
+test('the list shows skeletons while the first page is in flight, not a blank screen', async (t) => {
+  const env = installBrowser({ now: NOW })
+  let release = null
+  const net = mockFetch({ 'GET /api/leads': () => new Promise((r) => (release = r)) })
+  t.after(() => {
+    net.restore()
+    env.restore()
+  })
+  const ui = await render(<InboxTab leadId={null} onSelectLead={() => {}} />)
+
+  assert.ok(ui.query((f) => f.props?.['aria-busy'] === 'true'), 'a busy placeholder is rendered')
+  assert.doesNotMatch(ui.text(), /No conversations yet/, 'never claim "empty" before the answer lands')
+  release?.([])
+})
+
+test('the empty state only appears once the server has actually answered', async (t) => {
+  const env = installBrowser({ now: NOW })
+  const net = mockFetch({ 'GET /api/leads': [] })
+  t.after(() => {
+    net.restore()
+    env.restore()
+  })
+  const ui = await render(<InboxTab leadId={null} onSelectLead={() => {}} />)
+
+  assert.match(ui.text(), /No conversations yet/)
+  assert.equal(ui.query((f) => f.props?.['aria-busy'] === 'true'), null, 'skeletons are gone')
+})

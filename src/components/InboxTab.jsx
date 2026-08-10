@@ -539,8 +539,24 @@ function Conversation({ leadId, onBack }) {
   )
 }
 
+// One "Load more" step in the conversation list. The list is sorted by recency, so the
+// first page is the only one most agents ever scroll — fetching all 10k threads every
+// 4 seconds to show the newest 30 of them was the single biggest payload in the app.
+const PAGE_SIZE = 50
+
 export default function InboxTab({ leadId, onSelectLead }) {
-  const { data: leads, error } = usePoll(api.leads, 4000)
+  const [pages, setPages] = useState(1)
+  const limit = PAGE_SIZE * pages
+  const { data: leads, error, loading, refresh } = usePoll(() => api.leads({ limit }), 4000, [])
+
+  // `pages` stays out of the deps on purpose: a dep change resets usePoll's data to
+  // null, which would blank the whole thread list on "Load more". The closure already
+  // sees the new limit, so this just brings the next poll forward.
+  useEffect(() => {
+    if (pages > 1) refresh()
+  }, [pages, refresh])
+
+  const hasMore = (leads?.length ?? 0) >= limit
 
   if (leadId) return <Conversation leadId={leadId} onBack={() => onSelectLead(null)} />
 
@@ -558,6 +574,17 @@ export default function InboxTab({ leadId, onSelectLead }) {
         <p className="mt-6 text-[12.5px] text-hot bg-amber-wash rounded-xl px-4 py-3">
           Can't reach the HomeNex server: {error.message}
         </p>
+      )}
+
+      {/* Skeletons, not a bare screen: the thread list is the first thing an agent
+          looks at, and an empty page with no explanation reads as "everything is gone"
+          rather than "still fetching". */}
+      {loading && !leads && !error && (
+        <div className="mt-4 space-y-2.5" aria-busy="true" aria-label="Loading conversations">
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} className="bg-card rounded-2xl border border-line shadow-card h-[72px] animate-pulse" />
+          ))}
+        </div>
       )}
 
       {leads && leads.length === 0 && (
@@ -619,6 +646,15 @@ export default function InboxTab({ leadId, onSelectLead }) {
           </button>
         ))}
       </div>
+
+      {hasMore && (
+        <button
+          onClick={() => setPages((p) => p + 1)}
+          className="w-full mt-3 bg-card border border-line rounded-2xl px-4 py-3 text-[13px] font-bold text-ink active:scale-[0.99] transition"
+        >
+          Load older conversations
+        </button>
+      )}
     </div>
   )
 }

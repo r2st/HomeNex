@@ -324,9 +324,22 @@ function SendToChatSheet({ property, onClose }) {
   const [q, setQ] = useState('')
   const [state, setState] = useState({}) // leadId -> 'sending' | 'sent' | error message
 
+  // The search runs on the server. Filtering client-side stopped being correct the
+  // moment the list took a LIMIT: an agent with 400 leads would have been searching
+  // the 50 most recent and told the other 350 don't exist.
   useEffect(() => {
-    api.leads().then((all) => setLeads(all.filter((l) => !l.unassigned))).catch(() => setLeads([]))
-  }, [])
+    let alive = true
+    const id = setTimeout(() => {
+      api
+        .leads({ q, limit: 50 })
+        .then((page) => alive && setLeads(page.filter((l) => !l.unassigned)))
+        .catch(() => alive && setLeads([]))
+    }, q ? 250 : 0) // debounce typing; the first load shouldn't wait
+    return () => {
+      alive = false
+      clearTimeout(id)
+    }
+  }, [q])
 
   const send = async (lead) => {
     setState((s) => ({ ...s, [lead.id]: 'sending' }))
@@ -338,15 +351,18 @@ function SendToChatSheet({ property, onClose }) {
     }
   }
 
-  const filtered = (leads || []).filter((l) =>
-    !q || String(l.contact_name || l.name || l.wa_id).toLowerCase().includes(q.toLowerCase()),
-  )
+  const filtered = leads || []
 
   return (
     <Sheet onClose={onClose} title={`Send "${property.title}" to…`}>
       <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search contacts…" className={inputCls} />
       <div className="mt-3 space-y-2 max-h-[50vh] overflow-y-auto no-scrollbar">
-        {leads && filtered.length === 0 && <p className="text-[12.5px] text-ink-faint py-2">No matching leads.</p>}
+        {!leads && <p className="text-[12.5px] text-ink-faint py-2">Loading your leads…</p>}
+        {leads && filtered.length === 0 && (
+          <p className="text-[12.5px] text-ink-faint py-2">
+            {q ? `No leads matching "${q}".` : 'No leads to send this to yet.'}
+          </p>
+        )}
         {filtered.map((l) => {
           const st = state[l.id]
           return (

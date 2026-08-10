@@ -231,6 +231,8 @@ router.get('/leads', requireManager, ah(async (req, res) =>
       stage: req.query.stage || '',
       pipelineType: req.query.pipeline_type || '',
       unassigned: req.query.unassigned === '1',
+      limit: req.query.limit,
+      offset: req.query.offset,
     }),
   ),
 ))

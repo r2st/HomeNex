@@ -24,6 +24,7 @@ import {
   applyExtraction,
   logActivity,
   listLeads,
+  leadCounts,
   listActivity,
   setAiEnabled,
   listNetworkPosts,
@@ -842,12 +843,26 @@ app.put('/api/agent/wa-phone', ah(async (req, res) => {
 }))
 
 // --- Dashboard API — every route is scoped to the logged-in agent. ---
+
+// Paged: `limit` (default 100, hard max 500) and `offset`. A caller that sends neither
+// gets the first page rather than the whole table — at 10k leads the unbounded body was
+// ~12MB, re-fetched every few seconds by both the inbox and the pipeline board.
+// There is no `total` in this response on purpose: the body stays a plain array for
+// every existing client, and anything that needs totals asks /api/leads/count, which is
+// one grouped query instead of a full page of rows. A short page means the end.
 app.get('/api/leads', ah(async (req, res) =>
   res.json(await listLeads(req.agent.id, {
     pipelineType: req.query.pipeline_type || '',
     stage: req.query.stage || '',
+    search: req.query.q || '',
+    limit: req.query.limit,
+    offset: req.query.offset,
   })),
 ))
+
+// Counts for the pipeline chips and the board's column headers, without shipping the
+// leads themselves. Registered before /api/leads/:id so "count" isn't parsed as an id.
+app.get('/api/leads/count', ah(async (req, res) => res.json(await leadCounts(req.agent.id))))
 
 app.get('/api/leads/:id', ah(async (req, res) => {
   const lead = await getAssignableLead(req.params.id, req.agent.id)
