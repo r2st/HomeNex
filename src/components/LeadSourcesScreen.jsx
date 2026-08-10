@@ -62,12 +62,19 @@ function PortalRow({ portal, integration, onSaved }) {
             {integration?.has_api_key ? '🔑 Connection key saved' : 'Leads sent straight to you'}
           </p>
         </div>
+        {/* role="switch" + aria-checked, because on/off is conveyed only by the
+            knob's position and the track colour — neither of which a screen reader
+            or a colour-blind agent can read. */}
         <button
+          type="button"
+          role="switch"
+          aria-checked={enabled}
+          aria-label={`Receive leads from ${portal.label}`}
           onClick={toggle}
           disabled={busy}
           className={`w-12 h-7 rounded-full transition relative ${enabled ? 'bg-brand' : 'bg-line'}`}
         >
-          <span className={`absolute top-1 w-5 h-5 rounded-full bg-white shadow transition-all ${enabled ? 'left-6' : 'left-1'}`} />
+          <span aria-hidden="true" className={`absolute top-1 w-5 h-5 rounded-full bg-white shadow transition-all ${enabled ? 'left-6' : 'left-1'}`} />
         </button>
       </div>
       <div className="flex gap-2 mt-2.5">

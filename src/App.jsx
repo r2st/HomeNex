@@ -8,6 +8,7 @@ import MoreTab from './components/MoreTab.jsx'
 import AdminPanel from './components/AdminPanel.jsx'
 import BottomNav from './components/BottomNav.jsx'
 import AuthScreen from './components/AuthScreen.jsx'
+import { ErrorBoundary } from './components/ui.jsx'
 import { api, usePoll, getToken, setToken, offlineQueueSize, flushOfflineQueue } from './api.js'
 import { actionableFollowupCount, badgeText } from './lib/followups.js'
 
@@ -132,6 +133,11 @@ export default function App() {
       <OfflineBanner />
       <WhatsAppBanner />
       <main className="pb-24">
+        {/* Keyed by tab so a crash is scoped to the screen that caused it: the nav
+            survives, and moving to another tab remounts the boundary and clears the
+            failure without a reload. LeadDetail gets its own for the same reason —
+            it opens over whatever tab is behind it. */}
+        <ErrorBoundary key={tab} compact>
         {tab === 'home' && (
           <DashboardTab
             agent={agent}
@@ -155,14 +161,17 @@ export default function App() {
         {tab === 'admin' && agent?.is_admin === 1 && (
           <AdminPanel agent={agent} onBack={() => setTab('more')} />
         )}
+        </ErrorBoundary>
       </main>
 
       {detailLeadId && (
-        <LeadDetail
-          leadId={detailLeadId}
-          onClose={() => setDetailLeadId(null)}
-          onOpenConversation={openConversation}
-        />
+        <ErrorBoundary key={`lead-${detailLeadId}`} compact>
+          <LeadDetail
+            leadId={detailLeadId}
+            onClose={() => setDetailLeadId(null)}
+            onOpenConversation={openConversation}
+          />
+        </ErrorBoundary>
       )}
 
       {tab !== 'admin' && <BottomNav tab={tab} setTab={setTab} moreBadge={followupBadge} />}

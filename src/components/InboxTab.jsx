@@ -21,8 +21,8 @@ const LabelChip = ({ label, onRemove }) => (
   >
     {label.name}
     {onRemove && (
-      <button onClick={onRemove} className="opacity-80 hover:opacity-100 leading-none">
-        ✕
+      <button aria-label={`Remove label ${label.name}`} onClick={onRemove} className="opacity-80 hover:opacity-100 leading-none">
+        <span aria-hidden="true">✕</span>
       </button>
     )}
   </span>
@@ -378,8 +378,8 @@ function Conversation({ leadId, onBack }) {
   return (
     <div className="flex flex-col h-[calc(100dvh-88px)]">
       <div className="bg-brand-deep px-4 py-3 flex items-center gap-3 shrink-0">
-        <button onClick={onBack} className="text-white/90 text-[18px] px-1 active:scale-95 transition">
-          ←
+        <button aria-label="Back to conversations" onClick={onBack} className="text-white/90 text-[18px] px-1 active:scale-95 transition">
+          <span aria-hidden="true">←</span>
         </button>
         <div className="flex-1 min-w-0">
           <p className="text-white font-bold text-[14.5px] leading-tight truncate">{lead.name || lead.wa_id}</p>
@@ -495,11 +495,12 @@ function Conversation({ leadId, onBack }) {
                 className="flex-1 resize-none bg-white border border-line rounded-2xl px-4 py-3 text-[13.5px] outline-none focus:border-brand/50"
               />
               <button
+                aria-label="Send reply on WhatsApp"
                 onClick={send}
                 disabled={sending || !draft.trim()}
                 className="shrink-0 w-11 h-11 rounded-full bg-brand disabled:opacity-40 text-white flex items-center justify-center shadow-card active:scale-95 transition"
               >
-                <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 translate-x-[1px]">
+                <svg aria-hidden="true" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 translate-x-[1px]">
                   <path d="M3.4 20.4 21.8 12 3.4 3.6 3.4 10l13 2-13 2z" />
                 </svg>
               </button>

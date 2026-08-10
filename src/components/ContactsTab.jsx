@@ -34,8 +34,8 @@ function ContactDetail({ contactId, onClose, onOpenLead }) {
   return (
     <SlideOver onClose={onClose}>
       <div className="sticky top-0 bg-cream/95 backdrop-blur border-b border-line px-5 py-4 flex items-center gap-3 z-10">
-        <button onClick={onClose} className="w-9 h-9 rounded-full bg-card border border-line flex items-center justify-center text-ink shadow-card active:scale-95 transition">
-          ←
+        <button aria-label="Back to contacts" onClick={onClose} className="w-9 h-9 rounded-full bg-card border border-line flex items-center justify-center text-ink shadow-card active:scale-95 transition">
+          <span aria-hidden="true">←</span>
         </button>
         <Avatar name={contact.name} />
         <div className="flex-1 min-w-0">

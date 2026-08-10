@@ -245,8 +245,14 @@ export function LoadingRows({ rows = 4 }) {
   )
 }
 
-// App-level error boundary: a rendering crash shows a friendly recovery card instead
-// of a blank white screen, and the agent can retry without losing the whole session.
+// Error boundary: a rendering crash shows a friendly recovery card instead of a blank
+// white screen, and the agent can retry without losing the whole session.
+//
+// Two shapes. The default fills the phone frame and is the last line of defence at the
+// root. `compact` fills only the screen area, so a crash inside one tab leaves the
+// bottom nav alive and the agent can simply move to another tab — remounting the
+// boundary and clearing the failure — instead of reloading the app and losing their
+// place. The root boundary still catches anything that escapes the compact one.
 export class ErrorBoundary extends Component {
   constructor(props) {
     super(props)
@@ -260,12 +266,24 @@ export class ErrorBoundary extends Component {
   }
   render() {
     if (!this.state.failed) return this.props.children
+    const compact = this.props.compact
     return (
-      <div className="phone flex flex-col items-center justify-center text-center px-8 gap-3">
-        <div className="text-4xl">🙏</div>
+      <div
+        role="alert"
+        className={
+          compact
+            ? 'flex flex-col items-center justify-center text-center px-8 gap-3 py-20'
+            : 'phone flex flex-col items-center justify-center text-center px-8 gap-3'
+        }
+      >
+        <div className="text-4xl" aria-hidden="true">
+          🙏
+        </div>
         <p className="font-display font-semibold text-[17px] text-ink">Something went wrong</p>
         <p className="text-[13px] text-ink-soft leading-snug">
-          The app hit an unexpected problem. Your data is safe — please reload to continue.
+          {compact
+            ? 'This screen hit an unexpected problem. Your data is safe — try another tab, or reload.'
+            : 'The app hit an unexpected problem. Your data is safe — please reload to continue.'}
         </p>
         <button
           onClick={() => window.location.reload()}

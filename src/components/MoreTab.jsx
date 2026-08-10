@@ -17,8 +17,8 @@ function SubScreen({ title, onBack, children }) {
   return (
     <div className="px-5 pt-7">
       <header className="rise flex items-center gap-3">
-        <button onClick={onBack} className="w-9 h-9 rounded-full bg-card border border-line flex items-center justify-center text-ink shadow-card active:scale-95 transition">
-          ←
+        <button aria-label="Back" onClick={onBack} className="w-9 h-9 rounded-full bg-card border border-line flex items-center justify-center text-ink shadow-card active:scale-95 transition">
+          <span aria-hidden="true">←</span>
         </button>
         <h1 className="font-display text-[24px] font-semibold text-ink">{title}</h1>
       </header>
