@@ -20,8 +20,16 @@ const STATUS_STYLE = {
 
 // Builder receivables ledger with the 0-30 / 31-60 / 61-90 / 90+ aging report.
 function Receivables() {
-  const { data } = usePoll(() => api.builderReceivables(), 8000, [])
-  if (!data) return <p className="mt-6 text-[12.5px] text-ink-faint">Loading…</p>
+  const { data, error, loading } = usePoll(() => api.builderReceivables(), 8000, [])
+  if (loading) return <p className="mt-6 text-[12.5px] text-ink-faint">Loading…</p>
+  // Without this the screen sat on "Loading…" for ever whenever the first request
+  // failed — the ledger never arrives and nothing ever says why.
+  if (!data)
+    return (
+      <p role="alert" className="mt-6 text-[12.5px] text-hot bg-amber-wash rounded-xl px-4 py-3">
+        Couldn't load receivables{error ? `: ${error.message}` : ''}
+      </p>
+    )
   const { builders, totals, received_paise } = data
   if (!builders.length) {
     return (
@@ -117,13 +125,12 @@ function Deals({ onOpenLead }) {
 // Commissions list, with a one-tap GST invoice action.
 function Commissions() {
   const [filter, setFilter] = useState('') // '' = all
-  const [refreshKey, setRefreshKey] = useState(0)
   const [busy, setBusy] = useState(null)
   const [error, setError] = useState(null)
-  const { data: commissions } = usePoll(
+  const { data: commissions, refresh } = usePoll(
     () => api.commissions(filter || undefined),
     8000,
-    [filter, refreshKey],
+    [filter],
   )
 
   const raiseInvoice = async (c) => {
@@ -131,7 +138,7 @@ function Commissions() {
     setError(null)
     try {
       await api.createCommissionInvoice(c.id)
-      setRefreshKey((k) => k + 1)
+      refresh()
     } catch (e) {
       setError(friendlyMessage(e))
     } finally {
@@ -183,11 +190,10 @@ function Commissions() {
 
 // GST invoices ledger with a mark-paid action.
 function Invoices() {
-  const [refreshKey, setRefreshKey] = useState(0)
-  const { data: invoices } = usePoll(() => api.commissionInvoices({}), 8000, [refreshKey])
+  const { data: invoices, refresh } = usePoll(() => api.commissionInvoices({}), 8000, [])
   const markPaid = async (inv) => {
     await api.updateCommissionInvoice(inv.id, { status: 'paid' })
-    setRefreshKey((k) => k + 1)
+    refresh()
   }
   if (invoices && invoices.length === 0) {
     return <p className="mt-6 text-[12.5px] text-ink-faint">No invoices. Raise one from a commission.</p>

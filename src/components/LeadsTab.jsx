@@ -163,15 +163,13 @@ export default function LeadsTab({ onOpenConversation }) {
   // non-tech users, so they start on List and can opt into Board.
   const [view, setView] = useState('list') // board | list | stats
   const [selectedId, setSelectedId] = useState(null)
-  const [refreshKey, setRefreshKey] = useState(0)
   const [drag, setDrag] = useState(null) // { leadId, from }
   const [dropTarget, setDropTarget] = useState(null) // stage name being hovered
   const [lostFor, setLostFor] = useState(null) // { leadId } awaiting a lost reason
   const [moveError, setMoveError] = useState(null)
   const [quickAdd, setQuickAdd] = useState(false)
-  const refresh = () => setRefreshKey((k) => k + 1)
 
-  const { data: allLeads, error } = usePoll(api.leads, 5000, [refreshKey])
+  const { data: allLeads, error, refresh } = usePoll(api.leads, 5000, [])
   const { data: stages } = usePoll(() => api.pipelineStages(pipeline), 60000, [pipeline])
 
   // A lead with no pipeline yet counts as buy_primary/New (webhook defaults).

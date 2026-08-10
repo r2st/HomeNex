@@ -43,12 +43,9 @@ export default function PropertiesTab({ onOpenLead }) {
   const [saving, setSaving] = useState(false)
   const [addError, setAddError] = useState(null)
   const [selectedId, setSelectedId] = useState(null)
-  const [refreshKey, setRefreshKey] = useState(0)
-  const refresh = () => setRefreshKey((k) => k + 1)
-
   const filterCount = activeFilterCount(filters)
   const [bandMin, bandMax] = filters.band ? filters.band.split('-') : ['', '']
-  const { data: properties, error } = usePoll(
+  const { data: properties, error, loading, refresh } = usePoll(
     () =>
       api.properties({
         type: filters.type,
@@ -59,7 +56,7 @@ export default function PropertiesTab({ onOpenLead }) {
         max_price: bandMax ? lakhsToPaise(Number(bandMax)) : '',
       }),
     8000,
-    [JSON.stringify(filters), refreshKey],
+    [JSON.stringify(filters)],
   )
 
   const create = async (fields) => {
@@ -168,7 +165,9 @@ export default function PropertiesTab({ onOpenLead }) {
         </div>
       )}
 
-      {!properties && <LoadingRows rows={4} />}
+      {/* `loading`, not `!properties`: a failed first request would otherwise leave
+          these skeletons pulsing under the error banner for ever. */}
+      {loading && <LoadingRows rows={4} />}
 
       <div className="space-y-2.5 mt-4">
         {(properties || []).map((p, i) => (

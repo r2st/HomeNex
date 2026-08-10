@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { friendlyMessage } from './lib/friendlyError.js'
 
 const TOKEN_KEY = 'homenex-token'
@@ -315,24 +315,67 @@ export const api = {
 }
 
 // Poll an endpoint so the dashboard stays live as real messages arrive.
+//
+// Returns { data, error, loading, refresh }.
+//
+//   data     the last successful response, or null before one arrives
+//   error    the last failure; cleared by the next success
+//   loading  a request is in flight and there is nothing settled to show yet
+//   refresh  refetch now, WITHOUT blanking what's on screen
+//
+// Three rules earn their keep here, all of them about what the agent sees:
+//
+//  1. `deps` identify the SUBJECT of the poll (which lead, which contact, which
+//     filter). When they change, the held data describes the previous subject, so
+//     it is dropped rather than rendered under the new heading — otherwise opening
+//     lead B right after lead A shows A's messages and price under B's name until
+//     the next response lands, which is worse than showing nothing.
+//  2. A failure keeps the last good `data` (a blip mustn't blank a working screen)
+//     but always ends `loading`. Screens branch on `!data` to show "Loading…", so
+//     without this a first request that fails leaves that spinner up for ever with
+//     no error and no way out.
+//  3. `refresh()` is for "I just changed something, re-read it" and deliberately
+//     does NOT clear data — the subject is the same, so blanking it would flash the
+//     screen after every save. This is what call sites used to do by feeding a
+//     refreshKey into `deps`, which rule 1 would now (correctly) treat as a new
+//     subject.
 export function usePoll(fn, intervalMs = 5000, deps = []) {
-  const [data, setData] = useState(null)
-  const [error, setError] = useState(null)
+  const [state, setState] = useState({ data: null, error: null, loading: true })
+  // Held in a ref so an inline arrow (every call site passes one) doesn't restart
+  // the interval on every render, while a poll still calls the CURRENT closure.
+  const fnRef = useRef(fn)
+  fnRef.current = fn
+  // Monotonic id of the newest request. A response whose id is stale — because deps
+  // changed, or refresh() overtook the interval — is discarded instead of being
+  // written over newer data.
+  const runRef = useRef(0)
+
+  const load = useCallback(() => {
+    const run = ++runRef.current
+    return fnRef
+      .current()
+      .then((d) => {
+        if (run === runRef.current) setState({ data: d, error: null, loading: false })
+      })
+      .catch((e) => {
+        if (run === runRef.current) setState((s) => ({ data: s.data, error: e, loading: false }))
+      })
+  }, [])
+
   useEffect(() => {
-    let alive = true
-    const tick = () =>
-      fn()
-        .then((d) => alive && (setData(d), setError(null)))
-        .catch((e) => alive && setError(e))
-    tick()
-    const t = setInterval(tick, intervalMs)
-    return () => {
-      alive = false
-      clearInterval(t)
-    }
+    runRef.current++ // orphan anything still in flight for the previous subject
+    // Functional form so the very first mount doesn't schedule a pointless second
+    // render just to replace the pristine state with an identical object.
+    setState((s) =>
+      s.data === null && s.error === null && s.loading ? s : { data: null, error: null, loading: true },
+    )
+    load()
+    const t = setInterval(load, intervalMs)
+    return () => clearInterval(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps)
-  return { data, error }
+
+  return { ...state, refresh: load }
 }
 
 // Timestamps arrive as ISO strings from PostgreSQL ("2026-07-09T16:15:00.000Z");

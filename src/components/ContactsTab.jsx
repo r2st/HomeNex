@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { api, usePoll, fmtAgo } from '../api.js'
-import { Avatar, SlideOver, Sheet, inputCls, useConfirm, LoadingRows, InfoTip } from './ui.jsx'
+import { Avatar, SlideOver, Sheet, inputCls, useConfirm, LoadingRows, InfoTip, DetailOverlay } from './ui.jsx'
 import { glossary } from '../lib/glossary.js'
 import { friendlyMessage } from '../lib/friendlyError.js'
 import { pipelineLabel, tempBadge } from '../lib/labels.js'
@@ -14,21 +14,15 @@ const SOURCE_LABEL = {
 }
 
 function ContactDetail({ contactId, onClose, onOpenLead }) {
-  const [refreshKey, setRefreshKey] = useState(0)
-  const { data: contact } = usePoll(() => api.contact(contactId), 10000, [contactId, refreshKey])
+  const { data: contact, error, refresh } = usePoll(() => api.contact(contactId), 10000, [contactId])
   const [notes, setNotes] = useState(null) // null = not editing
 
-  if (!contact)
-    return (
-      <div className="fixed inset-0 z-50">
-        <div className="absolute inset-0 bg-ink/50" onClick={onClose} />
-      </div>
-    )
+  if (!contact) return <DetailOverlay error={error} onClose={onClose} onRetry={refresh} />
 
   const saveNotes = async () => {
     await api.updateContact(contact.id, { notes: notes.trim() || null })
     setNotes(null)
-    setRefreshKey((k) => k + 1)
+    refresh()
   }
 
   return (
@@ -267,7 +261,7 @@ function GroupsPanel() {
 export default function ContactsTab({ onOpenLead }) {
   const [q, setQ] = useState('')
   const [selectedId, setSelectedId] = useState(null)
-  const { data: contacts, error } = usePoll(() => api.contacts(q), 6000, [q])
+  const { data: contacts, error, loading } = usePoll(() => api.contacts(q), 6000, [q])
 
   return (
     <div className="px-5 pt-7">
@@ -303,7 +297,9 @@ export default function ContactsTab({ onOpenLead }) {
         </div>
       )}
 
-      {!contacts && <LoadingRows rows={5} />}
+      {/* `loading`, not `!contacts`: a first request that FAILS leaves contacts null
+          for ever, and skeleton rows next to the error banner read as "still coming". */}
+      {loading && <LoadingRows rows={5} />}
 
       <div className="space-y-2.5 mt-4">
         {(contacts || []).map((c, i) => (

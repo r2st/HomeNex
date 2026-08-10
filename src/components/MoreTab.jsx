@@ -29,16 +29,15 @@ function SubScreen({ title, onBack, children }) {
 
 function FollowupsScreen({ onBack, onOpenLead }) {
   const [filter, setFilter] = useState('pending') // pending | today | all
-  const [refreshKey, setRefreshKey] = useState(0)
-  const { data: followups } = usePoll(
+  const { data: followups, refresh } = usePoll(
     () => api.followups(filter === 'all' ? {} : filter === 'today' ? { pending: '1', today: '1' } : { pending: '1' }),
     6000,
-    [filter, refreshKey],
+    [filter],
   )
 
   const toggle = async (f) => {
     await api.updateFollowup(f.id, { completed: !f.completed_at })
-    setRefreshKey((k) => k + 1)
+    refresh()
   }
 
   return (
@@ -86,11 +85,10 @@ function FollowupsScreen({ onBack, onOpenLead }) {
 
 function SiteVisitsScreen({ onBack, onOpenLead }) {
   const [filter, setFilter] = useState('upcoming') // today | upcoming | all
-  const [refreshKey, setRefreshKey] = useState(0)
-  const { data: visits } = usePoll(
+  const { data: visits, refresh } = usePoll(
     () => api.siteVisits(filter === 'today' ? { today: '1' } : {}),
     6000,
-    [filter, refreshKey],
+    [filter],
   )
 
   const shown = (visits || []).filter((v) => {
@@ -100,7 +98,7 @@ function SiteVisitsScreen({ onBack, onOpenLead }) {
 
   const advance = async (v, status) => {
     await api.updateSiteVisit(v.id, { status })
-    setRefreshKey((k) => k + 1)
+    refresh()
   }
 
   return (

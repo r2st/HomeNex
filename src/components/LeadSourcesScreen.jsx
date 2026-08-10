@@ -100,10 +100,12 @@ function PortalRow({ portal, integration, onSaved }) {
 // bits (portal connection keys, ad form id, regenerating the address) live under a
 // collapsed "Advanced" section so the default screen stays layman-simple.
 export default function LeadSourcesScreen() {
-  const [refreshKey, setRefreshKey] = useState(0)
-  const refresh = () => setRefreshKey((k) => k + 1)
-  const { data } = usePoll(() => api.leadSources(), 8000, [refreshKey])
-  const { data: portals } = usePoll(() => api.portalIntegrations(), 15000, [refreshKey])
+  const { data, refresh: refreshSources } = usePoll(() => api.leadSources(), 8000, [])
+  const { data: portals, refresh: refreshPortals } = usePoll(() => api.portalIntegrations(), 15000, [])
+  const refresh = () => {
+    refreshSources()
+    refreshPortals()
+  }
   const [copied, setCopied] = useState(false)
   const [formId, setFormId] = useState('')
   const [formMsg, setFormMsg] = useState(null)

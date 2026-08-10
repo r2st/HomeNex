@@ -84,11 +84,38 @@ test('taking over a manual chat does not re-post the AI flag', async (t) => {
   assert.equal(ctx.net.to('/api/leads/5/ai').length, 0)
 })
 
-test('the panel shows a dimmed backdrop while the lead is still loading', async (t) => {
-  setup(t, { routes: { 'GET /api/leads/5': { status: 500, body: {} } } })
+test('a lead that fails to load says so and offers a retry, not a blank panel', async (t) => {
+  // This used to render an empty dimmed backdrop: identical to a panel that opened
+  // with nothing in it, permanent (the poll never populates `lead`), and escapable
+  // only by guessing that a tap on the backdrop closes it.
+  const ctx = setup(t, { routes: { 'GET /api/leads/5': { status: 500, body: {} } } })
   const ui = await render(<LeadDetail {...props} />)
 
-  assert.equal(ui.text(), '', 'no half-rendered lead data')
+  assert.match(ui.text(), /Couldn't load this/)
+  assert.doesNotMatch(ui.text(), /Priya Sharma/, 'no half-rendered lead data')
+
+  await click(ui.byText('Try again'))
+  assert.equal(ctx.net.to('/api/leads/5', 'GET').length, 2, 'the retry button refetched the lead')
+})
+
+test('a failed panel recovers once the request succeeds', async (t) => {
+  const ctx = setup(t, { routes: { 'GET /api/leads/5': { status: 500, body: {} } } })
+  const ui = await render(<LeadDetail {...props} />)
+  assert.match(ui.text(), /Couldn't load this/)
+
+  ctx.net.set('GET /api/leads/5', lead())
+  await click(ui.byText('Try again'))
+  assert.match(ui.text(), /Priya Sharma/)
+  assert.doesNotMatch(ui.text(), /Couldn't load this/)
+})
+
+test('a lead still in flight shows a skeleton, not an empty panel', async (t) => {
+  // A request that never settles is the honest model of a slow network.
+  setup(t, { routes: { 'GET /api/leads/5': () => new Promise(() => {}) } })
+  const ui = await render(<LeadDetail {...props} />)
+
+  assert.equal(ui.query((f) => f.props?.['aria-busy'] === 'true') !== null, true, 'no loading affordance')
+  assert.doesNotMatch(ui.text(), /Couldn't load this/, 'a pending request is not an error')
 })
 
 // --- Stage picker ----------------------------------------------------------

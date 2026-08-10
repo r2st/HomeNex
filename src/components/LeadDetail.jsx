@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api, usePoll, fmtAgo, fmtTime } from '../api.js'
 import { paiseRangeToDisplay, paiseToDisplay, lakhsToPaise, paiseToLakhs } from '../money.js'
-import { ScoreRing, SlideOver, Sheet, Chip, Field, inputCls, InfoTip } from './ui.jsx'
+import { ScoreRing, SlideOver, Sheet, Chip, Field, inputCls, InfoTip, DetailOverlay } from './ui.jsx'
 import { buyerProfileIsEmpty } from '../lib/buyerProfile.js'
 import { shouldShowScoreBreakdown } from '../lib/scoreDisplay.js'
 import { glossary } from '../lib/glossary.js'
@@ -647,9 +647,15 @@ function BriefingPanel({ leadId, refreshKey }) {
 }
 
 export default function LeadDetail({ leadId, onClose, onOpenConversation, onChanged }) {
+  // refreshKey stays, but only to re-run the two child panels that fetch on their
+  // own (the briefing and the autofill suggestion); the lead itself now refetches
+  // through the poll's own refresh(), which doesn't blank the panel while it reloads.
   const [refreshKey, setRefreshKey] = useState(0)
-  const refresh = () => setRefreshKey((k) => k + 1)
-  const { data: lead } = usePoll(() => api.lead(leadId), 5000, [leadId, refreshKey])
+  const { data: lead, error, refresh: refreshLead } = usePoll(() => api.lead(leadId), 5000, [leadId])
+  const refresh = () => {
+    refreshLead()
+    setRefreshKey((k) => k + 1)
+  }
   const [showStagePicker, setShowStagePicker] = useState(false)
 
   const breakdown = useMemo(() => {
@@ -661,12 +667,7 @@ export default function LeadDetail({ leadId, onClose, onOpenConversation, onChan
     }
   }, [lead?.score_breakdown])
 
-  if (!lead)
-    return (
-      <div className="fixed inset-0 z-50">
-        <div className="absolute inset-0 bg-ink/50" onClick={onClose} />
-      </div>
-    )
+  if (!lead) return <DetailOverlay error={error} onClose={onClose} onRetry={refreshLead} />
 
   const bltc = [
     ['💬 Summary', lead.ai_summary, null],

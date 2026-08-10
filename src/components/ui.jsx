@@ -245,6 +245,53 @@ export function LoadingRows({ rows = 4 }) {
   )
 }
 
+// What a full-screen detail panel (a lead, a property, a contact) shows before its
+// subject has loaded. All three used to render a bare dimmed backdrop: indistinguishable
+// from a panel that opened empty, and — if the request failed — permanent, with no
+// error, no retry and nothing but a stray tap on the backdrop to escape it.
+export function DetailOverlay({ error, onClose, onRetry }) {
+  return (
+    <div className="fixed inset-0 z-50">
+      <div className="absolute inset-0 bg-ink/50 backdrop-blur-[2px]" onClick={onClose} />
+      <div className="absolute right-0 top-0 bottom-0 w-full max-w-[440px] bg-cream shadow-float slide-in p-5">
+        <button
+          aria-label="Close"
+          onClick={onClose}
+          className="w-9 h-9 rounded-full bg-card border border-line flex items-center justify-center text-ink shadow-card active:scale-95 transition"
+        >
+          <span aria-hidden="true">←</span>
+        </button>
+        {error ? (
+          <div role="alert" className="mt-8 text-center px-4">
+            <p className="font-display font-semibold text-[16px] text-ink">Couldn't load this</p>
+            <p className="text-[12.5px] text-ink-soft leading-snug mt-1.5">{error.message}</p>
+            {onRetry && (
+              <button
+                onClick={onRetry}
+                className="mt-4 rounded-xl px-5 py-2.5 text-[13.5px] font-bold text-white bg-brand active:scale-95 transition"
+              >
+                Try again
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="mt-6 space-y-3" aria-busy="true" aria-label="Loading">
+            <div className="flex items-center gap-3">
+              <Skeleton className="w-11 h-11 rounded-full" />
+              <div className="flex-1 space-y-2">
+                <Skeleton className="h-3.5 w-2/5" />
+                <Skeleton className="h-2.5 w-3/5" />
+              </div>
+            </div>
+            <Skeleton className="h-24 w-full rounded-2xl" />
+            <Skeleton className="h-32 w-full rounded-2xl" />
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // Error boundary: a rendering crash shows a friendly recovery card instead of a blank
 // white screen, and the agent can retry without losing the whole session.
 //

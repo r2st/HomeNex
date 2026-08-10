@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, usePoll, fmtAgo } from '../api.js'
 import { paiseToDisplay, lakhsToPaise, paiseToLakhs } from '../money.js'
-import { SlideOver, Sheet, Chip, Field, inputCls, useConfirm, InfoTip } from './ui.jsx'
+import { SlideOver, Sheet, Chip, Field, inputCls, useConfirm, InfoTip, DetailOverlay } from './ui.jsx'
 import { glossary } from '../lib/glossary.js'
 
 // Downscale a phone-camera photo to a reasonable listing size in the browser, so a
@@ -546,8 +546,7 @@ function SyndicateCard({ property }) {
 }
 
 export default function PropertyDetail({ propertyId, onClose, onChanged, onOpenLead }) {
-  const [refreshKey, setRefreshKey] = useState(0)
-  const { data: property } = usePoll(() => api.property(propertyId), 30000, [propertyId, refreshKey])
+  const { data: property, error: loadError, refresh } = usePoll(() => api.property(propertyId), 30000, [propertyId])
   const [editing, setEditing] = useState(false)
   const [sending, setSending] = useState(false)
   const [showPromote, setShowPromote] = useState(false)
@@ -555,12 +554,7 @@ export default function PropertyDetail({ propertyId, onClose, onChanged, onOpenL
   const [error, setError] = useState(null)
   const confirm = useConfirm()
 
-  if (!property)
-    return (
-      <div className="fixed inset-0 z-50">
-        <div className="absolute inset-0 bg-ink/50" onClick={onClose} />
-      </div>
-    )
+  if (!property) return <DetailOverlay error={loadError} onClose={onClose} onRetry={refresh} />
 
   const save = async (fields) => {
     setSaving(true)
@@ -568,7 +562,7 @@ export default function PropertyDetail({ propertyId, onClose, onChanged, onOpenL
     try {
       await api.updateProperty(property.id, fields)
       setEditing(false)
-      setRefreshKey((k) => k + 1)
+      refresh()
       onChanged?.()
     } catch (err) {
       setError(err.message)
