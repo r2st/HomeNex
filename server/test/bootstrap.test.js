@@ -54,7 +54,9 @@ async function boot(env = {}) {
   child.stdout.on('data', (b) => (stdout += b))
   child.stderr.on('data', (b) => (stderr += b))
 
-  const exited = new Promise((resolve) => child.on('exit', (code, signal) => resolve({ code, signal })))
+  // 'close' rather than 'exit': it fires once the stdio streams have drained too, so
+  // a test that reads out()/err() after awaiting it sees the process's whole output.
+  const exited = new Promise((resolve) => child.on('close', (code, signal) => resolve({ code, signal })))
 
   return {
     child,
@@ -62,14 +64,18 @@ async function boot(env = {}) {
     exited,
     out: () => stdout,
     err: () => stderr,
-    // Resolves when `re` shows up on either stream, or rejects if the process dies
-    // or the deadline passes — so a boot failure fails loudly instead of hanging.
-    async waitFor(re, what, ms = 20_000) {
+    // Resolves when `re` shows up on `stream`, or rejects if the process dies or the
+    // deadline passes — so a boot failure fails loudly instead of hanging. The stream
+    // matters: validateEnv warns to stderr in almost the same words the listen banner
+    // uses on stdout, so an 'any' match would return before stdout has anything.
+    async waitFor(re, what, { stream = 'any', ms = 20_000 } = {}) {
       const deadline = Date.now() + ms
+      const seen = () =>
+        (stream !== 'stderr' && re.test(stdout)) || (stream !== 'stdout' && re.test(stderr))
       let dead = false
       exited.then(() => (dead = true))
       while (Date.now() < deadline) {
-        if (re.test(stdout) || re.test(stderr)) return
+        if (seen()) return
         if (dead) break
         await new Promise((r) => setTimeout(r, 50))
       }
@@ -90,12 +96,13 @@ test('a production boot warns about the missing optional services and serves /he
     OPENROUTER_API_KEY: '',
     WHATSAPP_APP_SECRET: '',
   })
-  await srv.waitFor(/HomeNex server on :/, 'the listen banner')
+  // The banner and its three warnings are logged in one go but can reach us in
+  // separate chunks, so wait for the last of them before reading the buffer.
+  await srv.waitFor(/webhook signature check disabled/, 'the startup warnings', { stream: 'stdout' })
 
   assert.match(srv.out(), new RegExp(`HomeNex server on :${srv.port}`))
-  assert.match(srv.out(), /WhatsApp credentials missing/, 'sends are announced as disabled')
-  assert.match(srv.out(), /OPENROUTER_API_KEY missing/, 'AI is announced as disabled')
-  assert.match(srv.out(), /WHATSAPP_APP_SECRET missing/, 'signature checking is announced as off')
+  assert.match(srv.out(), /sends disabled/, 'sends are announced as disabled')
+  assert.match(srv.out(), /AI replies\/extraction disabled/, 'AI is announced as disabled')
 
   const res = await fetch(`http://127.0.0.1:${srv.port}/healthz`)
   assert.equal(res.status, 200)
@@ -110,7 +117,7 @@ test('a production boot warns about the missing optional services and serves /he
 
 test('SIGTERM drains the server instead of dropping it', async () => {
   const srv = await boot()
-  await srv.waitFor(/HomeNex server on :/, 'the listen banner')
+  await srv.waitFor(/HomeNex server on :/, 'the listen banner', { stream: 'stdout' })
   assert.equal((await fetch(`http://127.0.0.1:${srv.port}/healthz`)).status, 200)
 
   srv.child.kill('SIGTERM')
@@ -123,7 +130,7 @@ test('SIGTERM drains the server instead of dropping it', async () => {
 
 test('SIGINT shuts down the same way, and a second signal is ignored', async () => {
   const srv = await boot()
-  await srv.waitFor(/HomeNex server on :/, 'the listen banner')
+  await srv.waitFor(/HomeNex server on :/, 'the listen banner', { stream: 'stdout' })
 
   srv.child.kill('SIGINT')
   srv.child.kill('SIGINT') // the shuttingDown latch must swallow this one
