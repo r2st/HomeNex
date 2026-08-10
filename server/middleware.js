@@ -107,6 +107,57 @@ export function rateLimit({ windowMs = 60_000, max = 60, key = clientIp, message
   return middleware
 }
 
+// --- Error-response codes --------------------------------------------------
+// Every API failure answers with `{ error: <human sentence>, code: <STABLE_TOKEN> }`.
+// The sentence is for the agent reading the screen and is free to be reworded; the
+// code is the contract a client branches on. Most routes only supply the sentence
+// (that's the interesting half, and threading a code through ~130 call sites would
+// bury it), so this fills in the status-derived default and leaves any explicit,
+// more specific code (TEMPLATE_LOCKED, WINDOW_EXPIRED, …) untouched.
+const STATUS_CODES = {
+  400: 'BAD_REQUEST',
+  401: 'UNAUTHORIZED',
+  402: 'PAYMENT_REQUIRED',
+  403: 'FORBIDDEN',
+  404: 'NOT_FOUND',
+  405: 'METHOD_NOT_ALLOWED',
+  409: 'CONFLICT',
+  410: 'GONE',
+  413: 'PAYLOAD_TOO_LARGE',
+  415: 'UNSUPPORTED_MEDIA_TYPE',
+  422: 'UNPROCESSABLE',
+  429: 'RATE_LIMITED',
+  500: 'INTERNAL',
+  502: 'UPSTREAM_ERROR',
+  503: 'SERVICE_UNAVAILABLE',
+  504: 'UPSTREAM_TIMEOUT',
+}
+
+export function errorCodeForStatus(status) {
+  return STATUS_CODES[status] || (status >= 500 ? 'INTERNAL' : 'BAD_REQUEST')
+}
+
+// Wraps res.json for the life of the request. Only an error status carrying an
+// `error` string is touched — a 503 health payload (`{ ok: false, db: false }`) or
+// any successful body passes through byte-for-byte.
+export function errorCodes(_req, res, next) {
+  const json = res.json.bind(res)
+  res.json = function jsonWithErrorCode(body) {
+    if (
+      res.statusCode >= 400 &&
+      body &&
+      typeof body === 'object' &&
+      !Array.isArray(body) &&
+      typeof body.error === 'string' &&
+      body.code == null
+    ) {
+      return json({ ...body, code: errorCodeForStatus(res.statusCode) })
+    }
+    return json(body)
+  }
+  next()
+}
+
 // --- Request logger --------------------------------------------------------
 // One structured line per request once the response finishes. Static assets and
 // uploads are skipped to keep the log signal-dense. Disabled under NODE_ENV=test

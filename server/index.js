@@ -191,7 +191,7 @@ import {
 } from './leadSources.js'
 import { fetchLeadgenData } from './whatsapp.js'
 import { dbPing, closePool } from './db.js'
-import { securityHeaders, cors, requestLogger, rateLimit, clientIp } from './middleware.js'
+import { securityHeaders, cors, requestLogger, rateLimit, clientIp, errorCodes } from './middleware.js'
 import { validateEnv } from './env.js'
 
 const { PORT = 8787, WHATSAPP_VERIFY_TOKEN = 'homenex-verify', WHATSAPP_APP_SECRET } = process.env
@@ -284,10 +284,12 @@ app.set('trust proxy', 1)
 app.disable('x-powered-by')
 
 // Cross-cutting middleware runs before any route: safe security headers on every
-// response, optional CORS (off unless CORS_ORIGIN is set), and a compact access log
-// (silent under test / LOG_REQUESTS=0).
+// response, optional CORS (off unless CORS_ORIGIN is set), a stable machine-readable
+// `code` on every error body, and a compact access log (silent under test /
+// LOG_REQUESTS=0).
 app.use(securityHeaders)
 app.use(cors())
+app.use(errorCodes)
 if (process.env.NODE_ENV !== 'test' && process.env.LOG_REQUESTS !== '0') {
   app.use(requestLogger())
 }
