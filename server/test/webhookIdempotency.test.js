@@ -15,7 +15,7 @@ delete process.env.WHATSAPP_APP_SECRET // webhook signature check off
 const dbName = await createTestDb('webhookidem')
 
 const { app, inboundMessageText } = await import('../index.js')
-const { closePool, getMessages } = await import('../db.js')
+const { closePool, getMessages, query } = await import('../db.js')
 
 let server
 let base
@@ -201,4 +201,78 @@ test('POST /api/simulate: passing the same wa_message_id twice is idempotent', a
 
   const messages = await getMessages(firstBody.lead.id)
   assert.equal(messages.filter((m) => m.wa_message_id === 'wamid.sim-dedupe-1').length, 1)
+})
+
+// --- The unconfigured-secret branch, end to end -------------------------------
+//
+// webhookSignatureUnit.test.js proves the pure function fails closed in production.
+// What it can't prove is that the route is wired to it: that the secret really is
+// plumbed through from the environment, that isProd is computed per REQUEST (a value
+// captured at import would be frozen as 'test' for the life of the process, and the
+// fail-closed branch would be dead code in production), and that a false answer
+// becomes a 401 rather than an unhandled throw.
+//
+// This file boots the app with WHATSAPP_APP_SECRET deleted — the exact production
+// misconfiguration at issue — so it is the only place that wiring is observable.
+const unsignedWebhook = () =>
+  fetch(base + '/webhook', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(webhookPayload(
+      { id: 'wamid.failclosed.1', from: '919888840001', type: 'text', text: { body: 'Forged' } },
+      'pnid-failclosed',
+    )),
+  })
+
+test('with no app secret configured, an unsigned webhook is accepted in dev', async () => {
+  assert.equal(process.env.WHATSAPP_APP_SECRET, undefined)
+  assert.equal((await unsignedWebhook()).status, 200)
+})
+
+test('with no app secret configured, an unsigned webhook is REJECTED in production', async () => {
+  // Anyone who knows the URL could otherwise inject fabricated buyer messages: fake
+  // leads, AI replies sent from the broker's real WhatsApp number, poisoned scores.
+  const realEnv = process.env.NODE_ENV
+  process.env.NODE_ENV = 'production'
+  try {
+    const res = await unsignedWebhook()
+    assert.equal(res.status, 401, 'a missing app secret left the public webhook wide open in production')
+  } finally {
+    process.env.NODE_ENV = realEnv
+  }
+})
+
+test('a signature that cannot be checked is rejected in production, however plausible', async () => {
+  // No secret means nothing to check against — a well-formed sha256= header must not
+  // buy its way in by looking right.
+  const realEnv = process.env.NODE_ENV
+  process.env.NODE_ENV = 'production'
+  try {
+    const res = await fetch(base + '/webhook', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-hub-signature-256': 'sha256=' + 'a'.repeat(64),
+      },
+      body: JSON.stringify(webhookPayload(
+        { id: 'wamid.failclosed.2', from: '919888840002', type: 'text', text: { body: 'Forged' } },
+        'pnid-failclosed',
+      )),
+    })
+    assert.equal(res.status, 401)
+  } finally {
+    process.env.NODE_ENV = realEnv
+  }
+})
+
+test('a rejected webhook leaves no trace of the forged message in the database', async () => {
+  // A 401 that had already persisted the lead would defeat the point. The webhook
+  // acks before it finishes processing, so wait for the ACCEPTED message from the
+  // dev-mode test above to land first — that proves the pipeline has drained and
+  // makes the absence of the rejected one meaningful rather than merely early.
+  const countOf = async (id) =>
+    (await query(`SELECT COUNT(*)::int AS n FROM messages WHERE wa_message_id = $1`, [id])).rows[0].n
+
+  await until(async () => (await countOf('wamid.failclosed.1')) === 1)
+  assert.equal(await countOf('wamid.failclosed.2'), 0, 'a rejected webhook still wrote a message')
 })
