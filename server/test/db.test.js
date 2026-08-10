@@ -346,6 +346,46 @@ test('normalizePhone canonicalizes Indian numbers', () => {
   assert.equal(db.normalizePhone('+1 (365) 555-1234'), '+13655551234')
 })
 
+// The STD trunk prefix is how half of India dials a mobile from a landline habit.
+// Keeping the 0 produced "+09876543210", which no carrier will route.
+test('normalizePhone strips India\'s STD trunk prefix', () => {
+  for (const input of ['098765 43210', '09876543210', '0 98765-43210', '(0) 9876543210']) {
+    assert.equal(db.normalizePhone(input), '+919876543210', `${input} should lose the trunk 0`)
+  }
+})
+
+test('normalizePhone reads a trunk-dialled landline as its STD code + number', () => {
+  // "022 2345 6789" is Mumbai: the 0 is the trunk prefix, 22 is the STD code.
+  assert.equal(db.normalizePhone('022 2345 6789'), '+912223456789')
+  assert.equal(db.normalizePhone('080 2222 3333'), '+918022223333')
+})
+
+test('normalizePhone leaves numbers the trunk rule must not touch', () => {
+  // An explicit "+" is already international — nothing is stripped from it.
+  assert.equal(db.normalizePhone('+919876543210'), '+919876543210')
+  assert.equal(db.normalizePhone('+0123456789'), '+0123456789')
+  // 12 digits starting 0 is not a trunk-dialled 10-digit number.
+  assert.equal(db.normalizePhone('091234567890'), '+091234567890')
+  // A leading 0 on a 10-digit number is part of the number, not a prefix.
+  assert.equal(db.normalizePhone('0987654321'), '+910987654321')
+  // Country codes that merely contain a 0 survive.
+  assert.equal(db.normalizePhone('919876543210'), '+919876543210')
+  assert.equal(db.normalizePhone('971501234567'), '+971501234567')
+  assert.equal(db.normalizePhone(''), '+')
+  assert.equal(db.normalizePhone(null), '+')
+})
+
+// The whole point of the fix: a trunk-dialled number has to land on the same row
+// as the same number typed any other way, or the contact silently forks in two.
+test('a trunk-dialled contact is the same contact as the +91 form', async () => {
+  const a = await db.createAgent('Trunk Agent', '+919899000404', null, hashPassword('secret123'))
+  const created = await db.addContact(a.id, '098765 40001', 'Trunk Typed')
+  assert.equal(created.phone, '+919876540001')
+  assert.equal((await db.getContactByPhone('+91 98765 40001')).id, created.id)
+  assert.equal((await db.getContactByPhone('9876540001')).id, created.id)
+  await assert.rejects(() => db.addContact(a.id, '+919876540001', 'Same Person Again'), /already in your list/)
+})
+
 // === Auth primitives ===
 //
 // The failure branches matter more than the happy path here: every one of them is

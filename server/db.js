@@ -124,13 +124,16 @@ async function assertOwned(table, id, agentId, label) {
 // A bare 10-digit Indian number is assumed to be +91.
 export function normalizePhone(raw) {
   let d = String(raw || '').replace(/[^\d+]/g, '')
-  if (d.startsWith('+')) d = '+' + d.slice(1).replace(/\D/g, '')
-  else {
-    d = d.replace(/\D/g, '')
-    if (d.length === 10) d = '91' + d // default Indian country code
-    d = '+' + d
-  }
-  return d
+  if (d.startsWith('+')) return '+' + d.slice(1).replace(/\D/g, '')
+  d = d.replace(/\D/g, '')
+  // India's STD trunk prefix. Agents type "098765 43210" out of habit, but the 0
+  // is a domestic-dialling artefact, never part of the number — keeping it made
+  // an unroutable "+09876543210". Dropping it turns an 11-digit trunk-dialled
+  // number back into the 10 national digits the next rule expands to +91
+  // (this also fixes STD landlines: "022 2345 6789" -> "+912223456789").
+  if (d.length === 11 && d.startsWith('0')) d = d.slice(1)
+  if (d.length === 10) d = '91' + d // default Indian country code
+  return '+' + d
 }
 
 // Strict form of normalizePhone for numbers that must be Indian mobiles — the agent's
