@@ -340,10 +340,11 @@ test('parallelising the worklist did not change what it reports', async () => {
   assert.ok(types.includes('service_window_closing'), `got ${JSON.stringify(types)}`)
   assert.ok(types.includes('hot_lead_waiting'))
   assert.ok(types.includes('overdue_followup'))
-  assert.equal(
-    Object.values(counts.byType ?? {}).reduce((a, b) => a + b, 0) || items.length,
-    items.length,
-  )
+  // worklistCounts returns by_type/by_priority. Reading counts.byType instead left
+  // this comparing items.length to itself, so the roll-up was never actually checked.
+  assert.equal(Object.values(counts.by_type).reduce((a, b) => a + b, 0), items.length)
+  assert.equal(Object.values(counts.by_priority).reduce((a, b) => a + b, 0), items.length)
+  assert.equal(counts.total, items.length)
 })
 
 test('stats still totals the seeded leads after the fan-out change', async () => {
