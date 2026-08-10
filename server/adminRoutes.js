@@ -23,7 +23,6 @@ import {
   listPlans,
   createPlan,
   updatePlan,
-  getSubscription,
   setSubscription,
   billingOverview,
   generateInvoice,

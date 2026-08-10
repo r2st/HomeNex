@@ -61,7 +61,6 @@ import {
   stampSiteVisitConfirmation,
   createCommission,
   listCommissions,
-  getCommission,
   updateCommission,
   builderReceivables,
   createCommissionInvoice,
@@ -125,11 +124,11 @@ import {
   markAllNotificationsRead,
   recordSend,
   sendsToday,
-  contactSendStats,
+  contactSendStatsBatch,
+  sendStatsKey,
   ensureBulkSendStarted,
   createGroup,
   listGroups,
-  getGroup,
   updateGroup,
   deleteGroup,
   groupMembers,
@@ -145,7 +144,6 @@ import {
   leadSourceStats,
   listPortalIntegrations,
   upsertPortalIntegration,
-  getPortalIntegrationRaw,
   listSyndications,
   getMeta,
   setMeta,
@@ -153,15 +151,15 @@ import {
 import { paiseToDisplay } from './money.js'
 import { bookingConfirmationText } from './siteVisit.js'
 import { detectConversationLanguage } from './language.js'
-import { generateReply, extractLead, suggestReplies, aiConfigured, categorizeInquiry, buildAutofillSuggestions } from './ai.js'
+import { generateReply, extractLead, suggestReplies, aiConfigured, buildAutofillSuggestions } from './ai.js'
 import { emiReplyFor, parseEmiQuery, formatEmiMessage } from './emi.js'
 import { FESTIVALS, getFestival, personalizeGreeting } from './festivals.js'
 import { renderMicroPage } from './micropage.js'
 import { buildBriefing } from './briefing.js'
-import { evaluateSend, warmupDailyCap, SEND_BLOCK_REASONS } from './sendLimiter.js'
+import { evaluateSend, warmupDailyCap } from './sendLimiter.js'
 import { runDueJobs } from './scheduler.js'
 import { sendText, sendMedia, markRead, whatsappConfigured, checkToken } from './whatsapp.js'
-import { renderTemplate, fillTemplate, appendRera, waMediaType } from './inbox.js'
+import { renderTemplate, waMediaType } from './inbox.js'
 import fs from 'node:fs'
 import { privacyPage, termsPage } from './legal.js'
 import { setupGuidePage } from './setupGuide.js'
@@ -1760,12 +1758,20 @@ async function sendToRecipients(agent, recipients, message, kind, { personalize 
   let failed = 0
   let skipped = 0
   const skips = {}
+  // One query for the whole audience instead of one per recipient (see
+  // contactSendStatsBatch). Prefetching is only equivalent to querying inside the
+  // loop as long as sends made DURING this run are folded back in — two contact
+  // rows can share a phone number, and the second must still see the first's send
+  // and be blocked by the min-gap rule rather than messaged twice.
+  const statsByKey = await contactSendStatsBatch(agent.id, recipients)
+  const sentNowByPhone = new Map()
   for (const contact of recipients) {
-    const stats = await contactSendStats(agent.id, contact.id ?? null, contact.phone)
+    const stats = statsByKey.get(sendStatsKey(contact)) || { lastSentAt: null, monthCount: 0 }
+    const justSentAt = sentNowByPhone.get(contact.phone) ?? null
     const verdict = evaluateSend({
       optInStatus: contact.opt_in_status,
-      lastSentToContactAt: stats.lastSentAt,
-      contactSendsThisMonth: stats.monthCount,
+      lastSentToContactAt: justSentAt ?? stats.lastSentAt,
+      contactSendsThisMonth: stats.monthCount + (justSentAt ? 1 : 0),
       sendsToday: sentCount,
       dailyCap,
       tz: agent.timezone,
@@ -1784,6 +1790,7 @@ async function sendToRecipients(agent, recipients, message, kind, { personalize 
     try {
       await sendText(contact.phone.replace('+', ''), body, agent.wa_phone_number_id)
       await recordSend(agent.id, { contact_id: contact.id ?? null, phone: contact.phone, kind })
+      sentNowByPhone.set(contact.phone, Date.now())
       sent++
       sentCount++
     } catch (err) {

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { api, usePoll, fmtAgo } from '../api.js'
-import { Field, inputCls, InfoTip, useConfirm } from './ui.jsx'
+import { inputCls, InfoTip, useConfirm } from './ui.jsx'
 import { glossary } from '../lib/glossary.js'
 import { ingestStatusLabel, ingestStatusTone } from '../lib/ingestStatus.js'
 

@@ -194,10 +194,6 @@ export async function getAgentPasswordHash(agentId) {
   return rows[0]?.password_hash || null
 }
 
-export async function countAgents() {
-  return (await q('SELECT COUNT(*) AS n FROM agents')).rows[0].n
-}
-
 // Update an agent's per-agent WhatsApp Business number configuration.
 // waPhoneNumber is the display number (E.164), waPhoneNumberId is the Meta API phone_number_id.
 // Either or both can be null to clear the configuration.
@@ -350,20 +346,6 @@ export async function addContact(agentId, phone, name, notes = null, opts = {}) 
     ],
   )
   return rows[0]
-}
-
-// Bulk add. Returns { added, skipped: [{phone, reason}] }; never throws on a bad row.
-export async function bulkAddContacts(agentId, rows) {
-  const added = []
-  const skipped = []
-  for (const row of rows || []) {
-    try {
-      added.push(await addContact(agentId, row.phone, row.name, row.notes))
-    } catch (err) {
-      skipped.push({ phone: row.phone, name: row.name, reason: err.message })
-    }
-  }
-  return { added, skipped }
 }
 
 export async function getContact(id, agentId) {
@@ -1176,63 +1158,74 @@ export async function stats(agentId) {
   const one = async (sql, params) => Object.values((await q(sql, params)).rows[0])[0]
   // Messages are scoped to the agent's leads.
   const myMessages = 'lead_id IN (SELECT id FROM leads WHERE agent_id = $1)'
-  const total = await one('SELECT COUNT(*) FROM leads WHERE agent_id = $1', [agentId])
-  const newToday = await one(
-    `SELECT COUNT(*) FROM leads WHERE agent_id = $1
-       AND created_at >= date_trunc('day', now() AT TIME ZONE $2) AT TIME ZONE $2`,
-    [agentId, TZ],
-  )
-  // Decayed/rule-hybrid temperature, not the AI's one-time categorical guess — a
-  // lead scored Hot at extraction time but silent for a week must not still
-  // count as "hot now" (see scoring.js decay + hybridScore).
-  const hotNow = await one(
-    `SELECT COUNT(*) FROM leads WHERE agent_id = $1 AND COALESCE(effective_temp, temp) = 'Hot'`,
-    [agentId],
-  )
-  const active24h = await one(
-    `SELECT COUNT(DISTINCT lead_id) FROM messages WHERE ${myMessages} AND created_at >= now() - interval '1 day'`,
-    [agentId],
-  )
-  const pipelineL =
-    (await one(
+  // Every counter below is independent, so they are issued together — the dashboard
+  // waits on the slowest one instead of on the sum of eleven round-trips.
+  const [
+    total,
+    newToday,
+    // Decayed/rule-hybrid temperature, not the AI's one-time categorical guess — a
+    // lead scored Hot at extraction time but silent for a week must not still
+    // count as "hot now" (see scoring.js decay + hybridScore).
+    hotNow,
+    active24h,
+    rawPipelineL,
+    avgFirstResponseS,
+    qualified,
+    afterHours,
+    sourcesRes,
+    dailyRes,
+    msgsToday,
+  ] = await Promise.all([
+    one('SELECT COUNT(*) FROM leads WHERE agent_id = $1', [agentId]),
+    one(
+      `SELECT COUNT(*) FROM leads WHERE agent_id = $1
+         AND created_at >= date_trunc('day', now() AT TIME ZONE $2) AT TIME ZONE $2`,
+      [agentId, TZ],
+    ),
+    one(`SELECT COUNT(*) FROM leads WHERE agent_id = $1 AND COALESCE(effective_temp, temp) = 'Hot'`, [
+      agentId,
+    ]),
+    one(
+      `SELECT COUNT(DISTINCT lead_id) FROM messages WHERE ${myMessages} AND created_at >= now() - interval '1 day'`,
+      [agentId],
+    ),
+    one(
       `SELECT COALESCE(SUM((budget_min_l + budget_max_l) / 2.0), 0) FROM leads
        WHERE agent_id = $1 AND temp != 'Cold' AND budget_max_l IS NOT NULL`,
       [agentId],
-    )) || 0
-  const avgFirstResponseS = await one('SELECT AVG(first_response_s) FROM leads WHERE agent_id = $1', [
-    agentId,
-  ])
-  const qualified = await one(
-    `SELECT COUNT(*) FROM leads WHERE agent_id = $1 AND locality IS NOT NULL
-       AND timeline IS NOT NULL AND config IS NOT NULL AND budget_max_l IS NOT NULL`,
-    [agentId],
-  )
-  const afterHours = await one(
-    `SELECT COUNT(*) FROM leads
-     WHERE agent_id = $1 AND (EXTRACT(HOUR FROM created_at AT TIME ZONE $2) >= 21
-        OR EXTRACT(HOUR FROM created_at AT TIME ZONE $2) < 9)`,
-    [agentId, TZ],
-  )
-  const sources = (
-    await q(
+    ),
+    one('SELECT AVG(first_response_s) FROM leads WHERE agent_id = $1', [agentId]),
+    one(
+      `SELECT COUNT(*) FROM leads WHERE agent_id = $1 AND locality IS NOT NULL
+         AND timeline IS NOT NULL AND config IS NOT NULL AND budget_max_l IS NOT NULL`,
+      [agentId],
+    ),
+    one(
+      `SELECT COUNT(*) FROM leads
+       WHERE agent_id = $1 AND (EXTRACT(HOUR FROM created_at AT TIME ZONE $2) >= 21
+          OR EXTRACT(HOUR FROM created_at AT TIME ZONE $2) < 9)`,
+      [agentId, TZ],
+    ),
+    q(
       'SELECT source AS name, COUNT(*) AS count FROM leads WHERE agent_id = $1 GROUP BY source ORDER BY count DESC',
       [agentId],
-    )
-  ).rows
-  const daily = (
-    await q(
+    ),
+    q(
       `SELECT to_char((created_at AT TIME ZONE $2)::date, 'YYYY-MM-DD') AS day,
               AVG(first_response_s) AS avg_s, COUNT(*) AS leads
        FROM leads WHERE agent_id = $1 AND created_at >= now() - interval '7 days'
        GROUP BY day ORDER BY day`,
       [agentId, TZ],
-    )
-  ).rows
-  const msgsToday = await one(
-    `SELECT COUNT(*) FROM messages WHERE ${myMessages}
-       AND created_at >= date_trunc('day', now() AT TIME ZONE $2) AT TIME ZONE $2`,
-    [agentId, TZ],
-  )
+    ),
+    one(
+      `SELECT COUNT(*) FROM messages WHERE ${myMessages}
+         AND created_at >= date_trunc('day', now() AT TIME ZONE $2) AT TIME ZONE $2`,
+      [agentId, TZ],
+    ),
+  ])
+  const pipelineL = rawPipelineL || 0
+  const sources = sourcesRes.rows
+  const daily = dailyRes.rows
   return {
     total,
     newToday,
@@ -2260,42 +2253,46 @@ export async function updateMessageTemplate(id, agentId, fields) {
 // --- CRM: agent dashboard (the Home tab) ---
 
 export async function dashboard(agentId) {
-  // Unanswered: open leads whose most recent message is from the buyer,
-  // oldest wait first. The client renders the age timer from last_at.
-  const unanswered = (
-    await q(
-      `SELECT l.id, l.name, l.wa_id, l.temp, l.score, l.stage, l.pipeline_type,
-              lm.text AS last_msg, lm.created_at AS last_at
-       FROM leads l
-       JOIN LATERAL (
-         SELECT role, text, created_at FROM messages m
-         WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1
-       ) lm ON lm.role = 'buyer'
-       WHERE l.agent_id = $1 AND l.closed_at IS NULL
-       ORDER BY lm.created_at`,
-      [agentId],
-    )
-  ).rows
-  const hotLeads = (
-    await q(
+  // Six independent widget queries, issued together rather than in sequence.
+  const [unansweredRes, hotLeadsRes, followupsToday, overdueFollowups, siteVisitsToday, activity] =
+    await Promise.all([
+      // Unanswered: open leads whose most recent message is from the buyer,
+      // oldest wait first. The client renders the age timer from last_at.
+      q(
+        `SELECT l.id, l.name, l.wa_id, l.temp, l.score, l.stage, l.pipeline_type,
+                lm.text AS last_msg, lm.created_at AS last_at
+         FROM leads l
+         JOIN LATERAL (
+           SELECT role, text, created_at FROM messages m
+           WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1
+         ) lm ON lm.role = 'buyer'
+         WHERE l.agent_id = $1 AND l.closed_at IS NULL
+         ORDER BY lm.created_at`,
+        [agentId],
+      ),
       // Decayed/rule-hybrid temperature (see stats()/scoring.js) — a lead the AI
       // called Hot at extraction time but that has gone quiet must fall off this
       // widget, and one the hard rule just promoted must appear even if its raw
       // AI temp was Warm.
-      `SELECT id, name, wa_id, score, effective_score, stage, pipeline_type, ai_summary, next_step, updated_at
-       FROM leads WHERE agent_id = $1 AND COALESCE(effective_temp, temp) = 'Hot' AND closed_at IS NULL
-       ORDER BY COALESCE(effective_score, score) DESC NULLS LAST, updated_at DESC LIMIT 10`,
-      [agentId],
-    )
-  ).rows
+      q(
+        `SELECT id, name, wa_id, score, effective_score, stage, pipeline_type, ai_summary, next_step, updated_at
+         FROM leads WHERE agent_id = $1 AND COALESCE(effective_temp, temp) = 'Hot' AND closed_at IS NULL
+         ORDER BY COALESCE(effective_score, score) DESC NULLS LAST, updated_at DESC LIMIT 10`,
+        [agentId],
+      ),
+      listFollowups(agentId, { pendingOnly: true, today: true }),
+      // Slipped follow-ups, worked hottest-lead-first (the "overdue queue" widget).
+      listFollowups(agentId, { overdueOnly: true, byHeat: true }),
+      listSiteVisits(agentId, { today: true }),
+      listActivity(agentId, 20),
+    ])
   return {
-    unanswered,
-    followupsToday: await listFollowups(agentId, { pendingOnly: true, today: true }),
-    // Slipped follow-ups, worked hottest-lead-first (the "overdue queue" widget).
-    overdueFollowups: await listFollowups(agentId, { overdueOnly: true, byHeat: true }),
-    siteVisitsToday: await listSiteVisits(agentId, { today: true }),
-    hotLeads,
-    activity: await listActivity(agentId, 20),
+    unanswered: unansweredRes.rows,
+    followupsToday,
+    overdueFollowups,
+    siteVisitsToday,
+    hotLeads: hotLeadsRes.rows,
+    activity,
   }
 }
 
@@ -2573,6 +2570,47 @@ export async function contactSendStats(agentId, contactId, phone) {
   return { lastSentAt: rows[0]?.last_sent_at || null, monthCount: rows[0]?.month_count || 0 }
 }
 
+// The same per-contact history for a whole recipient list, in ONE query.
+// A bulk send used to call contactSendStats() per recipient — a festive blast to
+// 500 contacts meant 500 round-trips before a single message went out. The list is
+// unnested into a virtual table and LEFT JOINed against the send log, so the cost
+// is one statement regardless of audience size.
+//
+// Returns a Map keyed by `sendStatsKey(contact)`; callers look up per recipient.
+// Keeping the key derivation in one exported helper means the writer of the map
+// and its readers cannot drift apart.
+export function sendStatsKey(contact) {
+  return contact?.id != null ? `c:${contact.id}` : `p:${contact?.phone ?? ''}`
+}
+
+export async function contactSendStatsBatch(agentId, recipients = []) {
+  const out = new Map()
+  if (!recipients.length) return out
+  // De-duplicate first: the same contact twice in one list would otherwise unnest
+  // into two identical rows (harmless, but pointless work).
+  const byKey = new Map()
+  for (const c of recipients) if (!byKey.has(sendStatsKey(c))) byKey.set(sendStatsKey(c), c)
+  const keys = [...byKey.keys()]
+  const ids = keys.map((k) => byKey.get(k).id ?? null)
+  const phones = keys.map((k) => byKey.get(k).phone ?? null)
+
+  const { rows } = await q(
+    `SELECT r.key,
+            MAX(s.sent_at) AS last_sent_at,
+            COUNT(s.id) FILTER (WHERE s.sent_at >= date_trunc('month', now()))::int AS month_count
+     FROM unnest($2::text[], $3::int[], $4::text[]) AS r(key, contact_id, phone)
+     LEFT JOIN message_sends s
+       ON s.agent_id = $1
+      AND ((r.contact_id IS NOT NULL AND s.contact_id = r.contact_id) OR s.phone = r.phone)
+     GROUP BY r.key`,
+    [agentId, keys, ids, phones],
+  )
+  for (const r of rows) out.set(r.key, { lastSentAt: r.last_sent_at || null, monthCount: r.month_count || 0 })
+  // Recipients with no send history at all still need an entry.
+  for (const k of keys) if (!out.has(k)) out.set(k, { lastSentAt: null, monthCount: 0 })
+  return out
+}
+
 // Stamp the warmup anchor the first time a number sends in bulk; return the agent.
 export async function ensureBulkSendStarted(agentId) {
   const { rows } = await q(
@@ -2588,17 +2626,90 @@ export async function ensureBulkSendStarted(agentId) {
 export async function worklist(agentId, now = new Date()) {
   const items = []
 
+  // The eight source queries below are independent of one another, so they go out
+  // together rather than one-round-trip-at-a-time. /api/worklist is the screen an
+  // agent opens first every morning; serialising eight round-trips made its latency
+  // the sum of all eight instead of the slowest one.
+  const [
+    windowRows,
+    visitRows,
+    hotRows,
+    followupRows,
+    reopenRows,
+    quietAfterVisitRows,
+    commissionRows,
+    staleRows,
+  ] = (
+    await Promise.all([
+      q(
+        `SELECT id, name, wa_id, last_inbound_at
+         FROM leads WHERE agent_id = $1 AND closed_at IS NULL
+           AND last_inbound_at IS NOT NULL
+           AND last_inbound_at <= now() - interval '20 hours'
+           AND last_inbound_at > now() - interval '24 hours'`,
+        [agentId],
+      ),
+      q(
+        `SELECT v.id, v.scheduled_at, l.id AS lead_id, l.name, l.wa_id, p.title
+         FROM site_visits v JOIN leads l ON l.id = v.lead_id
+         LEFT JOIN properties p ON p.id = v.property_id AND p.agent_id = v.agent_id
+         WHERE v.agent_id = $1 AND v.status = 'scheduled'
+           AND v.scheduled_at BETWEEN now() AND now() + interval '48 hours'`,
+        [agentId],
+      ),
+      q(
+        `SELECT l.id, l.name, l.wa_id, l.effective_score, lm.created_at AS last_at
+         FROM leads l
+         JOIN LATERAL (SELECT role, created_at FROM messages m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) lm ON lm.role = 'buyer'
+         WHERE l.agent_id = $1 AND l.closed_at IS NULL AND l.effective_temp = 'Hot'`,
+        [agentId],
+      ),
+      q(
+        `SELECT f.id, f.due_at, f.note, l.id AS lead_id, l.name, l.wa_id
+         FROM followups f JOIN leads l ON l.id = f.lead_id
+         WHERE f.agent_id = $1 AND f.completed_at IS NULL AND f.due_at < now()`,
+        [agentId],
+      ),
+      q(
+        `SELECT l.id, l.name, l.wa_id, COUNT(*)::int AS views, MAX(v.viewed_at) AS last_viewed
+         FROM property_page_views v JOIN leads l ON l.id = v.lead_id
+         WHERE l.agent_id = $1 AND l.closed_at IS NULL AND v.viewed_at >= now() - interval '24 hours'
+         GROUP BY l.id, l.name, l.wa_id HAVING COUNT(*) >= 2`,
+        [agentId],
+      ),
+      q(
+        `SELECT DISTINCT ON (l.id) l.id, l.name, l.wa_id, v.scheduled_at
+         FROM site_visits v JOIN leads l ON l.id = v.lead_id
+         WHERE v.agent_id = $1 AND v.status = 'completed' AND l.closed_at IS NULL
+           AND v.scheduled_at < now() - interval '3 days'
+           AND NOT EXISTS (
+             SELECT 1 FROM messages m WHERE m.lead_id = l.id AND m.role IN ('agent','ai')
+               AND m.created_at > v.scheduled_at)
+         ORDER BY l.id, v.scheduled_at DESC`,
+        [agentId],
+      ),
+      q(
+        `SELECT c.id, c.expected_payout_date, l.id AS lead_id, l.name, l.wa_id
+         FROM commissions c JOIN leads l ON l.id = c.lead_id
+         WHERE c.agent_id = $1 AND (c.status = 'overdue'
+           OR (c.status = 'expected' AND c.expected_payout_date IS NOT NULL AND c.expected_payout_date < now()::date))`,
+        [agentId],
+      ),
+      q(
+        `SELECT l.id, l.name, l.wa_id, l.stage,
+                (SELECT MAX(created_at) FROM messages m WHERE m.lead_id = l.id) AS last_msg_at
+         FROM leads l
+         WHERE l.agent_id = $1 AND l.closed_at IS NULL
+           AND COALESCE(l.stage, 'New') NOT IN ('Registered/Closed','Closed','Lost')
+           AND COALESCE(l.effective_temp, l.temp) IS DISTINCT FROM 'Hot'
+           AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.lead_id = l.id AND m.created_at >= now() - interval '14 days')`,
+        [agentId],
+      ),
+    ])
+  ).map((r) => r.rows)
+
   // 1. Service window closing within ~4h (highest priority; hard deadline).
-  for (const l of (
-    await q(
-      `SELECT id, name, wa_id, last_inbound_at
-       FROM leads WHERE agent_id = $1 AND closed_at IS NULL
-         AND last_inbound_at IS NOT NULL
-         AND last_inbound_at <= now() - interval '20 hours'
-         AND last_inbound_at > now() - interval '24 hours'`,
-      [agentId],
-    )
-  ).rows) {
+  for (const l of windowRows) {
     const hoursLeft = 24 - (Date.now() - new Date(l.last_inbound_at).getTime()) / 3600_000
     items.push(worklistItem('service_window_closing', {
       lead_id: l.id,
@@ -2609,16 +2720,7 @@ export async function worklist(agentId, now = new Date()) {
   }
 
   // 2. Site visit within 48h, not yet confirmed.
-  for (const v of (
-    await q(
-      `SELECT v.id, v.scheduled_at, l.id AS lead_id, l.name, l.wa_id, p.title
-       FROM site_visits v JOIN leads l ON l.id = v.lead_id
-       LEFT JOIN properties p ON p.id = v.property_id AND p.agent_id = v.agent_id
-       WHERE v.agent_id = $1 AND v.status = 'scheduled'
-         AND v.scheduled_at BETWEEN now() AND now() + interval '48 hours'`,
-      [agentId],
-    )
-  ).rows) {
+  for (const v of visitRows) {
     items.push(worklistItem('site_visit_soon', {
       lead_id: v.lead_id, entity_type: 'site_visit', entity_id: v.id,
       title: v.name || v.wa_id,
@@ -2628,15 +2730,7 @@ export async function worklist(agentId, now = new Date()) {
   }
 
   // 3. Hot lead (post-decay) whose last message is from the buyer — waiting on you.
-  for (const l of (
-    await q(
-      `SELECT l.id, l.name, l.wa_id, l.effective_score, lm.created_at AS last_at
-       FROM leads l
-       JOIN LATERAL (SELECT role, created_at FROM messages m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) lm ON lm.role = 'buyer'
-       WHERE l.agent_id = $1 AND l.closed_at IS NULL AND l.effective_temp = 'Hot'`,
-      [agentId],
-    )
-  ).rows) {
+  for (const l of hotRows) {
     items.push(worklistItem('hot_lead_waiting', {
       lead_id: l.id, title: l.name || l.wa_id,
       reason: `Hot lead (score ${l.effective_score}) is waiting on your reply.`,
@@ -2645,14 +2739,7 @@ export async function worklist(agentId, now = new Date()) {
   }
 
   // 4. Overdue follow-ups.
-  for (const f of (
-    await q(
-      `SELECT f.id, f.due_at, f.note, l.id AS lead_id, l.name, l.wa_id
-       FROM followups f JOIN leads l ON l.id = f.lead_id
-       WHERE f.agent_id = $1 AND f.completed_at IS NULL AND f.due_at < now()`,
-      [agentId],
-    )
-  ).rows) {
+  for (const f of followupRows) {
     items.push(worklistItem('overdue_followup', {
       lead_id: f.lead_id, entity_type: 'followup', entity_id: f.id,
       title: f.name || f.wa_id,
@@ -2663,15 +2750,7 @@ export async function worklist(agentId, now = new Date()) {
   }
 
   // 5. Micro-page re-opened: 2+ attributed views in the last 24h.
-  for (const l of (
-    await q(
-      `SELECT l.id, l.name, l.wa_id, COUNT(*)::int AS views, MAX(v.viewed_at) AS last_viewed
-       FROM property_page_views v JOIN leads l ON l.id = v.lead_id
-       WHERE l.agent_id = $1 AND l.closed_at IS NULL AND v.viewed_at >= now() - interval '24 hours'
-       GROUP BY l.id, l.name, l.wa_id HAVING COUNT(*) >= 2`,
-      [agentId],
-    )
-  ).rows) {
+  for (const l of reopenRows) {
     items.push(worklistItem('micro_page_reopened', {
       lead_id: l.id, title: l.name || l.wa_id,
       reason: `Re-opened a property page ${l.views}× in the last day — call while it's fresh.`,
@@ -2680,19 +2759,7 @@ export async function worklist(agentId, now = new Date()) {
   }
 
   // 6. Site visit completed 3+ days ago with no agent message since (deal dying).
-  for (const l of (
-    await q(
-      `SELECT DISTINCT ON (l.id) l.id, l.name, l.wa_id, v.scheduled_at
-       FROM site_visits v JOIN leads l ON l.id = v.lead_id
-       WHERE v.agent_id = $1 AND v.status = 'completed' AND l.closed_at IS NULL
-         AND v.scheduled_at < now() - interval '3 days'
-         AND NOT EXISTS (
-           SELECT 1 FROM messages m WHERE m.lead_id = l.id AND m.role IN ('agent','ai')
-             AND m.created_at > v.scheduled_at)
-       ORDER BY l.id, v.scheduled_at DESC`,
-      [agentId],
-    )
-  ).rows) {
+  for (const l of quietAfterVisitRows) {
     items.push(worklistItem('site_visit_no_followup', {
       lead_id: l.id, title: l.name || l.wa_id,
       reason: 'Visited but you’ve gone quiet since — follow up before the deal cools.',
@@ -2701,15 +2768,7 @@ export async function worklist(agentId, now = new Date()) {
   }
 
   // 7. Commission overdue.
-  for (const c of (
-    await q(
-      `SELECT c.id, c.expected_payout_date, l.id AS lead_id, l.name, l.wa_id
-       FROM commissions c JOIN leads l ON l.id = c.lead_id
-       WHERE c.agent_id = $1 AND (c.status = 'overdue'
-         OR (c.status = 'expected' AND c.expected_payout_date IS NOT NULL AND c.expected_payout_date < now()::date))`,
-      [agentId],
-    )
-  ).rows) {
+  for (const c of commissionRows) {
     items.push(worklistItem('commission_overdue', {
       lead_id: c.lead_id, entity_type: 'commission', entity_id: c.id,
       title: c.name || c.wa_id,
@@ -2720,18 +2779,7 @@ export async function worklist(agentId, now = new Date()) {
 
   // 8. Stale lead: active pipeline, no message either way in 14 days, not Hot.
   const staleExclude = new Set(items.filter((i) => i.type === 'service_window_closing' || i.type === 'hot_lead_waiting').map((i) => i.lead_id))
-  for (const l of (
-    await q(
-      `SELECT l.id, l.name, l.wa_id, l.stage,
-              (SELECT MAX(created_at) FROM messages m WHERE m.lead_id = l.id) AS last_msg_at
-       FROM leads l
-       WHERE l.agent_id = $1 AND l.closed_at IS NULL
-         AND COALESCE(l.stage, 'New') NOT IN ('Registered/Closed','Closed','Lost')
-         AND COALESCE(l.effective_temp, l.temp) IS DISTINCT FROM 'Hot'
-         AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.lead_id = l.id AND m.created_at >= now() - interval '14 days')`,
-      [agentId],
-    )
-  ).rows) {
+  for (const l of staleRows) {
     if (staleExclude.has(l.id)) continue
     items.push(worklistItem('stale_lead', {
       lead_id: l.id, title: l.name || l.wa_id,
@@ -3698,15 +3746,67 @@ export async function autoAssignTeamLead(teamId, leadId, { locality = null } = {
 
 // Distribute every unclaimed lead in the team pool by the team's strategy. Returns
 // how many were placed. For manual/pool strategies nothing is auto-placed.
+// Previously this looped autoAssignTeamLead() per lead, which re-read the team, the
+// member list and the membership check on every iteration — five queries per lead.
+// The team and its members are the same for the whole batch, so they are read once;
+// the round-robin cursor is advanced by the exact number of rotations needed in a
+// single UPDATE; and the placements land in one UPDATE ... FROM unnest.
 export async function distributeTeamPool(teamId) {
   const team = await getTeamById(teamId)
   if (!team || !['round_robin', 'locality'].includes(team.assignment_strategy)) return { assigned: 0 }
   const leads = (await q('SELECT id, locality FROM leads WHERE team_id = $1 AND agent_id IS NULL', [teamId])).rows
-  let assigned = 0
-  for (const lead of leads) {
-    if (await autoAssignTeamLead(teamId, lead.id, { locality: lead.locality })) assigned++
+  if (!leads.length) return { assigned: 0 }
+
+  const members = await assignableMembers(teamId)
+  if (!members.length) return { assigned: 0 }
+
+  // Pass 1: locality matches (locality strategy only). Everything unmatched falls
+  // through to round-robin, exactly as pickByLocality() does per lead.
+  const byLocality = (locality) => {
+    if (!locality) return null
+    const loc = String(locality).toLowerCase().trim()
+    const match = members.find((m) =>
+      (m.localities || []).some((x) => {
+        const s = String(x).toLowerCase().trim()
+        return s && (s.includes(loc) || loc.includes(s))
+      }),
+    )
+    return match ? match.agent_id : null
   }
-  return { assigned }
+
+  const targets = new Map() // lead id -> agent id
+  const rotate = [] // leads that need the round-robin cursor
+  for (const lead of leads) {
+    const direct = team.assignment_strategy === 'locality' ? byLocality(lead.locality) : null
+    if (direct) targets.set(lead.id, direct)
+    else rotate.push(lead)
+  }
+
+  // Advance the shared cursor once, by however many rotations this batch consumes,
+  // so concurrent inbound routing can't be handed the same member we just used.
+  if (rotate.length) {
+    const { rows } = await q(
+      'UPDATE teams SET rr_cursor = rr_cursor + $2, updated_at = now() WHERE id = $1 RETURNING rr_cursor',
+      [teamId, rotate.length],
+    )
+    // The reserved block ends at the returned cursor, so the first lead in this
+    // batch takes the same slot a per-lead loop would have given it.
+    const end = rows[0].rr_cursor
+    const start = end - rotate.length
+    rotate.forEach((lead, i) => {
+      targets.set(lead.id, members[(start + i) % members.length].agent_id)
+    })
+  }
+
+  const ids = [...targets.keys()]
+  const agents = ids.map((id) => targets.get(id))
+  const { rowCount } = await q(
+    `UPDATE leads SET agent_id = v.agent_id, team_id = $1, assigned_at = now(), updated_at = now()
+     FROM unnest($2::int[], $3::int[]) AS v(id, agent_id)
+     WHERE leads.id = v.id AND leads.team_id = $1`,
+    [teamId, ids, agents],
+  )
+  return { assigned: rowCount }
 }
 
 // A member claims an unassigned lead from the shared team inbox.

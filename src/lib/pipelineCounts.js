@@ -2,8 +2,6 @@
 // A lead with no pipeline_type defaults to buy_primary (matches the webhook +
 // LeadsTab filtering). Pure — no React — so it can be unit-tested.
 
-export const PIPELINE_IDS = ['buy_primary', 'buy_resale', 'rental']
-
 export function pipelineCounts(leads = []) {
   const counts = { buy_primary: 0, buy_resale: 0, rental: 0 }
   for (const l of leads) {
