@@ -16,7 +16,7 @@ const { app } = await import('../index.js')
 const { closePool, query, getAgent, getLeadByAgentWaId, recordCtwaReferral, upsertLead } = await import('../db.js')
 const {
   parsePortalEmail, parseLeadgenFields, detectPortal, extractReferral,
-  formatListingForPortal, freeEntryWindow, ingestLead, ingestAddress,
+  formatListingForPortal, freeEntryWindow, ingestLead, ingestAddress, waDeepLink,
 } = await import('../leadSources.js')
 
 let server, base, token, agent
@@ -449,4 +449,126 @@ test('freeEntryWindow reports an open, an expired and an absent window', () => {
 
 test('ingestAddress builds the workspace inbox address from the token', () => {
   assert.match(ingestAddress('abc123'), /^lead-abc123@/)
+})
+
+// --- parser edges that only show up on real portal mail --------------------
+
+// Some providers ship a text/plain part that is only whitespace. Trusting its
+// presence would parse an empty body and lose the lead; the HTML part is the
+// one carrying the fields.
+test('a whitespace-only text part falls through to the HTML body', () => {
+  const parsed = parsePortalEmail({
+    from: 'noreply@99acres.com',
+    subject: 'New Response',
+    text: '   \n\t  ',
+    html: '<p>Name: Meera Joshi</p><p>Mobile: 9876543210</p>',
+  })
+  assert.equal(parsed.phone, '9876543210')
+  assert.equal(parsed.name, 'Meera Joshi')
+})
+
+// The buyer's address is usually labelled, but some templates only drop it inline.
+test('an unlabelled email address is recovered from the body, and absence stays null', () => {
+  const inline = parsePortalEmail({
+    from: 'noreply@housing.com',
+    text: 'Mobile: 9876500011\nWrite to meera.joshi@example.com about this',
+  })
+  assert.equal(inline.email, 'meera.joshi@example.com')
+
+  const none = parsePortalEmail({ from: 'noreply@housing.com', text: 'Mobile: 9876500012\nNo address here' })
+  assert.equal(none.email, null)
+})
+
+// A template with no Name label must still yield the lead — the phone is what matters.
+test('a portal email with no name label still parses, with a null name', () => {
+  const parsed = parsePortalEmail({ from: 'noreply@99acres.com', text: 'Contact: 9876500013' })
+  assert.equal(parsed.phone, '9876500013')
+  assert.equal(parsed.name, null)
+})
+
+// Names arrive with signature blocks and disclaimers glued on. The column is bounded,
+// so an overlong one is truncated rather than dropped or left to blow up the insert.
+test('an overlong name is truncated to 80 characters', () => {
+  const long = 'Ramesh '.repeat(20).trim() // well past 80
+  const parsed = parsePortalEmail({ from: 'noreply@99acres.com', text: `Name: ${long}\nMobile: 9876500014` })
+  assert.equal(parsed.name.length, 80)
+  assert.ok(long.startsWith(parsed.name))
+})
+
+// --- Meta Lead Ads field_data shapes --------------------------------------
+
+test('leadgen fields tolerate a nameless entry and a bare (non-array) value', () => {
+  const parsed = parseLeadgenFields([
+    { values: ['orphan'] }, // no name at all — nothing to key on
+    { name: '', values: ['blank'] }, // empty name, same
+    { name: 'full_name', values: 'Anita Rao' }, // Meta sometimes sends a scalar
+    { name: 'phone_number', values: ['+91 98765 00015'] },
+  ])
+  assert.equal(parsed.name, 'Anita Rao')
+  assert.equal(parsed.phone, '9876500015')
+})
+
+// A number that isn't an Indian mobile still has to reach the agent — we keep the
+// digits rather than dropping the lead on the floor.
+test('a non-mobile leadgen number degrades to its digits', () => {
+  const landline = parseLeadgenFields([{ name: 'phone_number', values: ['020-2233 4455'] }])
+  assert.equal(landline.phone, '02022334455')
+  assert.equal(parseLeadgenFields([{ name: 'name', values: ['No Phone'] }]).phone, null)
+})
+
+// --- referral + deep link edges -------------------------------------------
+
+// An organic post referral carries a source_type and nothing else; the other fields
+// must read null instead of undefined so they store cleanly.
+test('a referral with only a source_type nulls the rest', () => {
+  const r = extractReferral({ referral: { source_type: 'post' } })
+  assert.deepEqual(r, {
+    ctwa_clid: null, source_id: null, source_type: 'post',
+    source_url: null, headline: null, body: null, media_type: null,
+  })
+})
+
+test('waDeepLink omits the query string when there is no opener text', () => {
+  assert.equal(waDeepLink('+91 98765 00016'), 'https://wa.me/919876500016')
+  assert.match(waDeepLink('+91 98765 00016', 'Hi there'), /\?text=Hi%20there$/)
+})
+
+// --- listing formatting edges ---------------------------------------------
+
+test('listing copy defaults the area unit and survives a floor with no building height', () => {
+  const listing = formatListingForPortal(
+    { title: 'Tower flat', locality: 'Baner', city: 'Pune', size_sqft: 1180, floor: 7 },
+    'housing',
+  )
+  assert.match(listing.description, /1180 sqft/, 'a missing size_unit defaults to sqft')
+  assert.match(listing.description, /floor 7\./, 'no "of N" when total_floors is unknown')
+
+  const withUnit = formatListingForPortal(
+    { title: 'Tower flat', size_sqft: 1180, size_unit: 'sqm', floor: 7, total_floors: 14 },
+    'housing',
+  )
+  assert.match(withUnit.description, /1180 sqm/)
+  assert.match(withUnit.description, /floor 7 of 14\./)
+})
+
+// --- an email from a portal we don't recognise -----------------------------
+
+// detectPortal returns null for an unknown sender, so the activity line has no portal
+// to name and falls back to the channel. The lead must still land.
+test('a parseable lead from an unrecognised sender is ingested without a portal', async () => {
+  const fresh = await getAgent(agent.id)
+  const res = await req('POST', `/ingest/email/${fresh.ingest_token}`, {
+    from: 'leads@some-local-portal.in',
+    subject: 'Enquiry received',
+    text: 'Name: Vikram Shetty\nMobile: 9876500017\nProperty: Skyline Residency',
+  })
+  assert.equal(res.status, 200)
+  const body = await res.json()
+  assert.equal(body.ok, true)
+  assert.equal(body.portal, null, 'the sender matched no known portal')
+  assert.ok(body.lead_id)
+
+  const lead = await getLeadByAgentWaId(agent.id, '919876500017')
+  assert.ok(lead, 'the lead landed under its normalized number')
+  assert.equal(lead.source_channel, 'portal_email')
 })

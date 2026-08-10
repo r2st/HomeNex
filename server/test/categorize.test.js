@@ -117,3 +117,81 @@ test('auto-fill reads the stored ai_extracted when no explicit extraction is pas
   const suggestions = buildAutofillSuggestions(lead)
   assert.ok(suggestions.some((s) => s.field === 'bhk' && s.suggested === '2'))
 })
+
+// A model that invents an intent, a BHK or a financing value outside the contract
+// must produce no suggestion for that field rather than offering the agent a value
+// the column will not accept.
+test('auto-fill drops field values the model invented outside the contract', () => {
+  const suggestions = buildAutofillSuggestions(
+    {},
+    { intent: 'timeshare', bhk: '9', financing: 'crypto', timeline: '3 months' },
+  )
+  const fields = suggestions.map((s) => s.field)
+  assert.deepEqual(fields, ['timeline'], 'only the free-text field survives')
+})
+
+// preferred_localities is the primary source; a bare `locality` is the fallback.
+test('auto-fill falls back to a single locality when the list is absent', () => {
+  const [only] = buildAutofillSuggestions({}, { locality: 'Baner' })
+  assert.equal(only.field, 'preferred_localities')
+  assert.deepEqual(only.suggested, ['Baner'])
+  assert.equal(only.suggested_display, 'Baner')
+
+  // An empty list is not a value — with no `locality` to fall back on there is nothing.
+  assert.deepEqual(buildAutofillSuggestions({}, { preferred_localities: [] }), [])
+})
+
+// With no lead at all every suggestion is a change, and `current` reads null rather
+// than throwing on the absent row.
+test('auto-fill against no lead at all suggests everything with a null current', () => {
+  const suggestions = buildAutofillSuggestions(null, { name: 'Nikhil', timeline: 'immediately' })
+  assert.deepEqual(suggestions.map((s) => s.field), ['name', 'timeline'])
+  assert.ok(suggestions.every((s) => s.current === null))
+})
+
+// The DB hands bigint columns back as numeric strings, so the comparison has to be
+// numeric or every budget would look changed on each pass.
+test('auto-fill treats a numeric string and its number as the same value', () => {
+  const same = buildAutofillSuggestions({ budget_max: '800000000' }, { budget_max_l: 80 })
+  assert.deepEqual(same, [], 'the stored string equals the suggested number')
+
+  const changed = buildAutofillSuggestions({ budget_max: '700000000' }, { budget_max_l: 80 })
+  assert.deepEqual(changed.map((s) => s.field), ['budget_max'])
+})
+
+// Non-numeric values fall through to the string compare, and a field that is null on
+// both sides is unchanged rather than a suggestion of null.
+test('auto-fill compares non-numeric values as strings and skips null-to-null', () => {
+  assert.deepEqual(buildAutofillSuggestions({ timeline: '3 months' }, { timeline: '3 months' }), [])
+  assert.deepEqual(buildAutofillSuggestions({ timeline: null }, { timeline: null }), [])
+  const moved = buildAutofillSuggestions({ timeline: '3 months' }, { timeline: 'immediately' })
+  assert.deepEqual(moved.map((s) => s.field), ['timeline'])
+})
+
+// An unchanged locality list must compare structurally, not by reference.
+test('auto-fill compares locality lists structurally', () => {
+  assert.deepEqual(
+    buildAutofillSuggestions({ preferred_localities: ['Wakad', 'Baner'] }, { preferred_localities: ['Wakad', 'Baner'] }),
+    [],
+  )
+  const reordered = buildAutofillSuggestions(
+    { preferred_localities: ['Baner', 'Wakad'] },
+    { preferred_localities: ['Wakad', 'Baner'] },
+  )
+  assert.equal(reordered.length, 1, 'a different order is a different list')
+})
+
+// normalizeInquiry's financing arm mirrors the auto-fill contract.
+test('normalizeInquiry keeps only contract financing values', () => {
+  assert.equal(normalizeInquiry({ intent: 'buy', financing: 'loan' }).financing, 'loan')
+  assert.equal(normalizeInquiry({ intent: 'buy', financing: 'barter' }).financing, null)
+})
+
+// The suggest prompt has to stand up without a broker name or a language hint —
+// that is what an unnamed workspace on an English thread passes.
+test('the suggest prompt degrades gracefully with no broker name or language hint', () => {
+  const p = SUGGEST_PROMPT('', 'intent: buy', '')
+  assert.match(p, /a real estate broker/, 'falls back to a generic broker')
+  assert.ok(!/undefined|null/.test(p), 'no placeholder leaks into the prompt')
+  assert.ok(!/\n\n\n/.test(p.slice(0, 400)), 'the empty language hint leaves no gap')
+})

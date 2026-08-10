@@ -276,6 +276,65 @@ test('the owner cannot be removed — the team is disbanded instead', async () =
   assert.equal((await json(res)).code, 'OWNER_REMOVE')
 })
 
+// --- Team context view --------------------------------------------------------
+
+// Pending invites are a manager's business: they name people who are not on the team
+// yet, so a plain agent's context must come back with that list empty rather than
+// simply hidden in the UI.
+test('the team context shows invites to a manager and hides them from an agent', async () => {
+  await req('POST', '/api/team/invites', { phone: '+919820000077', role: 'agent' }, owner.token)
+
+  for (const who of [owner, manager]) {
+    const ctx = await json(await req('GET', '/api/team', undefined, who.token))
+    assert.ok(ctx.invites.some((i) => i.phone === '+919820000077'), `${ctx.role} sees the pending invite`)
+  }
+
+  const plain = await json(await req('GET', '/api/team', undefined, member.token))
+  assert.equal(plain.role, 'agent')
+  assert.deepEqual(plain.invites, [], 'a plain agent is told nothing about pending invites')
+  assert.ok(plain.members.length >= 3, 'but still sees the roster')
+})
+
+// A request with no JSON content-type leaves req.body undefined. The settings editor
+// has to read that as "nothing to change", not crash destructuring it.
+test('a bodiless settings save changes nothing and keeps the team intact', async () => {
+  const before = await json(await req('GET', '/api/team', undefined, owner.token))
+  const res = await fetch(`${base}/api/team`, {
+    method: 'PUT',
+    headers: { authorization: `Bearer ${owner.token}` },
+  })
+  assert.equal(res.status, 200)
+  const after = await json(res)
+  assert.equal(after.name, before.team.name)
+  assert.equal(after.assignment_strategy, before.team.assignment_strategy)
+})
+
+// --- Manager report filters ---------------------------------------------------
+
+test('the shared inbox filters down to one member', async () => {
+  const lead = await teamLead('Powai 3BHK, filter me')
+  await req('POST', `/api/team/leads/${lead.id}/assign`, { agent_id: manager.agent.id }, manager.token)
+
+  const all = await json(await req('GET', '/api/team/leads', undefined, manager.token))
+  const mine = await json(await req('GET', `/api/team/leads?member=${manager.agent.id}`, undefined, manager.token))
+
+  assert.ok(mine.some((l) => l.id === lead.id), 'the freshly assigned lead is in the filtered view')
+  assert.ok(mine.every((l) => l.agent_id === manager.agent.id), 'and nobody else’s leads are')
+  assert.ok(mine.length < all.length, 'the unfiltered view is strictly wider')
+})
+
+// The stale window defaults to 3 days; a manager can widen or narrow it.
+test('the stale list honours an explicit day window', async () => {
+  const wide = await req('GET', '/api/team/stale?days=90', undefined, manager.token)
+  assert.equal(wide.status, 200)
+  const narrow = await req('GET', '/api/team/stale?days=1', undefined, manager.token)
+  assert.equal(narrow.status, 200)
+  assert.ok((await json(wide)).length >= (await json(narrow)).length, 'a wider window cannot return fewer leads')
+
+  const dflt = await req('GET', '/api/team/stale', undefined, manager.token)
+  assert.equal(dflt.status, 200)
+})
+
 test('the owner disbands the team, and everyone becomes solo again', async () => {
   const res = await req('DELETE', '/api/team', undefined, owner.token)
   assert.equal(res.status, 200)
