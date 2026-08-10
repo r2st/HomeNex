@@ -38,6 +38,15 @@ export function hashPassword(password) {
   return `${salt}:${hash}`
 }
 
+// A password check against an account that doesn't exist still has to cost what a
+// real one costs. scryptSync takes ~100ms; a lookup miss takes microseconds, so
+// returning early on "no such agent" turns login into a reliable oracle for
+// enumerating which numbers hold HomeNex accounts — and in a market where the
+// login id IS the agent's WhatsApp number, that list is worth money to a
+// competitor or a spammer. Every miss is verified against this throwaway hash
+// instead, so hit and miss do the same work.
+const ABSENT_ACCOUNT_HASH = hashPassword(crypto.randomBytes(32).toString('hex'))
+
 export function verifyPassword(password, stored) {
   const [salt, hash] = stored.split(':')
   const candidate = crypto.scryptSync(password, salt, 64)
@@ -97,7 +106,9 @@ export async function signup({ name, phone, email, password, wa_phone_number }) 
 export async function login({ phone, email, password }) {
   // Log in by WhatsApp number (email still accepted for older accounts).
   const row = phone ? await findAgentByPhone(phone) : await findAgentByEmail((email || '').trim())
-  if (!row || !verifyPassword(password || '', row.password_hash)) {
+  // Always verify, even with nothing to verify against — see ABSENT_ACCOUNT_HASH.
+  const ok = verifyPassword(password || '', row ? row.password_hash : ABSENT_ACCOUNT_HASH)
+  if (!row || !ok) {
     throw new Error('Wrong WhatsApp number or password')
   }
   // Checked after the password so a deactivated account can't be discovered by

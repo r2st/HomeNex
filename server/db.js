@@ -163,12 +163,27 @@ const AGENT_COLS =
 export async function createAgent(name, phone, email, passwordHash, waPhoneNumber = null) {
   const pn = waPhoneNumber ? normalizePhone(waPhoneNumber) : null
   if (pn && pn.replace(/\D/g, '').length < 10) throw new Error('Enter a valid WhatsApp Business number')
-  const { rows } = await q(
-    `INSERT INTO agents (name, phone, email, password_hash, wa_phone_number, waba_status, ingest_token)
-     VALUES ($1, $2, $3, $4, $5, $6, substr(md5(random()::text || clock_timestamp()::text), 1, 12))
-     RETURNING id`,
-    [name, normalizePhone(phone), email ? email.toLowerCase() : null, passwordHash, pn, pn ? 'pending' : 'none'],
-  )
+  let rows
+  try {
+    ;({ rows } = await q(
+      `INSERT INTO agents (name, phone, email, password_hash, wa_phone_number, waba_status, ingest_token)
+       VALUES ($1, $2, $3, $4, $5, $6, substr(md5(random()::text || clock_timestamp()::text), 1, 12))
+       RETURNING id`,
+      [name, normalizePhone(phone), email ? email.toLowerCase() : null, passwordHash, pn, pn ? 'pending' : 'none'],
+    ))
+  } catch (e) {
+    // signup checks both of these first, so reaching the constraint means two
+    // signups raced. Surface the same message the pre-check would have, not the
+    // raw Postgres text.
+    if (e.code !== '23505') throw e
+    const err = new Error(
+      e.constraint === 'idx_agents_email_unique'
+        ? 'An account with this email already exists — log in instead'
+        : 'An account with this WhatsApp number already exists — log in instead',
+    )
+    err.code = 'AGENT_EXISTS'
+    throw err
+  }
   // Every workspace starts with the system labels, default quick replies and the
   // curated pre-approved template pack (mirrors the 010 migration seed for new agents).
   await seedWorkspaceDefaults(rows[0].id)
@@ -185,9 +200,11 @@ export async function findAgentByPhone(phone) {
   return rows[0]
 }
 
+// Matched on lower(email) so it rides the unique index from migration 017 (and so
+// a differently-cased address resolves to the one account that owns it).
 export async function findAgentByEmail(email) {
   if (!email) return null
-  const { rows } = await q('SELECT * FROM agents WHERE email = $1', [email.toLowerCase()])
+  const { rows } = await q('SELECT * FROM agents WHERE lower(email) = $1', [email.toLowerCase()])
   return rows[0] || null
 }
 
@@ -841,7 +858,7 @@ export async function updateAgentProfile(agentId, { name, email, phone, is_admin
     const e = String(email || '').trim().toLowerCase() || null
     if (e && !/^\S+@\S+\.\S+$/.test(e)) throw new Error('Enter a valid email address')
     if (e) {
-      const clash = (await q('SELECT id FROM agents WHERE email = $1 AND id != $2', [e, agentId])).rows[0]
+      const clash = (await q('SELECT id FROM agents WHERE lower(email) = $1 AND id != $2', [e, agentId])).rows[0]
       if (clash) {
         const err = new Error('Another agent already uses this email')
         err.code = 'EMAIL_TAKEN'
@@ -869,7 +886,20 @@ export async function updateAgentProfile(agentId, { name, email, phone, is_admin
   }
   if (!updates.length) return agent
   params.push(agentId)
-  await q(`UPDATE agents SET ${updates.join(', ')} WHERE id = $${params.length}`, params)
+  try {
+    await q(`UPDATE agents SET ${updates.join(', ')} WHERE id = $${params.length}`, params)
+  } catch (e) {
+    // The clash checks above are a read, so two edits can still race into the
+    // constraint. Report it as the same conflict rather than a 500.
+    if (e.code !== '23505') throw e
+    const err = new Error(
+      e.constraint === 'idx_agents_email_unique'
+        ? 'Another agent already uses this email'
+        : 'Another agent already uses this phone number',
+    )
+    err.code = e.constraint === 'idx_agents_email_unique' ? 'EMAIL_TAKEN' : 'PHONE_TAKEN'
+    throw err
+  }
   return getAgent(agentId)
 }
 
@@ -998,7 +1028,7 @@ export async function updateAgentProfileSelf(agentId, fields = {}) {
     const email = String(fields.email ?? '').trim().toLowerCase() || null
     if (email && !/^\S+@\S+\.\S+$/.test(email)) fail('Enter a valid email address')
     if (email) {
-      const clash = (await q('SELECT id FROM agents WHERE email = $1 AND id != $2', [email, agentId])).rows[0]
+      const clash = (await q('SELECT id FROM agents WHERE lower(email) = $1 AND id != $2', [email, agentId])).rows[0]
       if (clash) fail('Another agent already uses this email', 'EMAIL_TAKEN')
     }
     set('email', email)
@@ -1017,7 +1047,14 @@ export async function updateAgentProfileSelf(agentId, fields = {}) {
 
   if (!updates.length) return agent
   params.push(agentId)
-  await q(`UPDATE agents SET ${updates.join(', ')} WHERE id = $${params.length}`, params)
+  try {
+    await q(`UPDATE agents SET ${updates.join(', ')} WHERE id = $${params.length}`, params)
+  } catch (e) {
+    // The clash check above is a read; two profile saves can still race into the
+    // unique index. Same conflict, not a 500.
+    if (e.code !== '23505') throw e
+    fail('Another agent already uses this email', 'EMAIL_TAKEN')
+  }
   return getAgent(agentId)
 }
 
