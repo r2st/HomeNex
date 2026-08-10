@@ -80,11 +80,13 @@ export default function BottomNav({ tab, setTab, moreBadge }) {
               }`}
             >
               {t.icon}
-              {badge && (
+              {/* Ternary, not `&&`: a numeric 0 badge would render a bare "0" next
+                  to the tab icon instead of nothing. */}
+              {badge ? (
                 <span className="absolute top-0 right-[22%] min-w-[16px] h-[16px] px-1 rounded-full bg-hot text-white text-[9.5px] font-bold flex items-center justify-center leading-none">
                   {badge}
                 </span>
-              )}
+              ) : null}
               <span className={`text-[10px] ${active ? 'font-bold' : 'font-medium'}`}>{t.label}</span>
             </button>
           )
