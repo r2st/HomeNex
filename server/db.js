@@ -279,15 +279,30 @@ export async function findAgentByPhoneNumberId(phoneNumberId) {
 // --- Contacts: the agent's known clients on the shared WhatsApp number ---
 
 // Shared number routing: find which agent owns an inbound sender's number.
-// Matches on full digits, then on a 10-digit suffix as a fallback.
+// Matches on full digits, then on a 10-digit suffix as a fallback (a client saved
+// as '9812000001' must still route when WhatsApp reports '919812000001').
+//
+// This runs for every message that arrives on the shared number, so it is the
+// hottest read in the product. It used to fetch `SELECT * FROM contacts` — every
+// agent's entire address book — and scan it twice in JavaScript. The digit
+// comparison is now done in SQL against the expression indexes from migration 018,
+// so it reads one row instead of the whole table.
+//
+// The ORDER BY keeps the old priority (an exact digit match beats a suffix match)
+// and settles ties by id, where the JS scan settled them by whatever order the
+// table happened to come back in. Oldest contact wins is at least a rule.
 export async function findContactByWaId(waId) {
   const digits = phoneDigits(waId)
   if (!digits) return null
-  const { rows: contacts } = await q('SELECT * FROM contacts')
-  const exact = contacts.find((c) => phoneDigits(c.phone) === digits)
-  if (exact) return exact
-  const suffix = digits.slice(-10)
-  return contacts.find((c) => phoneDigits(c.phone).slice(-10) === suffix) || null
+  const { rows } = await q(
+    `SELECT * FROM contacts
+      WHERE regexp_replace(phone, '\\D', '', 'g') = $1
+         OR right(regexp_replace(phone, '\\D', '', 'g'), 10) = $2
+      ORDER BY (regexp_replace(phone, '\\D', '', 'g') = $1) DESC, id
+      LIMIT 1`,
+    [digits, digits.slice(-10)],
+  )
+  return rows[0] || null
 }
 
 // Look up a client row by phone (across all agents), used to decide whose list a number is in.

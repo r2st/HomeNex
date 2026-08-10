@@ -24,6 +24,21 @@ const req = (method, url, body, tok = token) =>
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   })
 
+// View recording is fire-and-forget: /p/:slug answers the buyer before the row is
+// written. A fixed sleep is the wrong instrument for that — it was 200ms, which is
+// plenty on an idle machine and not always enough with four test files sharing the
+// box, so this test failed on timing rather than on behaviour. Poll instead: fast
+// when the write lands fast, and only slow on a real failure.
+async function until(fn, what, timeoutMs = 10_000) {
+  const t0 = Date.now()
+  for (;;) {
+    const v = await fn()
+    if (v) return v
+    if (Date.now() - t0 > timeoutMs) throw new Error(`timed out waiting for ${what}`)
+    await new Promise((r) => setTimeout(r, 25))
+  }
+}
+
 before(async () => {
   await new Promise((resolve) => {
     server = app.listen(0, () => {
@@ -89,11 +104,14 @@ test('GET /p/:slug serves the public page with specs, price, RERA and WhatsApp C
 test('page views are tracked as engagement signals', async () => {
   await fetch(`${base}/p/${property.micro_page_slug}`)
   await fetch(`${base}/p/${property.micro_page_slug}`, { headers: { referer: 'https://chat.whatsapp.com/xyz' } })
-  // View recording is fire-and-forget; give it a beat.
-  await new Promise((r) => setTimeout(r, 200))
 
-  const page = await (await req('POST', `/api/properties/${property.id}/micro-page`)).json()
-  assert.ok(page.stats.total >= 3, `expected >=3 views, got ${page.stats.total}`)
+  const page = await until(
+    async () => {
+      const p = await (await req('POST', `/api/properties/${property.id}/micro-page`)).json()
+      return p.stats.total >= 3 ? p : null
+    },
+    'three recorded page views',
+  )
   assert.ok(page.url.endsWith(`/p/${property.micro_page_slug}`))
 
   const { rows } = await query('SELECT referrer FROM property_page_views WHERE property_id = $1 ORDER BY id DESC LIMIT 1', [property.id])
