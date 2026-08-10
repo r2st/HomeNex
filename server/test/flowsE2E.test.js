@@ -169,7 +169,15 @@ test('FLOW inbound WhatsApp message → lead, contact, activity, inbox and dashb
   // Meta must be acked immediately, whatever happens downstream.
   assert.equal(res.status, 200)
 
-  const lead = await until(() => leadByWaId('919611100001'), 'the lead to be created')
+  // The lead row is INSERTed before the buyer message stamps last_inbound_at, so
+  // waiting only for the row races the rest of the pipeline. Wait for the stamp.
+  const lead = await until(
+    async () => {
+      const l = await leadByWaId('919611100001')
+      return l?.last_inbound_at ? l : null
+    },
+    'the lead to be created and its service window anchored',
+  )
 
   // 1. The message itself is persisted against the lead.
   const messages = (await query('SELECT * FROM messages WHERE lead_id = $1 ORDER BY id', [lead.id])).rows
