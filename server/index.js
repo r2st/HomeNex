@@ -2209,6 +2209,11 @@ app.use((err, _req, res, _next) => {
   if (err.type === 'entity.too.large') {
     return res.status(413).json({ error: 'That upload is too large.', code: 'PAYLOAD_TOO_LARGE' })
   }
+  // A client-supplied foreign id that doesn't belong to this agent (db.assertOwned).
+  // 404 rather than 403 — telling them it exists but isn't theirs is itself a leak.
+  if (err.code === 'NOT_OWNED') {
+    return res.status(404).json({ error: err.message, code: 'NOT_FOUND' })
+  }
   console.error('unhandled error', err)
   res.status(500).json({ error: 'Something went wrong on our side. Please try again.', code: 'INTERNAL' })
 })

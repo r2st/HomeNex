@@ -97,6 +97,29 @@ function buildSet(allowed, fields, startIndex = 1) {
   return { sets, params }
 }
 
+// Ownership check for an OPTIONAL foreign key supplied by the client (a deal's
+// property_id, a commission's deal_id, and so on).
+//
+// The row itself is always written with the caller's agent_id, so the row can't
+// be stolen — but the id it *points at* is client-controlled, and these ids are
+// sequential integers, so an agent could point at another agent's row and read
+// the joined columns back out. Enforced here rather than in each route so a new
+// caller cannot forget it.
+//
+// `table` is a code-level literal, never client input.
+async function assertOwned(table, id, agentId, label) {
+  if (id === null || id === undefined || id === '') return null
+  const { rows } = await q(`SELECT 1 FROM ${table} WHERE id = $1 AND agent_id = $2`, [id, agentId])
+  if (!rows.length) {
+    // Deliberately the same message whether the row is missing or belongs to
+    // someone else — the difference would confirm the id exists.
+    const err = new Error(`${label} not found`)
+    err.code = 'NOT_OWNED'
+    throw err
+  }
+  return id
+}
+
 // Canonical storage form for a WhatsApp number: leading "+" and digits only.
 // A bare 10-digit Indian number is assumed to be +91.
 export function normalizePhone(raw) {
@@ -1674,6 +1697,7 @@ export async function festiveRecipients(agentId) {
 
 export async function createSiteVisit(agentId, v) {
   if (!v.lead_id || !v.scheduled_at) throw new Error('lead_id and scheduled_at are required')
+  await assertOwned('properties', v.property_id, agentId, 'property')
   const { rows } = await q(
     `INSERT INTO site_visits (lead_id, property_id, agent_id, scheduled_at, pickup_required, pickup_location, builder_preregistered)
      VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
@@ -1711,7 +1735,7 @@ export async function listSiteVisits(agentId, { leadId = null, status = '', toda
     `SELECT v.*, l.name AS lead_name, l.wa_id AS lead_wa_id, p.title AS property_title, p.locality AS property_locality
      FROM site_visits v
      JOIN leads l ON l.id = v.lead_id
-     LEFT JOIN properties p ON p.id = v.property_id
+     LEFT JOIN properties p ON p.id = v.property_id AND p.agent_id = v.agent_id
      WHERE ${where.join(' AND ')}
      ORDER BY v.scheduled_at`,
     params,
@@ -1720,6 +1744,7 @@ export async function listSiteVisits(agentId, { leadId = null, status = '', toda
 }
 
 export async function updateSiteVisit(id, agentId, fields) {
+  if ('property_id' in fields) await assertOwned('properties', fields.property_id, agentId, 'property')
   const { sets, params } = buildSet(
     {
       scheduled_at: 'timestamptz',
@@ -1863,6 +1888,7 @@ const withAmount = (c) => (c ? { ...c, amount_paise: commissionAmountPaise(c) } 
 
 export async function createCommission(agentId, c) {
   if (!c.lead_id) throw new Error('lead_id is required')
+  await assertOwned('deals', c.deal_id, agentId, 'deal')
   const { rows } = await q(
     `INSERT INTO commissions (lead_id, agent_id, deal_id, deal_value_paise, commission_pct, commission_flat_paise,
                               payer_type, builder_name, expected_payout_date, status, notes)
@@ -1901,6 +1927,7 @@ export async function getCommission(id, agentId) {
 }
 
 export async function updateCommission(id, agentId, fields) {
+  if ('deal_id' in fields) await assertOwned('deals', fields.deal_id, agentId, 'deal')
   const { sets, params } = buildSet(
     {
       deal_id: 'bigint',
@@ -1983,6 +2010,7 @@ export async function captureDealForLead(lead) {
 
 export async function createDeal(agentId, d) {
   if (!d.lead_id) throw new Error('lead_id is required')
+  await assertOwned('properties', d.property_id, agentId, 'property')
   const { rows } = await q(
     `INSERT INTO deals (agent_id, lead_id, property_id, deal_type, builder_name,
                         deal_value_paise, monthly_rent_paise, stage_captured, status, notes)
@@ -2019,7 +2047,7 @@ export async function listDeals(agentId, { status = '', dealType = '' } = {}) {
       `SELECT d.*, l.name AS lead_name, l.wa_id AS lead_wa_id, p.title AS property_title
        FROM deals d
        JOIN leads l ON l.id = d.lead_id
-       LEFT JOIN properties p ON p.id = d.property_id
+       LEFT JOIN properties p ON p.id = d.property_id AND p.agent_id = d.agent_id
        WHERE ${clauses.join(' AND ')}
        ORDER BY d.created_at DESC`,
       params,
@@ -2033,7 +2061,7 @@ export async function getDeal(id, agentId) {
       `SELECT d.*, l.name AS lead_name, l.wa_id AS lead_wa_id, p.title AS property_title
        FROM deals d
        JOIN leads l ON l.id = d.lead_id
-       LEFT JOIN properties p ON p.id = d.property_id
+       LEFT JOIN properties p ON p.id = d.property_id AND p.agent_id = d.agent_id
        WHERE d.id = $1 AND d.agent_id = $2`,
       [id, agentId],
     )
@@ -2041,6 +2069,7 @@ export async function getDeal(id, agentId) {
 }
 
 export async function updateDeal(id, agentId, fields) {
+  if ('property_id' in fields) await assertOwned('properties', fields.property_id, agentId, 'property')
   const { sets, params } = buildSet(
     {
       property_id: 'bigint',
@@ -2075,7 +2104,7 @@ export async function builderReceivables(agentId) {
               ${amountExpr} AS amount,
               ${daysExpr} AS days
        FROM commissions c
-       LEFT JOIN deals d ON d.id = c.deal_id
+       LEFT JOIN deals d ON d.id = c.deal_id AND d.agent_id = c.agent_id
        WHERE c.agent_id = $1 AND c.payer_type = 'builder' AND c.status IN ('expected','invoiced','overdue')
      )
      SELECT builder_name,
@@ -2584,7 +2613,7 @@ export async function worklist(agentId, now = new Date()) {
     await q(
       `SELECT v.id, v.scheduled_at, l.id AS lead_id, l.name, l.wa_id, p.title
        FROM site_visits v JOIN leads l ON l.id = v.lead_id
-       LEFT JOIN properties p ON p.id = v.property_id
+       LEFT JOIN properties p ON p.id = v.property_id AND p.agent_id = v.agent_id
        WHERE v.agent_id = $1 AND v.status = 'scheduled'
          AND v.scheduled_at BETWEEN now() AND now() + interval '48 hours'`,
       [agentId],
