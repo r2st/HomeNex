@@ -81,28 +81,63 @@ export function fmtPaise(paise) {
   return `₹${(Number(paise) / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
-// SQLite stores UTC "YYYY-MM-DD HH:MM:SS"; render as local.
-export function fmtDate(sqliteUtc) {
-  if (!sqliteUtc) return '—'
-  const d = new Date(sqliteUtc.replace(' ', 'T') + 'Z')
-  return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+// The API sends timestamps in two shapes, and the old code — written against SQLite's
+// zoneless "YYYY-MM-DD HH:MM:SS" — appended a 'Z' to both.
+//
+//   TIMESTAMPTZ  pg parses to a JS Date, so JSON.stringify emits ISO-8601 with a zone
+//                already on it: "2026-08-10T14:23:45.123Z". Appending another 'Z' gave
+//                "…ZZ", which is Invalid Date. Every timestamp in the portal — joined,
+//                registered, last active, ticket replies — rendered as "Invalid Date",
+//                and fmtAgo rendered "NaNd ago".
+//   DATE         Deliberately left as a plain "2026-07-01" string by the type parser in
+//                server/db.js, so a payout date cannot slide a day across zones. "…Z"
+//                made those Invalid Date too.
+//
+// So: parse what actually arrives, and render a date-only value as written rather than
+// putting it through a timezone at all — converting it is the very off-by-one the
+// server's type parser exists to avoid.
+const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/
+const LEGACY_SQLITE = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/
+
+function toDate(value) {
+  if (value == null || value === '') return null
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value
+  const s = String(value)
+  const only = s.match(DATE_ONLY)
+  // Local midnight, not UTC midnight: new Date('2026-07-01') is the latter, and renders
+  // as 30 June anywhere west of Greenwich.
+  if (only) return new Date(Number(only[1]), Number(only[2]) - 1, Number(only[3]))
+  // A row imported from the old SQLite database still has no zone marker, and meant UTC.
+  const d = new Date(LEGACY_SQLITE.test(s) ? `${s.replace(' ', 'T')}Z` : s)
+  return Number.isNaN(d.getTime()) ? null : d
 }
 
-export function fmtDateTime(sqliteUtc) {
-  if (!sqliteUtc) return '—'
-  const d = new Date(sqliteUtc.replace(' ', 'T') + 'Z')
-  return d.toLocaleString('en-IN', {
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  })
+export function fmtDate(value) {
+  const d = toDate(value)
+  // '—' rather than "Invalid Date": an unparseable value is missing information, and
+  // saying so is more use to whoever is reading the portal than the words themselves.
+  return d ? d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'
 }
 
-export function fmtAgo(sqliteUtc) {
-  if (!sqliteUtc) return '—'
-  const s = (Date.now() - new Date(sqliteUtc.replace(' ', 'T') + 'Z').getTime()) / 1000
+export function fmtDateTime(value) {
+  const d = toDate(value)
+  return d
+    ? d.toLocaleString('en-IN', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+      })
+    : '—'
+}
+
+export function fmtAgo(value) {
+  const d = toDate(value)
+  if (!d) return '—'
+  const s = (Date.now() - d.getTime()) / 1000
+  // A clock skew between the server and this browser can put a "just created" row a few
+  // seconds into the future; "just now" is the honest reading of that, not "-1m ago".
   if (s < 60) return 'just now'
   if (s < 3600) return `${Math.floor(s / 60)}m ago`
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`
