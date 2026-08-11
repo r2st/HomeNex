@@ -342,13 +342,41 @@ test('a lead cannot be assigned to, or claimed by, someone outside the team', as
 // membership and holds it open. The guard reads committed rows so it sees nothing
 // and lets the caller through; the INSERT then blocks on the uncommitted index
 // entry; committing the rival turns that block into the unique violation.
+// The role must be one the team_members CHECK actually allows ('owner','manager',
+// 'agent'); an invalid one fails this INSERT instead of the one under test, which
+// looks like the race never happened.
+//
+// Anything that throws in here has to hand the client back. A raw pool client
+// abandoned mid-transaction is never returned to the pool, so closePool() in the
+// after() hook waits on it forever — one bad INSERT here hangs the whole file, and
+// under `--test-concurrency` it hangs the run rather than failing it.
 const holdMembership = async (teamId, agentId) => {
   const racer = await pool.connect()
-  await racer.query('BEGIN')
-  await racer.query('INSERT INTO team_members (team_id, agent_id, role) VALUES ($1, $2, $3)', [teamId, agentId, 'member'])
+  try {
+    await racer.query('BEGIN')
+    await racer.query('INSERT INTO team_members (team_id, agent_id, role) VALUES ($1, $2, $3)', [teamId, agentId, 'agent'])
+  } catch (e) {
+    await racer.query('ROLLBACK').catch(() => {})
+    racer.release()
+    throw e
+  }
+  let done = false
   return {
     async commit() {
-      await racer.query('COMMIT')
+      if (done) return
+      done = true
+      try {
+        await racer.query('COMMIT')
+      } finally {
+        racer.release()
+      }
+    },
+    // Called from after() so a failed assertion between hold and commit still
+    // frees the client instead of hanging the file on closePool().
+    async release() {
+      if (done) return
+      done = true
+      await racer.query('ROLLBACK').catch(() => {})
       racer.release()
     },
   }
@@ -358,13 +386,17 @@ test('a membership taken mid-createTeam is ALREADY_IN_TEAM, and leaves no orphan
   const rival = await createTeam(stranger.id, 'Rival Realty')
   const held = await holdMembership(rival.id, owner.id)
 
-  // Settled into a value up front: the rejection lands during the wait below, and an
-  // unhandled one would fail the run before the assertion ever sees it.
-  const attempt = createTeam(owner.id, 'Doomed Realty').then(() => null, (e) => e)
-  await new Promise((r) => setTimeout(r, 150))
-  await held.commit()
-
-  const err = await attempt
+  let err
+  try {
+    // Settled into a value up front: the rejection lands during the wait below, and an
+    // unhandled one would fail the run before the assertion ever sees it.
+    const attempt = createTeam(owner.id, 'Doomed Realty').then(() => null, (e) => e)
+    await new Promise((r) => setTimeout(r, 150))
+    await held.commit()
+    err = await attempt
+  } finally {
+    await held.release() // no-op once committed; frees the client if we threw first
+  }
   assert.ok(err, 'the create succeeded even though the membership was gone')
   assert.equal(err.code, 'ALREADY_IN_TEAM')
   assert.match(err.message, /already in a team/)
@@ -377,17 +409,21 @@ test('a membership taken mid-createTeam is ALREADY_IN_TEAM, and leaves no orphan
 
 test('a membership taken mid-accept is ALREADY_IN_TEAM, and the invite stays pending', async () => {
   const team = await createTeam(owner.id, 'Invite Realty')
-  await inviteToTeam(team.id, owner.id, { phone: member.phone, role: 'member' })
+  await inviteToTeam(team.id, owner.id, { phone: member.phone, role: 'agent' })
   const [invite] = await listIncomingInvites(member.phone)
 
   const rival = await createTeam(stranger.id, 'Faster Realty')
   const held = await holdMembership(rival.id, member.id)
 
-  const attempt = respondToInvite(invite.id, member, true).then(() => null, (e) => e)
-  await new Promise((r) => setTimeout(r, 150))
-  await held.commit()
-
-  const err = await attempt
+  let err
+  try {
+    const attempt = respondToInvite(invite.id, member, true).then(() => null, (e) => e)
+    await new Promise((r) => setTimeout(r, 150))
+    await held.commit()
+    err = await attempt
+  } finally {
+    await held.release()
+  }
   assert.ok(err, 'the accept succeeded even though the membership was gone')
   assert.equal(err.code, 'ALREADY_IN_TEAM')
 
