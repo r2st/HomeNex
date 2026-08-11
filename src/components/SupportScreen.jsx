@@ -90,7 +90,7 @@ function TicketThread({ id, onBack }) {
       </div>
       {ticket.status !== 'closed' && (
         <div className="flex gap-2 mt-3">
-          <input className={inputCls} value={reply} onChange={(e) => setReply(e.target.value)} placeholder="Reply…" onKeyDown={(e) => e.key === 'Enter' && send()} />
+          <input className={inputCls} value={reply} onChange={(e) => setReply(e.target.value)} aria-label="Reply to HomeNex support" placeholder="Reply…" onKeyDown={(e) => e.key === 'Enter' && send()} />
           <button onClick={send} className="bg-brand text-white font-bold text-[13px] rounded-xl px-4 active:scale-95 transition">Send</button>
         </div>
       )}

@@ -7,7 +7,7 @@ export function StatusBadge({ status }) {
 
 export function WabaFilter({ value, onChange }) {
   return (
-    <select value={value} onChange={(e) => onChange(e.target.value)}>
+    <select value={value} onChange={(e) => onChange(e.target.value)} aria-label="Filter by WABA status">
       <option value="">All WABA statuses</option>
       {WABA_STATUSES.map((s) => (
         <option key={s} value={s}>

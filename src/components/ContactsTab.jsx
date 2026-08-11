@@ -76,7 +76,14 @@ function ContactDetail({ contactId, onClose, onOpenLead }) {
               {contact.notes || <span className="text-ink-faint">No notes yet.</span>}
             </p>
           ) : (
-            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} className={inputCls} autoFocus />
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              rows={3}
+              aria-label="Notes about this contact"
+              className={inputCls}
+              autoFocus
+            />
           )}
         </section>
 
@@ -150,6 +157,7 @@ function BlastSheet({ group, onClose, onSent }) {
         onChange={(e) => setMessage(e.target.value)}
         rows={4}
         autoFocus
+        aria-label={`Message to send to the "${group.name}" group`}
         placeholder="Type your message…"
         className={`${inputCls} resize-none`}
       />

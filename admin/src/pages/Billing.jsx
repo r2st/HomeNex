@@ -60,7 +60,7 @@ export default function Billing() {
 
       <div className="section-title">Per-agent billing</div>
       <div className="toolbar">
-        <select value={sel} onChange={(e) => loadBilling(e.target.value)}>
+        <select value={sel} onChange={(e) => loadBilling(e.target.value)} aria-label="Agent to show billing for">
           <option value="">Select an agent…</option>
           {agents.map((a) => (
             <option key={a.id} value={a.id}>{a.name} ({a.phone})</option>
@@ -75,6 +75,7 @@ export default function Billing() {
               <strong>Plan:</strong>
               <select
                 value={billing.subscription?.plan_id || ''}
+                aria-label="Subscription plan for this agent"
                 onChange={(e) => act(() => api.setSubscription(sel, Number(e.target.value)))}
               >
                 <option value="" disabled>Assign a plan…</option>

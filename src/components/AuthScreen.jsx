@@ -109,6 +109,10 @@ export default function AuthScreen({ onAuthed }) {
               inputMode="numeric"
               value={form.phone}
               onChange={(e) => setPhone(e.target.value)}
+              // The wrapping <label> names the country-code box beside this one — a
+              // label with no `for` reaches its first labelable descendant and stops —
+              // so without this the actual phone field announces as a bare "edit".
+              aria-label="Phone number"
               placeholder="98xxx xxxxx"
               autoComplete="tel-national"
               required

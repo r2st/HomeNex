@@ -107,6 +107,7 @@ function NotesSheet({ lead, onClose, onChanged }) {
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         rows={2}
+        aria-label="Add a private note"
         placeholder="Add a private note…"
         className={inputCls + ' resize-none'}
       />
@@ -491,6 +492,7 @@ function Conversation({ leadId, onBack }) {
                   }
                 }}
                 rows={1}
+                aria-label={`Reply to ${lead.name || 'buyer'} on WhatsApp`}
                 placeholder={`Reply to ${lead.name || 'buyer'} on WhatsApp…`}
                 className="flex-1 resize-none bg-white border border-line rounded-2xl px-4 py-3 text-[13.5px] outline-none focus:border-brand/50"
               />

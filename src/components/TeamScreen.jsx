@@ -201,9 +201,10 @@ function Members({ ctx, reload }) {
               className={inputCls}
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
+              aria-label="Teammate's WhatsApp number"
               placeholder="WhatsApp number"
             />
-            <select value={role} onChange={(e) => setRole(e.target.value)} className={`${inputCls} w-32`}>
+            <select value={role} onChange={(e) => setRole(e.target.value)} aria-label="Role for the new teammate" className={`${inputCls} w-32`}>
               <option value="agent">Agent</option>
               <option value="manager">Manager</option>
             </select>
@@ -294,6 +295,10 @@ function Inbox({ ctx, reload }) {
               <span className="flex-1" />
               <select
                 defaultValue=""
+                // Every row on this board carries one of these, so the name has to say
+                // WHICH lead is being handed over — a screen full of controls all
+                // announcing "Assign to…" tells the agent nothing about which is which.
+                aria-label={`${l.unassigned ? 'Assign' : 'Reassign'} ${l.name || l.wa_id} to a teammate`}
                 onChange={(e) => e.target.value && act(() => api.assignTeamLead(l.id, Number(e.target.value)))}
                 className="text-[11px] bg-white border border-line rounded-lg px-2 py-1 outline-none"
               >

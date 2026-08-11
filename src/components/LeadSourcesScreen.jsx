@@ -81,6 +81,7 @@ function PortalRow({ portal, integration, onSaved }) {
         <input
           value={apiKey}
           onChange={(e) => setApiKey(e.target.value)}
+          aria-label={`Connection key for ${portal.label}`}
           placeholder={integration?.has_api_key ? 'Replace connection key…' : 'Paste connection key…'}
           className={inputCls}
         />
@@ -229,7 +230,7 @@ export default function LeadSourcesScreen() {
                 leads to you.
               </p>
               <div className="flex gap-2">
-                <input value={formId} onChange={(e) => setFormId(e.target.value)} placeholder="Ad form id" className={inputCls} />
+                <input value={formId} onChange={(e) => setFormId(e.target.value)} aria-label="Facebook or Instagram ad form id" placeholder="Ad form id" className={inputCls} />
                 <button
                   onClick={mapForm}
                   disabled={!formId.trim()}

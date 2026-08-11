@@ -77,6 +77,7 @@ function Detail({ id, onChange }) {
       <div style={{ display: 'flex', gap: 8 }}>
         <input
           style={{ flex: 1, padding: 8 }}
+          aria-label="Reply to the agent"
           placeholder="Reply to the agent…"
           value={reply}
           onChange={(e) => setReply(e.target.value)}
@@ -104,7 +105,7 @@ export default function Tickets() {
       {error && <div className="error-box">{error}</div>}
 
       <div className="toolbar">
-        <select value={status} onChange={(e) => setStatus(e.target.value)}>
+        <select value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Filter tickets by status">
           {STATUSES.map((s) => (
             <option key={s} value={s}>{s ? s[0].toUpperCase() + s.slice(1) : 'All statuses'}</option>
           ))}

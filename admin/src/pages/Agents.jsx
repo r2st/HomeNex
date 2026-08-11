@@ -38,6 +38,7 @@ export default function Agents() {
       <div className="toolbar">
         <input
           type="search"
+          aria-label="Search agents by name, email or phone"
           placeholder="Search name, email or phone…"
           value={search}
           onChange={(e) => changeFilter(setSearch)(e.target.value)}

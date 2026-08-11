@@ -91,7 +91,7 @@ function LostReasonSheet({ onClose, onPick }) {
           </button>
         ))}
         <div className="flex gap-2">
-          <input value={custom} onChange={(e) => setCustom(e.target.value)} placeholder="Other reason…" className={inputCls} />
+          <input value={custom} onChange={(e) => setCustom(e.target.value)} aria-label="Another reason this lead was lost" placeholder="Other reason…" className={inputCls} />
           <button
             onClick={() => custom.trim() && onPick(custom.trim())}
             className="shrink-0 bg-ink text-cream font-bold text-[13px] rounded-xl px-4 active:scale-95 transition"

@@ -74,6 +74,7 @@ function StagePicker({ lead, onClose, onMoved }) {
             <input
               value={customReason}
               onChange={(e) => setCustomReason(e.target.value)}
+              aria-label="Another reason this lead was lost"
               placeholder="Other reason…"
               className={inputCls}
             />
@@ -398,8 +399,8 @@ function FollowupsSection({ lead, refresh }) {
       </div>
       {custom && (
         <form onSubmit={add} className="space-y-2 mb-3">
-          <input type="datetime-local" value={dueAt} onChange={(e) => setDueAt(e.target.value)} className={inputCls} required />
-          <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note (optional)" className={inputCls} />
+          <input type="datetime-local" value={dueAt} onChange={(e) => setDueAt(e.target.value)} aria-label="Follow-up date and time" className={inputCls} required />
+          <input value={note} onChange={(e) => setNote(e.target.value)} aria-label="Follow-up note (optional)" placeholder="Note (optional)" className={inputCls} />
           {error && <p className="text-[12px] text-hot bg-amber-wash rounded-xl px-3.5 py-2.5">{error}</p>}
           <button type="submit" className="w-full bg-brand text-white font-bold text-[13px] rounded-full py-2.5 active:scale-[0.99] transition">
             Schedule follow-up
@@ -488,8 +489,8 @@ function SiteVisitsSection({ lead, refresh }) {
       </div>
       {adding && (
         <form onSubmit={add} className="space-y-2 mb-3">
-          <input type="datetime-local" value={form.scheduled_at} onChange={(e) => setForm((s) => ({ ...s, scheduled_at: e.target.value }))} className={inputCls} required />
-          <select value={form.property_id} onChange={(e) => setForm((s) => ({ ...s, property_id: e.target.value }))} className={inputCls}>
+          <input type="datetime-local" value={form.scheduled_at} onChange={(e) => setForm((s) => ({ ...s, scheduled_at: e.target.value }))} aria-label="Site visit date and time" className={inputCls} required />
+          <select value={form.property_id} onChange={(e) => setForm((s) => ({ ...s, property_id: e.target.value }))} aria-label="Property to visit (optional)" className={inputCls}>
             <option value="">Property (optional)</option>
             {properties.map((p) => (
               <option key={p.id} value={p.id}>

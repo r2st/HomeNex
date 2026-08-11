@@ -45,6 +45,7 @@ export default function Templates() {
           </p>
           <input
             style={{ width: '100%', padding: 8, marginBottom: 8 }}
+            aria-label={`Review note for the "${t.name}" template`}
             placeholder="Review note (shown to the agent on rejection)"
             value={note[t.id] || ''}
             onChange={(e) => setNote((n) => ({ ...n, [t.id]: e.target.value }))}
