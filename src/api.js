@@ -211,7 +211,12 @@ export const api = {
   microPage: (propertyId) => post(`/api/properties/${propertyId}/micro-page`, {}),
   setAi: (id, enabled) => post(`/api/leads/${id}/ai`, { enabled }),
   assignLead: (id) => post(`/api/leads/${id}/assign`, {}),
-  contacts: (search) => get(`/api/contacts${qs({ q: search })}`),
+  // Paged. Pass { q, source, limit, offset }. The server defaults to the first 100 and
+  // caps at 500, so a caller that wants the total must ask contactCount() rather than
+  // measuring the array it got back.
+  contacts: (filters) => get(`/api/contacts${qs(filters)}`),
+  // { total }
+  contactCount: (filters) => get(`/api/contacts/count${qs(filters)}`),
   contact: (id) => get(`/api/contacts/${id}`),
   updateContact: (id, body) => put(`/api/contacts/${id}`, body),
   deleteContact: (id) => del(`/api/contacts/${id}`),

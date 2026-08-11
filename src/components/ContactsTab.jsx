@@ -261,14 +261,21 @@ function GroupsPanel() {
 export default function ContactsTab({ onOpenLead }) {
   const [q, setQ] = useState('')
   const [selectedId, setSelectedId] = useState(null)
-  const { data: contacts, error, loading } = usePoll(() => api.contacts(q), 6000, [q])
+  const { data: contacts, error, loading } = usePoll(() => api.contacts({ q }), 6000, [q])
+  // The list is one page now, so its length is no longer the total. Polled less often
+  // than the list because a number that fell off the end of page one is not news.
+  const { data: count } = usePoll(() => api.contactCount({ q }), 15000, [q])
+  const total = count?.total ?? null
+  const shown = contacts?.length ?? 0
 
   return (
     <div className="px-5 pt-7">
       <header className="rise">
         <h1 className="font-display text-[28px] font-semibold text-ink">Contacts</h1>
         <p className="text-[13px] text-ink-soft mt-0.5">
-          {contacts ? `${contacts.length} auto-captured from WhatsApp` : 'Loading…'}
+          {total === null
+            ? 'Loading…'
+            : `${total.toLocaleString('en-IN')} ${q ? 'matching' : 'auto-captured from WhatsApp'}`}
         </p>
       </header>
 
@@ -329,6 +336,16 @@ export default function ContactsTab({ onOpenLead }) {
           </button>
         ))}
       </div>
+
+      {/* Without this the list simply stops at 100 and looks like the whole of it.
+          Search is the way through, not a pager: the numbers past the first page are
+          the ones nobody has messaged in months, so scrolling to them finds nothing
+          that typing a name would not have found faster. */}
+      {total !== null && total > shown && (
+        <p className="mt-4 text-center text-[12px] text-ink-faint">
+          Showing the {shown.toLocaleString('en-IN')} most recent of {total.toLocaleString('en-IN')} — search to find the rest.
+        </p>
+      )}
 
       {selectedId && (
         <ContactDetail

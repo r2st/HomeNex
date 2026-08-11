@@ -314,17 +314,19 @@ export async function getContactByPhone(phone) {
 
 // List an agent's clients, annotated with whether that number has ever messaged.
 // q searches name/phone (substring); source filters on how the contact was captured.
-export async function listContacts(agentId, { search = '', source = '' } = {}) {
-  const where = ['c.agent_id = $1']
-  const params = [agentId]
-  if (search) {
-    params.push(`%${search}%`)
-    where.push(`(c.name ILIKE $${params.length} OR c.phone LIKE $${params.length})`)
-  }
-  if (source) {
-    params.push(source)
-    where.push(`c.source = $${params.length}`)
-  }
+//
+// Paged by default, like the lead list and for the sharper of the two reasons. The
+// contact row is narrow, but every row costs two correlated subqueries over messages
+// and leads, so the price of this query is paid per row returned — and the Contacts
+// screen re-runs it every 6 seconds. Unbounded, an agent with 10k captured numbers was
+// making postgres do 20k index scans a poll to render a screen that shows about eight.
+// Callers that want the true total ask contactCount() rather than measuring the array.
+export async function listContacts(agentId, { search = '', source = '', limit, offset } = {}) {
+  const { where, params } = contactFilter(agentId, search, source)
+  params.push(pageLimit(limit))
+  const limitParam = `$${params.length}`
+  params.push(pageOffset(offset))
+  const offsetParam = `$${params.length}`
   const { rows } = await q(
     // Both subqueries match a lead by phone number, and both must ALSO match on
     // agent_id. Without it they matched every agent's lead for that number: the same
@@ -341,10 +343,44 @@ export async function listContacts(agentId, { search = '', source = '' } = {}) {
           WHERE l.agent_id = c.agent_id AND l.wa_id = replace(c.phone, '+', '')) AS last_at
      FROM contacts c
      WHERE ${where.join(' AND ')}
-     ORDER BY c.last_message_at DESC NULLS LAST, c.created_at DESC`,
+     -- id breaks the tie, for the same reason it does in listLeads: neither
+     -- last_message_at nor created_at is unique — a batch import stamps a whole set of
+     -- contacts within the same millisecond — and a non-deterministic sort makes OFFSET
+     -- paging drop and duplicate rows across pages.
+     ORDER BY c.last_message_at DESC NULLS LAST, c.created_at DESC, c.id DESC
+     LIMIT ${limitParam} OFFSET ${offsetParam}`,
     params,
   )
   return rows
+}
+
+// The WHERE that listContacts and contactCount must agree on. Shared so the count can
+// never describe a different set of rows than the page it accompanies — the header
+// saying 900 while the filter that produced the list matched 3.
+function contactFilter(agentId, search, source) {
+  const where = ['c.agent_id = $1']
+  const params = [agentId]
+  if (search) {
+    params.push(`%${search}%`)
+    where.push(`(c.name ILIKE $${params.length} OR c.phone LIKE $${params.length})`)
+  }
+  if (source) {
+    params.push(source)
+    where.push(`c.source = $${params.length}`)
+  }
+  return { where, params }
+}
+
+// How many contacts match, without shipping them. This is what lets the Contacts header
+// say "1,204 auto-captured from WhatsApp" while the list below holds one page — the
+// count the screen used to get by calling .length on an unbounded response.
+export async function contactCount(agentId, { search = '', source = '' } = {}) {
+  const { where, params } = contactFilter(agentId, search, source)
+  const { rows } = await q(
+    `SELECT COUNT(*)::int AS total FROM contacts c WHERE ${where.join(' AND ')}`,
+    params,
+  )
+  return { total: rows[0].total }
 }
 
 // Contact detail: the contact row plus every lead linked to it (or matching its number).
@@ -635,29 +671,29 @@ export async function logActivity(agentId, leadId, kind, text) {
   ])
 }
 
-// How many leads one page of GET /api/leads returns when the caller doesn't say, and
-// the most it will return however loudly the caller asks. The list row is wide (every
+// How many rows one page of a polled list returns when the caller doesn't say, and the
+// most it will return however loudly the caller asks. The lead list row is wide (every
 // lead column plus the last message, the unread count and the labels), so an agent
 // with 10k leads used to be served a ~12MB JSON body on a phone, every 4 seconds, from
 // two screens at once. 100 fills the longest screen twice over; 500 is the ceiling for
 // the rare caller that genuinely wants a big page.
-export const LEADS_PAGE_DEFAULT = 100
-export const LEADS_PAGE_MAX = 500
+export const PAGE_DEFAULT = 100
+export const PAGE_MAX = 500
 
-// Clamp a caller-supplied page size to [1, LEADS_PAGE_MAX]. Anything that isn't a
-// positive number — absent, '', 'all', NaN, 0, negative — falls back to the default
-// rather than erroring, so an old client that never learned about paging keeps working
-// and simply gets the first page.
-export function leadsPageLimit(raw, fallback = LEADS_PAGE_DEFAULT) {
+// Clamp a caller-supplied page size to [1, PAGE_MAX]. Anything that isn't a positive
+// number — absent, '', 'all', NaN, 0, negative — falls back to the default rather than
+// erroring, so an old client that never learned about paging keeps working and simply
+// gets the first page.
+export function pageLimit(raw, fallback = PAGE_DEFAULT) {
   const n = Math.floor(Number(raw))
   // Infinity is deliberately not a fallback case: `?limit=Infinity` is a caller asking
   // for as much as it can get, and the answer to that is the cap, not the default.
   if (Number.isNaN(n) || n < 1) return fallback
-  return Math.min(n, LEADS_PAGE_MAX)
+  return Math.min(n, PAGE_MAX)
 }
 
 // Same idea for the offset: a missing or nonsensical value means "start at the top".
-export function leadsPageOffset(raw) {
+export function pageOffset(raw) {
   const n = Math.floor(Number(raw))
   return Number.isFinite(n) && n > 0 ? n : 0
 }
@@ -665,7 +701,7 @@ export function leadsPageOffset(raw) {
 // The agent's own leads plus the shared unassigned pool. `unassigned` flags pool rows;
 // `contact_name` is the client name from the agent's contacts, when the sender is known.
 //
-// Paged by default (see LEADS_PAGE_DEFAULT). `search` matches the lead name, the phone
+// Paged by default (see PAGE_DEFAULT). `search` matches the lead name, the phone
 // number, or the agent's own contact name for that number — server-side, because a
 // client filtering a page it was handed can only ever search the first page.
 export async function listLeads(
@@ -695,9 +731,9 @@ export async function listLeads(
                    WHERE c.agent_id = $1 AND replace(c.phone, '+', '') = l.wa_id
                      AND c.name ILIKE ${like}))`)
   }
-  params.push(leadsPageLimit(limit))
+  params.push(pageLimit(limit))
   const limitParam = `$${params.length}`
-  params.push(leadsPageOffset(offset))
+  params.push(pageOffset(offset))
   const offsetParam = `$${params.length}`
   const { rows } = await q(
     `SELECT l.*,
@@ -4218,9 +4254,9 @@ export async function teamLeads(
   }
   // Paged for the same reason the agent's own list is: a manager's view spans every
   // member of the team, so it is the larger of the two, not the smaller.
-  params.push(leadsPageLimit(limit))
+  params.push(pageLimit(limit))
   const limitParam = `$${params.length}`
-  params.push(leadsPageOffset(offset))
+  params.push(pageOffset(offset))
   const offsetParam = `$${params.length}`
   return (
     await q(

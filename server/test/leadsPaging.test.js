@@ -21,10 +21,10 @@ const {
   addContact,
   listLeads,
   leadCounts,
-  leadsPageLimit,
-  leadsPageOffset,
-  LEADS_PAGE_DEFAULT,
-  LEADS_PAGE_MAX,
+  pageLimit,
+  pageOffset,
+  PAGE_DEFAULT,
+  PAGE_MAX,
 } = db
 
 let server
@@ -89,30 +89,30 @@ after(async () => {
 
 // --- The clamp helpers ------------------------------------------------------
 
-test('leadsPageLimit clamps to [1, MAX] and falls back for junk', () => {
-  assert.equal(leadsPageLimit(undefined), LEADS_PAGE_DEFAULT)
-  assert.equal(leadsPageLimit(''), LEADS_PAGE_DEFAULT)
-  assert.equal(leadsPageLimit(null), LEADS_PAGE_DEFAULT)
-  assert.equal(leadsPageLimit('all'), LEADS_PAGE_DEFAULT, 'non-numeric falls back')
-  assert.equal(leadsPageLimit(0), LEADS_PAGE_DEFAULT, '0 is not a page')
-  assert.equal(leadsPageLimit(-5), LEADS_PAGE_DEFAULT, 'negative is not a page')
-  assert.equal(leadsPageLimit(NaN), LEADS_PAGE_DEFAULT)
-  assert.equal(leadsPageLimit(Infinity), LEADS_PAGE_MAX, 'Infinity is capped, not defaulted')
-  assert.equal(leadsPageLimit('25'), 25, 'a query string arrives as text')
-  assert.equal(leadsPageLimit(7.9), 7, 'fractional pages are floored')
-  assert.equal(leadsPageLimit(LEADS_PAGE_MAX + 1), LEADS_PAGE_MAX, 'the ceiling holds')
-  assert.equal(leadsPageLimit(1e9), LEADS_PAGE_MAX, 'no caller can ask for the whole table')
-  assert.equal(leadsPageLimit(undefined, 25), 25, 'callers may set their own default')
+test('pageLimit clamps to [1, MAX] and falls back for junk', () => {
+  assert.equal(pageLimit(undefined), PAGE_DEFAULT)
+  assert.equal(pageLimit(''), PAGE_DEFAULT)
+  assert.equal(pageLimit(null), PAGE_DEFAULT)
+  assert.equal(pageLimit('all'), PAGE_DEFAULT, 'non-numeric falls back')
+  assert.equal(pageLimit(0), PAGE_DEFAULT, '0 is not a page')
+  assert.equal(pageLimit(-5), PAGE_DEFAULT, 'negative is not a page')
+  assert.equal(pageLimit(NaN), PAGE_DEFAULT)
+  assert.equal(pageLimit(Infinity), PAGE_MAX, 'Infinity is capped, not defaulted')
+  assert.equal(pageLimit('25'), 25, 'a query string arrives as text')
+  assert.equal(pageLimit(7.9), 7, 'fractional pages are floored')
+  assert.equal(pageLimit(PAGE_MAX + 1), PAGE_MAX, 'the ceiling holds')
+  assert.equal(pageLimit(1e9), PAGE_MAX, 'no caller can ask for the whole table')
+  assert.equal(pageLimit(undefined, 25), 25, 'callers may set their own default')
 })
 
-test('leadsPageOffset treats anything that is not a positive number as the top', () => {
-  assert.equal(leadsPageOffset(undefined), 0)
-  assert.equal(leadsPageOffset(''), 0)
-  assert.equal(leadsPageOffset('abc'), 0)
-  assert.equal(leadsPageOffset(-3), 0)
-  assert.equal(leadsPageOffset(0), 0)
-  assert.equal(leadsPageOffset('40'), 40)
-  assert.equal(leadsPageOffset(9.7), 9)
+test('pageOffset treats anything that is not a positive number as the top', () => {
+  assert.equal(pageOffset(undefined), 0)
+  assert.equal(pageOffset(''), 0)
+  assert.equal(pageOffset('abc'), 0)
+  assert.equal(pageOffset(-3), 0)
+  assert.equal(pageOffset(0), 0)
+  assert.equal(pageOffset('40'), 40)
+  assert.equal(pageOffset(9.7), 9)
 })
 
 // --- The route --------------------------------------------------------------
@@ -146,13 +146,13 @@ test('a junk limit falls back to the default page instead of 500ing', async () =
     const res = await req('GET', `/api/leads?limit=${bad}`)
     assert.equal(res.status, 200, `limit=${bad} is tolerated`)
     const body = await res.json()
-    assert.ok(Array.isArray(body) && body.length <= LEADS_PAGE_MAX)
+    assert.ok(Array.isArray(body) && body.length <= PAGE_MAX)
   }
 })
 
 test('the page limit is capped server-side however loudly the client asks', async () => {
   const rows = await listLeads(agentId, { limit: 100000 })
-  assert.ok(rows.length <= LEADS_PAGE_MAX)
+  assert.ok(rows.length <= PAGE_MAX)
 })
 
 test('the sort is deterministic when updated_at ties', async () => {

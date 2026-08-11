@@ -34,6 +34,7 @@ import {
   findContactByWaId,
   recordContactMessage,
   listContacts,
+  contactCount,
   getContactDetail,
   getContactByPhone,
   addContact,
@@ -1198,8 +1199,26 @@ app.post('/api/emi', ah(async (req, res) => {
 // --- Contacts: auto-captured from WhatsApp conversations. There is no manual
 // "add contact" API — contacts are created by the inbound webhook (or when an
 // agent claims a pooled lead / texts a client to the shared number).
+// Paged: `limit` (default 100, hard max 500) and `offset`, exactly like /api/leads. A
+// caller that sends neither gets the first page rather than every number the agent has
+// ever captured. The body stays a plain array so existing clients keep working, and a
+// short page means the end; anything that needs the true total asks /api/contacts/count.
 app.get('/api/contacts', ah(async (req, res) =>
-  res.json(await listContacts(req.agent.id, { search: req.query.q || '', source: req.query.source || '' })),
+  res.json(await listContacts(req.agent.id, {
+    search: req.query.q || '',
+    source: req.query.source || '',
+    limit: req.query.limit,
+    offset: req.query.offset,
+  })),
+))
+
+// Registered before /api/contacts/:id so "count" isn't parsed as an id. Takes the same
+// q/source filters as the list, so the header total describes the list underneath it.
+app.get('/api/contacts/count', ah(async (req, res) =>
+  res.json(await contactCount(req.agent.id, {
+    search: req.query.q || '',
+    source: req.query.source || '',
+  })),
 ))
 
 app.get('/api/contacts/:id', ah(async (req, res) => {
