@@ -97,7 +97,11 @@ export default function DashboardTab({ agent, onGoTo, onOpenConversation, onOpen
   const { data: stats } = usePoll(api.stats, 10000)
   const { data: work } = usePoll(api.worklist, 15000)
   const { data: notif } = usePoll(() => api.notifications(), 20000)
-  const { data: propsList } = usePoll(() => api.properties(), 30000)
+  // Only the number is wanted here — the onboarding banner asks whether the agent has
+  // added any inventory yet. This used to poll the property list itself and measure it,
+  // which meant pulling every property row, JSONB photos and all, every 30 seconds to
+  // learn a single integer.
+  const { data: inventory } = usePoll(() => api.propertyCount(), 30000)
 
   const [onbDismissed, setOnbDismissed] = useState(() => {
     try {
@@ -118,14 +122,14 @@ export default function DashboardTab({ agent, onGoTo, onOpenConversation, onOpen
   const hasWhatsApp = Boolean(agent?.wa_phone_number)
   const showOnboarding =
     stats &&
-    propsList !== undefined &&
+    inventory !== undefined &&
     shouldShowOnboarding({
       hasWhatsApp,
-      propertyCount: propsList?.length ?? 0,
+      propertyCount: inventory?.total ?? 0,
       leadCount: stats.total,
       dismissed: onbDismissed,
     })
-  const steps = onboardingSteps({ hasWhatsApp, propertyCount: propsList?.length ?? 0 })
+  const steps = onboardingSteps({ hasWhatsApp, propertyCount: inventory?.total ?? 0 })
 
   const complete = async (id) => {
     await api.updateFollowup(id, { completed: true })

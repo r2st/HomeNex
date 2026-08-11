@@ -1777,34 +1777,72 @@ export async function createProperty(agentId, p) {
   return rows[0]
 }
 
-// Inventory listing with the dashboard's filter set. Prices are paise.
-export async function listProperties(
-  agentId,
-  { status = '', propertyType = '', bhk = '', locality = '', city = '', minPrice = null, maxPrice = null, search = '' } = {},
-) {
+// The WHERE that listProperties and propertyCount must agree on, so the count can never
+// describe a different set of rows than the page it heads.
+function propertyFilter(agentId, f) {
   const where = ['agent_id = $1']
   const params = [agentId]
   const add = (sql, value) => {
     params.push(value)
     where.push(sql.replace('?', `$${params.length}`))
   }
-  if (status) add('status = ?', status)
-  if (propertyType) add('property_type = ?', propertyType)
-  if (bhk) add('bhk = ?', bhk)
-  if (locality) add('locality ILIKE ?', `%${locality}%`)
-  if (city) add('city ILIKE ?', `%${city}%`)
-  if (minPrice != null) add('price_paise >= ?', minPrice)
-  if (maxPrice != null) add('price_paise <= ?', maxPrice)
-  if (search) {
-    params.push(`%${search}%`)
+  if (f.status) add('status = ?', f.status)
+  if (f.propertyType) add('property_type = ?', f.propertyType)
+  if (f.bhk) add('bhk = ?', f.bhk)
+  if (f.locality) add('locality ILIKE ?', `%${f.locality}%`)
+  if (f.city) add('city ILIKE ?', `%${f.city}%`)
+  if (f.minPrice != null) add('price_paise >= ?', f.minPrice)
+  if (f.maxPrice != null) add('price_paise <= ?', f.maxPrice)
+  if (f.search) {
+    params.push(`%${f.search}%`)
     const n = `$${params.length}`
     where.push(`(title ILIKE ${n} OR locality ILIKE ${n} OR builder_name ILIKE ${n})`)
   }
+  return { where, params }
+}
+
+// Inventory listing with the dashboard's filter set. Prices are paise.
+//
+// Paged by default (see PAGE_DEFAULT), and this is the widest row of the three lists
+// that are: a property carries two JSONB arrays (amenities, photos) plus free-text
+// notes, and `SELECT *` returns all of it. The Properties screen polls this every 8
+// seconds and the dashboard polled it every 30 purely to call .length on the result, so
+// an agent with a large inventory was downloading their whole catalogue, twice over,
+// while looking at a screen that shows six cards.
+//
+// Callers that want the true total ask propertyCount() rather than measuring the array.
+export async function listProperties(
+  agentId,
+  { status = '', propertyType = '', bhk = '', locality = '', city = '', minPrice = null, maxPrice = null, search = '', limit, offset } = {},
+) {
+  const { where, params } = propertyFilter(agentId, { status, propertyType, bhk, locality, city, minPrice, maxPrice, search })
+  params.push(pageLimit(limit))
+  const limitParam = `$${params.length}`
+  params.push(pageOffset(offset))
+  const offsetParam = `$${params.length}`
   const { rows } = await q(
-    `SELECT * FROM properties WHERE ${where.join(' AND ')} ORDER BY updated_at DESC`,
+    // id breaks the tie, for the same reason it does in listContacts: updated_at is not
+    // unique — saving a property and its photos stamps several rows inside one
+    // transaction — and a non-deterministic sort makes OFFSET paging drop and duplicate
+    // rows across pages.
+    `SELECT * FROM properties WHERE ${where.join(' AND ')}
+     ORDER BY updated_at DESC, id DESC
+     LIMIT ${limitParam} OFFSET ${offsetParam}`,
     params,
   )
   return rows
+}
+
+// How many properties match, without shipping any of them. This is what lets the
+// Properties header say "1,204 in your inventory" while the list below holds one page,
+// and what the dashboard asks instead of downloading the catalogue to measure it.
+export async function propertyCount(agentId, filters = {}) {
+  const { where, params } = propertyFilter(agentId, filters)
+  const { rows } = await q(
+    `SELECT COUNT(*)::int AS total FROM properties WHERE ${where.join(' AND ')}`,
+    params,
+  )
+  return { total: rows[0].total }
 }
 
 export async function getProperty(id, agentId) {

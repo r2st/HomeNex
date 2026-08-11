@@ -196,7 +196,9 @@ const HOME_ROUTES = {
   'GET /api/stats': STATS,
   'GET /api/worklist': { items: [], counts: { total: 0 } },
   'GET /api/notifications': { notifications: [], unread: 0 },
-  'GET /api/properties': [],
+  // Home asks for the inventory COUNT, not the inventory — it only needs to know
+  // whether the agent has added any properties yet.
+  'GET /api/properties/count': { total: 0 },
   'GET /api/agent/phone-config': {},
 }
 

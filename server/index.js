@@ -51,6 +51,7 @@ import {
   propertyMatchesForLead,
   createProperty,
   listProperties,
+  propertyCount,
   getProperty,
   updateProperty,
   deleteProperty,
@@ -1290,17 +1291,33 @@ const PROPERTY_BODY_FIELDS = [
   'amenities', 'photos', 'brochure_url', 'video_url', 'notes',
 ]
 
+// The filter set shared by the property list and its count, so the header total can
+// never describe a different set of rows than the page beneath it.
+const propertyQuery = (query) => ({
+  status: query.status || '',
+  propertyType: query.type || '',
+  bhk: query.bhk || '',
+  locality: query.locality || '',
+  city: query.city || '',
+  minPrice: query.min_price ? Number(query.min_price) : null,
+  maxPrice: query.max_price ? Number(query.max_price) : null,
+  search: query.q || '',
+})
+
+// Paged like /api/leads and /api/contacts: `limit` (default 100, max 500) and `offset`,
+// body still a plain array, a short page means the end. Anything that needs the true
+// total asks /api/properties/count.
 app.get('/api/properties', ah(async (req, res) =>
   res.json(await listProperties(req.agent.id, {
-    status: req.query.status || '',
-    propertyType: req.query.type || '',
-    bhk: req.query.bhk || '',
-    locality: req.query.locality || '',
-    city: req.query.city || '',
-    minPrice: req.query.min_price ? Number(req.query.min_price) : null,
-    maxPrice: req.query.max_price ? Number(req.query.max_price) : null,
-    search: req.query.q || '',
+    ...propertyQuery(req.query),
+    limit: req.query.limit,
+    offset: req.query.offset,
   })),
+))
+
+// Registered before /api/properties/:id so "count" isn't parsed as an id.
+app.get('/api/properties/count', ah(async (req, res) =>
+  res.json(await propertyCount(req.agent.id, propertyQuery(req.query))),
 ))
 
 app.get('/api/properties/:id', ah(async (req, res) => {

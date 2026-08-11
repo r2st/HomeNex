@@ -437,6 +437,20 @@ test('booking a site visit posts an ISO timestamp and the chosen property', asyn
   assert.equal(new Date(body.scheduled_at).getTime(), new Date('2026-08-14T11:00').getTime())
 })
 
+test('the site-visit property picker asks for the biggest page the server will give', async (t) => {
+  // /api/properties is paged, and this is a picker rather than a list: a property
+  // missing from the dropdown reads as "not in my inventory". Taking the default 100
+  // would silently hide everything the agent had not touched recently.
+  const ctx = setup(t, { routes: { 'GET /api/properties': [{ id: 11, title: 'Prestige Lakeside 3BHK' }] } })
+  const ui = await render(<LeadDetail {...props} />)
+
+  await click(ui.byText('+ Schedule'))
+
+  const asked = ctx.net.to('/api/properties', 'GET')
+  assert.equal(asked.length, 1, 'the picker never loaded its options')
+  assert.match(asked[0].url, /limit=500/, 'the picker settled for the default page')
+})
+
 test('a visit without a property is booked with property_id null', async (t) => {
   const ctx = setup(t, { routes: { 'POST /api/site-visits': { ok: true }, 'GET /api/properties': [] } })
   const ui = await render(<LeadDetail {...props} />)

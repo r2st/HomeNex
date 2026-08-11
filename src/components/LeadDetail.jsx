@@ -445,7 +445,12 @@ function SiteVisitsSection({ lead, refresh }) {
   const [error, setError] = useState(null)
 
   useEffect(() => {
-    if (adding) api.properties().then(setProperties).catch(() => {})
+    // The list is paged now and this is a picker: a property missing from the dropdown
+    // reads as "not in my inventory", so ask for the server's maximum page rather than
+    // silently offering the 100 most recently updated. An agent with more than 500
+    // properties still can't reach the tail from here — that wants a search field in the
+    // picker, not a bigger number — but 500 is past where a <select> is usable anyway.
+    if (adding) api.properties({ limit: 500 }).then(setProperties).catch(() => {})
   }, [adding])
 
   const add = async (e) => {

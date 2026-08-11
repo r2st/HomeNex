@@ -220,7 +220,12 @@ export const api = {
   contact: (id) => get(`/api/contacts/${id}`),
   updateContact: (id, body) => put(`/api/contacts/${id}`, body),
   deleteContact: (id) => del(`/api/contacts/${id}`),
+  // Paged. Pass { type, bhk, status, q, min_price, max_price, limit, offset }. The
+  // server defaults to the first 100 and caps at 500, so a caller that wants the total
+  // must ask propertyCount() rather than measuring the array it got back.
   properties: (filters) => get(`/api/properties${qs(filters)}`),
+  // { total }
+  propertyCount: (filters) => get(`/api/properties/count${qs(filters)}`),
   property: (id) => get(`/api/properties/${id}`),
   createProperty: (body) => post('/api/properties', body),
   updateProperty: (id, body) => put(`/api/properties/${id}`, body),

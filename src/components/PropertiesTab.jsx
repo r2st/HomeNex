@@ -45,19 +45,24 @@ export default function PropertiesTab({ onOpenLead }) {
   const [selectedId, setSelectedId] = useState(null)
   const filterCount = activeFilterCount(filters)
   const [bandMin, bandMax] = filters.band ? filters.band.split('-') : ['', '']
+  const serverFilters = {
+    type: filters.type,
+    bhk: filters.bhk,
+    status: filters.status,
+    q: filters.q,
+    min_price: bandMin ? lakhsToPaise(Number(bandMin)) : '',
+    max_price: bandMax ? lakhsToPaise(Number(bandMax)) : '',
+  }
   const { data: properties, error, loading, refresh } = usePoll(
-    () =>
-      api.properties({
-        type: filters.type,
-        bhk: filters.bhk,
-        status: filters.status,
-        q: filters.q,
-        min_price: bandMin ? lakhsToPaise(Number(bandMin)) : '',
-        max_price: bandMax ? lakhsToPaise(Number(bandMax)) : '',
-      }),
+    () => api.properties(serverFilters),
     8000,
     [JSON.stringify(filters)],
   )
+  // The list is one page now, so its length is no longer the total. Polled less often
+  // than the list because a property that fell off the end of page one is not news.
+  const { data: count } = usePoll(() => api.propertyCount(serverFilters), 20000, [JSON.stringify(filters)])
+  const total = count?.total ?? null
+  const shown = properties?.length ?? 0
 
   const create = async (fields) => {
     setSaving(true)
@@ -79,7 +84,9 @@ export default function PropertiesTab({ onOpenLead }) {
         <div>
           <h1 className="font-display text-[28px] font-semibold text-ink">Properties</h1>
           <p className="text-[13px] text-ink-soft mt-0.5">
-            {properties ? `${properties.length} in your inventory` : 'Loading…'}
+            {total === null
+              ? 'Loading…'
+              : `${total.toLocaleString('en-IN')} ${filterCount > 0 || filters.q ? 'matching' : 'in your inventory'}`}
           </p>
         </div>
         <button
@@ -202,6 +209,16 @@ export default function PropertiesTab({ onOpenLead }) {
         ))}
       </div>
 
+      {/* Without this the list simply stops at 100 and looks like the whole inventory.
+          Search and the filter sheet are the way through rather than a pager: the rows
+          past the first page are the ones untouched the longest, so scrolling to them
+          finds nothing that a locality or a price band would not have found faster. */}
+      {total !== null && total > shown && (
+        <p className="mt-4 text-center text-[12px] text-ink-faint">
+          Showing the {shown.toLocaleString('en-IN')} most recently updated of {total.toLocaleString('en-IN')} — search or filter to find the rest.
+        </p>
+      )}
+
       {showFilters && (
         <Sheet onClose={() => setShowFilters(false)} title="Filter properties">
           <div className="space-y-4">
@@ -245,7 +262,9 @@ export default function PropertiesTab({ onOpenLead }) {
               onClick={() => setShowFilters(false)}
               className="flex-1 bg-brand text-white font-bold text-[13px] rounded-full py-2.5 active:scale-[0.99] transition"
             >
-              {properties ? `Show ${properties.length} result${properties.length === 1 ? '' : 's'}` : 'Show results'}
+              {/* The count, not the page: "Show 100 results" under a filter that matches
+                  1,204 would be the sheet quoting its own page size back at the agent. */}
+              {total === null ? 'Show results' : `Show ${total.toLocaleString('en-IN')} result${total === 1 ? '' : 's'}`}
             </button>
           </div>
         </Sheet>
