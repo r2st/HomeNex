@@ -17,7 +17,7 @@ function urlFromDotEnv() {
   }
 }
 
-const BASE = (
+export const BASE = (
   process.env.PGTEST_URL ||
   process.env.DATABASE_URL ||
   urlFromDotEnv() ||
@@ -26,7 +26,7 @@ const BASE = (
   .replace(/\/[^/]*$/, '')
   .replace(/\/$/, '')
 
-async function withAdmin(fn) {
+export async function withAdmin(fn) {
   const admin = new pg.Client({ connectionString: `${BASE}/postgres` })
   await admin.connect()
   try {
@@ -36,10 +36,18 @@ async function withAdmin(fn) {
   }
 }
 
+// Every throwaway database is `homenex_test_<file>_<pid>`. The pid suffix is what
+// makes the leftovers sweepable: a database whose pid is no longer a running process
+// can never be in use, whoever started it. Keep the two in step — dropStaleTestDbs.js
+// recognises leftovers by this exact shape, and anything not matching it (a database
+// someone created by hand to reproduce a bug) is deliberately left alone.
+export const TEST_DB_PREFIX = 'homenex_test_'
+export const TEST_DB_NAME_RE = new RegExp(`^${TEST_DB_PREFIX}[a-z0-9]+_(\\d+)$`)
+
 // Creates a fresh database and points DATABASE_URL at it. Call BEFORE importing
 // ../index.js or ../db.js so the pool connects to the test database.
 export async function createTestDb(name) {
-  const dbName = `homenex_test_${name}_${process.pid}`
+  const dbName = `${TEST_DB_PREFIX}${name}_${process.pid}`
   await withAdmin(async (admin) => {
     await admin.query(`DROP DATABASE IF EXISTS ${dbName} WITH (FORCE)`)
     await admin.query(`CREATE DATABASE ${dbName}`)
