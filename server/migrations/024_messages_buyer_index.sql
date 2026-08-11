@@ -1,0 +1,23 @@
+-- Supporting index for every "what did the buyer say" count in the app.
+--
+-- `role = 'buyer'` is the most-repeated predicate in the polled queries — the unread
+-- badge in listLeads, msg_count in listContacts, and the last_buyer_at/buyer_replies
+-- pair the lead scorer computes — and no index covered it. idx_messages_lead from 001 is
+-- (lead_id, id), so each of those read every message the lead has ever exchanged and
+-- threw away the agent's and the AI's in the heap. A chatty lead is mostly not the
+-- buyer: the agent replies, the AI replies, and roughly one message in five is the one
+-- being counted.
+--
+-- created_at is the second column, not id, because unread_count is a range over it
+-- (`created_at > last_read_at`) rather than a full count — with it the scan starts at
+-- the last read and stops, instead of counting from the beginning of the conversation.
+-- The MIN/MAX(created_at) aggregates in the scorer then come off the ends of the same
+-- index for free.
+--
+-- Measured on 2,000 leads x 300 messages, one page of 100 rows:
+--   listContacts msg_count    3.19ms -> 1.41ms
+--   listLeads    unread_count 2.56ms -> 0.95ms
+--   lead scoring buyer aggs  10.67ms -> 0.89ms   (6,743 -> 1,038 buffers)
+-- for 3.7 MB of index against a 34 MB messages table.
+CREATE INDEX IF NOT EXISTS idx_messages_lead_buyer
+  ON messages (lead_id, created_at) WHERE role = 'buyer';
