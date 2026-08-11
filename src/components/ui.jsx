@@ -1,5 +1,5 @@
 // Small shared UI primitives for the dashboard tabs.
-import { useState, useCallback, Component } from 'react'
+import { useState, useCallback, useEffect, useId, Component } from 'react'
 
 // Tappable ⓘ that reveals a one-sentence plain-language explanation. Used to
 // demystify jargon (RERA, WhatsApp Business / WABA) for first-time agents without
@@ -86,12 +86,17 @@ export const TEMP_STYLE = {
 }
 
 export function Avatar({ name, className = '' }) {
-  const initials = String(name || '?')
-    .split(/\s+/)
-    .map((w) => w[0])
-    .join('')
-    .slice(0, 2)
-    .toUpperCase()
+  // Trimmed before the empty check: a name that is only whitespace (a contact saved
+  // from a WhatsApp profile that is just a space) is as nameless as a null one, and
+  // splitting it yields empty words — a blank circle instead of the '?' fallback.
+  const initials =
+    String(name ?? '')
+      .trim()
+      .split(/\s+/)
+      .map((w) => w[0])
+      .join('')
+      .slice(0, 2)
+      .toUpperCase() || '?'
   return (
     <span
       className={`shrink-0 w-11 h-11 rounded-full bg-brand-wash text-brand-deep font-display font-bold text-[15px] flex items-center justify-center ${className}`}
@@ -101,12 +106,34 @@ export function Avatar({ name, className = '' }) {
   )
 }
 
+// Escape closes any of the overlays below. Every one of them is dismissable by
+// tapping the backdrop, which a keyboard has no way to reach — so without this the
+// only way out of an open sheet without a mouse was to reload the app.
+function useEscape(onClose) {
+  useEffect(() => {
+    // Overlays are rendered in unit tests that don't install the browser shim, so
+    // there isn't always a document to listen on.
+    if (!onClose || typeof document === 'undefined' || !document.addEventListener) return undefined
+    const onKey = (e) => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onClose])
+}
+
 // Right-hand slide-over panel (same pattern the old LeadDetail used).
-export function SlideOver({ onClose, children }) {
+export function SlideOver({ onClose, label = 'Details', children }) {
+  useEscape(onClose)
   return (
     <div className="fixed inset-0 z-50">
       <div className="absolute inset-0 bg-ink/50 backdrop-blur-[2px]" onClick={onClose} />
-      <div className="absolute right-0 top-0 bottom-0 w-full max-w-[440px] bg-cream shadow-float slide-in overflow-y-auto no-scrollbar">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={label}
+        className="absolute right-0 top-0 bottom-0 w-full max-w-[440px] bg-cream shadow-float slide-in overflow-y-auto no-scrollbar"
+      >
         {children}
       </div>
     </div>
@@ -115,22 +142,34 @@ export function SlideOver({ onClose, children }) {
 
 // Bottom sheet for quick pickers/forms.
 export function Sheet({ onClose, title, children }) {
+  useEscape(onClose)
+  const titleId = useId()
   return (
     <div className="fixed inset-0 z-[60]">
       <div className="absolute inset-0 bg-ink/50 backdrop-blur-[2px]" onClick={onClose} />
-      <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[480px] bg-cream rounded-t-3xl shadow-float p-5 pb-[max(env(safe-area-inset-bottom),20px)] max-h-[85vh] overflow-y-auto no-scrollbar">
+      <div
+        role="dialog"
+        aria-modal="true"
+        {...(title ? { 'aria-labelledby': titleId } : { 'aria-label': 'Options' })}
+        className="absolute bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[480px] bg-cream rounded-t-3xl shadow-float p-5 pb-[max(env(safe-area-inset-bottom),20px)] max-h-[85vh] overflow-y-auto no-scrollbar"
+      >
         <div className="w-10 h-1 rounded-full bg-line mx-auto mb-4" />
-        {title && <p className="font-display font-semibold text-[17px] text-ink mb-3">{title}</p>}
+        {title && <p id={titleId} className="font-display font-semibold text-[17px] text-ink mb-3">{title}</p>}
         {children}
       </div>
     </div>
   )
 }
 
+// `active` is a selection state, not styling — a screen reader has only the colour
+// to go on otherwise. Left undefined for the chips that are plain buttons, so they
+// aren't announced as toggles.
 export function Chip({ active, onClick, children }) {
   return (
     <button
+      type="button"
       onClick={onClick}
+      aria-pressed={active === undefined ? undefined : Boolean(active)}
       className={`shrink-0 text-[12.5px] font-bold rounded-full px-3.5 py-1.5 border transition active:scale-95 ${
         active ? 'bg-ink text-cream border-ink' : 'bg-card text-ink-soft border-line'
       }`}
@@ -157,16 +196,23 @@ export function Field({ label, children }) {
 // The destructive button is red and the exact object is named in the title so an
 // agent always knows what they're about to delete.
 export function Confirm({ title, message, confirmLabel = 'Delete', cancelLabel = 'Cancel', danger = true, onConfirm, onCancel, busy = false }) {
+  // Escape cancels, but never while the action is in flight — the dialog stays up
+  // until the delete it is guarding actually resolves.
+  useEscape(busy ? null : onCancel)
+  const titleId = useId()
+  const msgId = useId()
   return (
     <div className="fixed inset-0 z-[80] flex items-end sm:items-center justify-center">
       <div className="absolute inset-0 bg-ink/50 backdrop-blur-[2px]" onClick={busy ? undefined : onCancel} />
       <div
         role="alertdialog"
         aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={message ? msgId : undefined}
         className="relative w-full max-w-[420px] bg-cream rounded-t-3xl sm:rounded-3xl shadow-float p-5 pb-[max(env(safe-area-inset-bottom),20px)] slide-in"
       >
-        <p className="font-display font-semibold text-[17px] text-ink">{title}</p>
-        {message && <p className="text-[13px] text-ink-soft mt-1.5 leading-snug">{message}</p>}
+        <p id={titleId} className="font-display font-semibold text-[17px] text-ink">{title}</p>
+        {message && <p id={msgId} className="text-[13px] text-ink-soft mt-1.5 leading-snug">{message}</p>}
         <div className="flex gap-2.5 mt-5">
           <button
             onClick={onCancel}

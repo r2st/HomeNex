@@ -22,16 +22,25 @@ export default function QuickAddLead({ onClose, onAdded }) {
     if (!phone.trim()) return setError('Enter the buyer’s phone number')
     setSaving(true)
     setError(null)
+    let res
     try {
-      const res = await api.quickAddLead({ phone: phone.trim(), name: name.trim() || null, channel, tags })
-      // Opening the thread must happen synchronously in this click for the popup to survive.
-      if (openThread && res.wa_deeplink) window.open(res.wa_deeplink, '_blank', 'noopener')
-      onAdded?.(res.lead)
-      onClose()
+      res = await api.quickAddLead({ phone: phone.trim(), name: name.trim() || null, channel, tags })
     } catch (err) {
       setError(err.message)
       setSaving(false)
+      return
     }
+    // Past this point the lead exists. Nothing here may report failure — an error
+    // shown after a successful create reads as "not saved" and the agent adds the
+    // buyer a second time. Opening the thread must also happen synchronously in
+    // this click for the popup to survive, so it is not awaited.
+    try {
+      if (openThread && res.wa_deeplink) window.open(res.wa_deeplink, '_blank', 'noopener')
+    } catch {
+      // A blocked popup must not strand the sheet on a lead that was created.
+    }
+    onAdded?.(res.lead)
+    onClose()
   }
 
   return (
@@ -49,6 +58,8 @@ export default function QuickAddLead({ onClose, onAdded }) {
             placeholder="98765 43210"
             inputMode="tel"
             autoFocus
+            aria-invalid={error ? true : undefined}
+            aria-describedby={error ? 'quick-add-error' : undefined}
             className={inputCls}
           />
         </Field>
@@ -66,15 +77,20 @@ export default function QuickAddLead({ onClose, onAdded }) {
           </div>
         </div>
 
-        {error && <p className="text-[12px] text-hot bg-amber-wash rounded-xl px-3.5 py-2">{error}</p>}
+        {error && (
+          <p id="quick-add-error" role="alert" className="text-[12px] text-hot bg-amber-wash rounded-xl px-3.5 py-2">
+            {error}
+          </p>
+        )}
 
         <div className="flex gap-2 pt-1">
           <button
+            type="button"
             onClick={() => save({ openThread: false })}
             disabled={saving}
             className="flex-1 bg-card border border-line text-ink font-bold text-[13.5px] rounded-xl py-3 active:scale-[0.99] transition disabled:opacity-50"
           >
-            Save
+            {saving ? 'Saving…' : 'Save'}
           </button>
           <button
             onClick={() => save({ openThread: true })}

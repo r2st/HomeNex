@@ -82,6 +82,19 @@ test('the avatar takes up to two initials, uppercased', async () => {
 test('the avatar falls back to a placeholder for a nameless contact', async () => {
   assert.equal((await render(<Avatar name={null} />)).text(), '?')
   assert.equal((await render(<Avatar name="" />)).text(), '?')
+  assert.equal((await render(<Avatar name={undefined} />)).text(), '?')
+})
+
+test('a name that is only whitespace is as nameless as an empty one', async () => {
+  // WhatsApp profile names arrive as free text; a single space used to split into
+  // empty words and render a blank circle instead of the placeholder.
+  assert.equal((await render(<Avatar name=" " />)).text(), '?')
+  // Braces, not a JSX string: attribute literals don't process \t.
+  assert.equal((await render(<Avatar name={'   \t\n '} />)).text(), '?')
+})
+
+test('the avatar ignores padding around a real name', async () => {
+  assert.equal((await render(<Avatar name="  priya   sharma  " />)).text(), 'PS')
 })
 
 // --- Sheet / SlideOver -----------------------------------------------------
@@ -123,6 +136,76 @@ test('the slide-over closes on the backdrop', async () => {
   assert.equal(closed, 1)
 })
 
+// Both overlays are dismissable only by tapping the backdrop, which no keyboard can
+// reach — so the dialog role and the Escape key are the whole keyboard exit.
+
+test('the sheet is a labelled modal dialog', async () => {
+  const titled = await render(
+    <Sheet title="Add lead" onClose={() => {}}>
+      <p>body</p>
+    </Sheet>,
+  )
+  const dialog = titled.byRole('dialog')
+  assert.equal(dialog.props['aria-modal'], 'true')
+  const labelId = dialog.props['aria-labelledby']
+  assert.ok(labelId, 'a titled sheet must point at its title')
+  assert.equal(titled.get((f) => f.props?.id === labelId, 'title node').props.children, 'Add lead')
+
+  // With no title there is no node to point at, so it needs a name of its own.
+  const untitled = await render(<Sheet onClose={() => {}}><p>body</p></Sheet>)
+  assert.equal(untitled.byRole('dialog').props['aria-labelledby'], undefined)
+  assert.equal(untitled.byRole('dialog').props['aria-label'], 'Options')
+})
+
+test('the slide-over is a modal dialog with a caller-supplied name', async () => {
+  const ui = await render(<SlideOver onClose={() => {}} label="Lead details"><p>panel</p></SlideOver>)
+  assert.equal(ui.byRole('dialog').props['aria-modal'], 'true')
+  assert.equal(ui.byRole('dialog').props['aria-label'], 'Lead details')
+
+  const fallback = await render(<SlideOver onClose={() => {}}><p>panel</p></SlideOver>)
+  assert.equal(fallback.byRole('dialog').props['aria-label'], 'Details')
+})
+
+test('Escape closes the sheet and the slide-over', async (t) => {
+  const env = installBrowser()
+  t.after(() => env.restore())
+
+  let sheetClosed = 0
+  await render(<Sheet title="Add lead" onClose={() => sheetClosed++}><p>body</p></Sheet>)
+  await act(() => env.press('Escape'))
+  assert.equal(sheetClosed, 1)
+
+  let overClosed = 0
+  await render(<SlideOver onClose={() => overClosed++}><p>panel</p></SlideOver>)
+  await act(() => env.press('Escape'))
+  assert.equal(overClosed, 1)
+})
+
+test('a key that is not Escape leaves the sheet open', async (t) => {
+  const env = installBrowser()
+  t.after(() => env.restore())
+
+  let closed = 0
+  await render(<Sheet title="Add lead" onClose={() => closed++}><p>body</p></Sheet>)
+  await act(() => env.press('Enter'))
+  await act(() => env.press('a'))
+  assert.equal(closed, 0)
+})
+
+test('an unmounted overlay stops listening for Escape', async (t) => {
+  const env = installBrowser()
+  t.after(() => env.restore())
+
+  let closed = 0
+  const ui = await render(<Sheet title="Add lead" onClose={() => closed++}><p>body</p></Sheet>)
+  assert.equal(env.liveKeyListeners, 1)
+
+  ui.unmount()
+  assert.equal(env.liveKeyListeners, 0, 'the sheet left a document listener behind')
+  await act(() => env.press('Escape'))
+  assert.equal(closed, 0)
+})
+
 // --- Chip / Field ----------------------------------------------------------
 
 test('the chip reflects its active state and fires onClick', async () => {
@@ -135,6 +218,24 @@ test('the chip reflects its active state and fires onClick', async () => {
 
   await click(active.byRole('button'))
   assert.equal(taps, 1)
+})
+
+test('a selectable chip announces whether it is selected', async () => {
+  // Selection is carried by background colour alone otherwise, which a screen
+  // reader cannot see — the tag and channel pickers become unreadable.
+  const on = await render(<Chip active onClick={() => {}}>Hot</Chip>)
+  const off = await render(<Chip active={false} onClick={() => {}}>Cold</Chip>)
+  assert.equal(on.byRole('button').props['aria-pressed'], true)
+  assert.equal(off.byRole('button').props['aria-pressed'], false)
+
+  // A chip used as a plain action button is not a toggle and must not claim to be.
+  const plain = await render(<Chip onClick={() => {}}>Add</Chip>)
+  assert.equal(plain.byRole('button').props['aria-pressed'], undefined)
+})
+
+test('a chip never submits a form it happens to sit inside', async () => {
+  const ui = await render(<Chip onClick={() => {}}>Hot</Chip>)
+  assert.equal(ui.byRole('button').props.type, 'button')
 })
 
 test('the field label is associated with its control', async () => {
@@ -156,6 +257,36 @@ test('the confirm dialog names what is being deleted and is a modal alertdialog'
   assert.equal(dialog.props['aria-modal'], 'true')
   assert.match(ui.text(), /Delete "Baner brochure"\?/)
   assert.match(ui.text(), /This cannot be undone/)
+
+  // aria-modal alone gives the dialog no name; without these it is announced as an
+  // unlabelled alert and the agent never hears which object is about to be deleted.
+  const titleId = dialog.props['aria-labelledby']
+  const msgId = dialog.props['aria-describedby']
+  assert.ok(titleId && msgId)
+  assert.match(String(ui.get((f) => f.props?.id === titleId, 'title').props.children), /Baner brochure/)
+  assert.match(String(ui.get((f) => f.props?.id === msgId, 'message').props.children), /cannot be undone/)
+})
+
+test('a confirm with no message describes nothing rather than pointing at a missing node', async () => {
+  const ui = await render(<Confirm title="Delete?" onConfirm={() => {}} onCancel={() => {}} />)
+  assert.equal(ui.byRole('alertdialog').props['aria-describedby'], undefined)
+  assert.ok(ui.byRole('alertdialog').props['aria-labelledby'])
+})
+
+test('Escape cancels the confirm dialog, but never mid-action', async (t) => {
+  const env = installBrowser()
+  t.after(() => env.restore())
+
+  let cancels = 0
+  await render(<Confirm title="Delete?" onConfirm={() => {}} onCancel={() => cancels++} />)
+  await act(() => env.press('Escape'))
+  assert.equal(cancels, 1)
+
+  // While the delete it guards is in flight, Escape must not yank the dialog away.
+  let busyCancels = 0
+  await render(<Confirm title="Delete?" busy onConfirm={() => {}} onCancel={() => busyCancels++} />)
+  await act(() => env.press('Escape'))
+  assert.equal(busyCancels, 0)
 })
 
 test('the confirm dialog defaults to a destructive Delete action', async () => {

@@ -164,3 +164,61 @@ test('the sheet backdrop closes the form', async (t) => {
 
   assert.equal(ctx.closed(), 1)
 })
+
+test('a save error is announced and tied to the field it is about', async (t) => {
+  const ctx = setup(t, { 'POST /api/leads/quick-add': { status: 500, body: { error: 'Server exploded' } } })
+  const ui = await render(<QuickAddLead {...ctx.props} />)
+
+  const phone = ui.byPlaceholder('98765 43210')
+  assert.equal(phone.props['aria-invalid'], undefined, 'a clean form must not read as invalid')
+  assert.equal(phone.props['aria-describedby'], undefined)
+
+  await change(phone, '9876543210')
+  await click(ui.byText('Save', { exact: true }))
+
+  // role="alert" is what makes the message reach a screen reader at all — without it
+  // the agent hears nothing and the tap looks like it did nothing.
+  const alert = ui.byRole('alert')
+  assert.match(String(alert.props.children), /Server exploded/)
+  assert.equal(ui.byPlaceholder('98765 43210').props['aria-invalid'], true)
+  assert.equal(ui.byPlaceholder('98765 43210').props['aria-describedby'], alert.props.id)
+  assert.ok(alert.props.id, 'the error needs an id for the field to point at')
+})
+
+test('the validation error is announced too, not just the network one', async (t) => {
+  const ctx = setup(t)
+  const ui = await render(<QuickAddLead {...ctx.props} />)
+
+  await click(ui.byText('Save', { exact: true }))
+
+  assert.match(String(ui.byRole('alert').props.children), /Enter the buyer’s phone number/)
+})
+
+test('both buttons show progress while the save is in flight', async (t) => {
+  let release
+  const ctx = setup(t, { 'POST /api/leads/quick-add': () => new Promise((r) => { release = () => r(OK) }) })
+  const ui = await render(<QuickAddLead {...ctx.props} />)
+
+  await change(ui.byPlaceholder('98765 43210'), '9876543210')
+  const pending = click(ui.byText('Save', { exact: true }))
+
+  // The plain Save button used to keep saying "Save" while disabled, which reads as
+  // an unresponsive button rather than one that is working.
+  assert.match(ui.text(), /Saving…/)
+  assert.equal(ui.byText('Saving…', { exact: true }).props.disabled, true)
+
+  release()
+  await pending
+})
+
+test('a popup blocked by the browser still saves and closes the sheet', async (t) => {
+  const ctx = setup(t)
+  ctx.env.window.open = () => { throw new Error('popup blocked') }
+  const ui = await render(<QuickAddLead {...ctx.props} />)
+
+  await change(ui.byPlaceholder('98765 43210'), '9876543210')
+  await click(ui.byText('💬 Save & open WhatsApp', { exact: true }))
+
+  assert.deepEqual(ctx.added, [LEAD], 'the lead was created; a blocked popup must not hide it')
+  assert.equal(ctx.closed(), 1)
+})

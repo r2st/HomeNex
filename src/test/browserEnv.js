@@ -81,6 +81,10 @@ export function installBrowser({ online = true, now } = {}) {
 
   // Elements the app creates imperatively (the CSV/vCard download trick).
   const created = []
+  // Document-level listeners are a real behaviour now (Escape closes the overlays in
+  // ui.jsx), so the shim records them and `press()` below fires them — a no-op
+  // addEventListener would make an unclosable sheet look tested.
+  const listeners = new Map()
   const document = {
     createElement: (tag) => {
       const el = { tagName: tag.toUpperCase(), style: {}, clicked: 0, click() { el.clicked++ }, setAttribute(k, v) { el[k] = v }, remove() {} }
@@ -89,8 +93,11 @@ export function installBrowser({ online = true, now } = {}) {
     },
     body: { appendChild: () => {}, removeChild: () => {} },
     getElementById: () => null,
-    addEventListener: () => {},
-    removeEventListener: () => {},
+    addEventListener: (type, fn) => {
+      if (!listeners.has(type)) listeners.set(type, new Set())
+      listeners.get(type).add(fn)
+    },
+    removeEventListener: (type, fn) => listeners.get(type)?.delete(fn),
   }
 
   // Deterministic intervals: usePoll and the WhatsApp health check would otherwise
@@ -134,6 +141,14 @@ export function installBrowser({ online = true, now } = {}) {
     /** Number of live intervals — a leak check for polling components. */
     get liveIntervals() {
       return intervals.size
+    },
+    /** Fire a document-level key event (Escape-to-close on the overlays). */
+    press: (key) => {
+      for (const fn of listeners.get('keydown') ?? []) fn({ key })
+    },
+    /** Live document-level listener count — a leak check for overlay unmounts. */
+    get liveKeyListeners() {
+      return listeners.get('keydown')?.size ?? 0
     },
     setPromptReply: (v) => {
       promptReply = v
