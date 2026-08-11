@@ -97,9 +97,13 @@ function MediaManager() {
         <Field label="Title (optional)">
           <input value={title} onChange={(e) => setTitle(e.target.value)} className={inputCls} placeholder="e.g. Green Acres brochure" />
         </Field>
+        {/* A file input takes no placeholder, so without an explicit name a screen
+            reader announces it as a bare "choose file" button — the one control on
+            this card that says nothing about what it uploads. */}
         <input
           ref={fileRef}
           type="file"
+          aria-label="Choose a file to upload to the library"
           onChange={(e) => uploadFile(e.target.files?.[0])}
           disabled={busy}
           className="mt-2 block w-full text-[12px] text-ink-soft file:mr-3 file:rounded-full file:border-0 file:bg-brand file:text-white file:px-4 file:py-2 file:text-[12px] file:font-bold"
@@ -332,7 +336,15 @@ function LabelsManager() {
               <input value={name} onChange={(e) => setName(e.target.value)} className={inputCls} placeholder="e.g. NRI buyer" />
             </Field>
           </div>
-          <input type="color" value={color} onChange={(e) => setColor(e.target.value)} className="w-11 h-11 rounded-xl border border-line bg-white" />
+          {/* The swatch sits outside the Field wrapper (it is its own square next to
+              the name box), so it needs to carry its own name. */}
+          <input
+            type="color"
+            aria-label="Label colour"
+            value={color}
+            onChange={(e) => setColor(e.target.value)}
+            className="w-11 h-11 rounded-xl border border-line bg-white"
+          />
         </div>
         <button
           onClick={create}

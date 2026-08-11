@@ -388,6 +388,7 @@ export default function AdminPanel({ agent: me, onBack }) {
         <>
           <input
             type="search"
+            aria-label="Search agents"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search by name, phone, email or business"

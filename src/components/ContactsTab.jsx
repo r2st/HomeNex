@@ -281,6 +281,8 @@ export default function ContactsTab({ onOpenLead }) {
       <GroupsPanel />
 
       <input
+        type="search"
+        aria-label="Search contacts"
         value={q}
         onChange={(e) => setQ(e.target.value)}
         placeholder="Search name or phone…"

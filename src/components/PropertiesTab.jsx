@@ -98,6 +98,8 @@ export default function PropertiesTab({ onOpenLead }) {
 
       <div className="flex items-center gap-2 mt-4">
         <input
+          type="search"
+          aria-label="Search properties"
           value={filters.q}
           onChange={(e) => setFilters((s) => ({ ...s, q: e.target.value }))}
           placeholder="Search title, locality, builder…"

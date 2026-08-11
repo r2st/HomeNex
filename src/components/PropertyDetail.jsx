@@ -355,7 +355,14 @@ function SendToChatSheet({ property, onClose }) {
 
   return (
     <Sheet onClose={onClose} title={`Send "${property.title}" to…`}>
-      <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search contacts…" className={inputCls} />
+      <input
+        type="search"
+        aria-label="Search contacts to share with"
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        placeholder="Search contacts…"
+        className={inputCls}
+      />
       <div className="mt-3 space-y-2 max-h-[50vh] overflow-y-auto no-scrollbar">
         {!leads && <p className="text-[12.5px] text-ink-faint py-2">Loading your leads…</p>}
         {leads && filtered.length === 0 && (
