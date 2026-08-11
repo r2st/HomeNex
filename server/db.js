@@ -561,7 +561,7 @@ export async function recordFirstResponse(leadId) {
 export async function applyExtraction(leadId, x) {
   // Legacy budget columns are lakhs; the CRM columns (budget_min/budget_max) are paise.
   const paise = (lakhs) => (lakhs == null ? null : Math.round(Number(lakhs) * 1e7))
-  await q(
+  const { rows: touched } = await q(
     `UPDATE leads SET
        intent = COALESCE($17, intent),
        bhk = COALESCE($18, bhk),
@@ -588,7 +588,8 @@ export async function applyExtraction(leadId, x) {
        next_step = COALESCE($14, next_step),
        score_breakdown = COALESCE($15, score_breakdown),
        updated_at = now()
-     WHERE id = $16`,
+     WHERE id = $16
+     RETURNING agent_id`,
     [
       x.name ?? null,
       x.temp ?? null,
@@ -617,6 +618,12 @@ export async function applyExtraction(leadId, x) {
       JSON.stringify(x),
     ],
   )
+  // temp, score and the budget columns all feed the dashboard counters (hot_now,
+  // pipeline_l, qualified). The inbound path invalidates on the buyer's message,
+  // which happens BEFORE this runs — so without this the extraction's numbers could
+  // sit behind a cache entry written from the pre-extraction row.
+  const ownerId = touched[0]?.agent_id
+  if (ownerId != null) invalidateStats(ownerId)
 }
 
 export async function logActivity(agentId, leadId, kind, text) {
@@ -1331,10 +1338,17 @@ export async function agentTimezone(agentId) {
 // the counters should see the write, not a 1ms-old cache entry.
 const statsCache = new Map() // agentId -> { at, value }
 
+// The TTL has to be comfortably LONGER than the fastest poll that reads it, or the
+// cache cannot hit at all: at 8000ms against Insights' 8000ms poll (InsightsTab.jsx)
+// every request arrived just as its own entry expired, so /api/stats recomputed all
+// four aggregates on every single poll and the cache was pure overhead. 30s serves
+// three of every four Insights polls and two of every three dashboard polls (10s).
+//
+// Staleness is bounded by invalidateStats() on the write paths, not by this number.
 function statsCacheMs() {
   const raw = process.env.STATS_CACHE_MS
   if (raw != null && raw !== '') return Math.max(0, Number(raw) || 0)
-  return process.env.NODE_ENV === 'test' ? 0 : 8000
+  return process.env.NODE_ENV === 'test' ? 0 : 30_000
 }
 
 // Drop an agent's cached counters. Called from the write paths an agent watches for

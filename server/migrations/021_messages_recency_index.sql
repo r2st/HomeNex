@@ -1,0 +1,23 @@
+-- /api/stats is the most-polled read in the app, and its message aggregate asks a
+-- question about the last 24 hours:
+--
+--   SELECT COUNT(DISTINCT lead_id), COUNT(*) FILTER (WHERE created_at >= <day start>)
+--     FROM messages
+--    WHERE lead_id IN (SELECT id FROM leads WHERE agent_id = $1)
+--      AND created_at >= now() - interval '1 day'
+--
+-- The only index on messages was (lead_id, id), which says nothing about time — so
+-- this ran as a sequential scan of the entire message table on every miss. Measured
+-- on 400 leads x 150 messages (60k rows, ~18 months): 6.2ms, 442 buffers, and
+-- 59,891 of 60,000 rows read only to be thrown away by the created_at filter. That
+-- cost is proportional to the agent's whole history and grows without bound, so the
+-- screen gets slower every month even though the answer covers one day.
+--
+-- Leading with created_at makes the scan proportional to RECENT messages instead:
+-- the same query drops to 0.22ms and 11 buffers, and stays there as history grows.
+-- lead_id rides along as the second column so the join and the COUNT(DISTINCT) are
+-- both answered from the index without touching the heap.
+--
+-- (lead_id, created_at) was measured too and is the wrong way round: it turns into
+-- 400 separate index scans, one per lead — 1.5ms and 1,209 buffers.
+CREATE INDEX IF NOT EXISTS idx_messages_created_lead ON messages (created_at, lead_id);

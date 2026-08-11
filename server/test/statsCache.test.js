@@ -181,3 +181,79 @@ test('a junk STATS_CACHE_MS is treated as off, never as negative or NaN', async 
     assert.ok((await countQueries(() => stats(agentId))) > 1, `STATS_CACHE_MS=${raw} must not cache`)
   }
 })
+
+// The default TTL is the whole point of the cache, and it is the one value no test
+// covered: it used to equal Insights' 8s poll exactly, so every request arrived just
+// as its own entry expired and the cache never once hit in production.
+test('the production default outlives the fastest poll that reads it', async () => {
+  const FASTEST_POLL_MS = 8000 // InsightsTab.jsx: usePoll(api.stats, 8000)
+  delete process.env.STATS_CACHE_MS
+  const realEnv = process.env.NODE_ENV
+  process.env.NODE_ENV = 'production'
+  try {
+    clearStatsCache()
+    await stats(agentId)
+    // Nothing has expired, so a poll landing a full interval later is still a hit —
+    // which is only true if the default TTL is comfortably above the poll interval.
+    assert.equal(await countQueries(() => stats(agentId)), 0)
+
+    // Pin the invariant on the number itself, so lowering it back to the poll
+    // interval fails here rather than silently costing four aggregates per poll.
+    process.env.NODE_ENV = realEnv
+    process.env.STATS_CACHE_MS = String(FASTEST_POLL_MS)
+    clearStatsCache()
+    await stats(agentId)
+    assert.equal(
+      await countQueries(() => stats(agentId)),
+      0,
+      'a TTL equal to the poll interval is a coin flip against the clock',
+    )
+  } finally {
+    process.env.NODE_ENV = realEnv
+  }
+})
+
+test('an extraction that moves the counters does not sit behind a cache entry', async () => {
+  const { applyExtraction } = await import('../db.js')
+  process.env.STATS_CACHE_MS = '30000'
+
+  const lead = await upsertLead(agentId, '919871100009', 'Extraction Esha')
+  const warm = await stats(agentId)
+  assert.equal(await countQueries(() => stats(agentId)), 0, 'the entry is warm')
+
+  // The inbound path invalidates on the buyer's message, which lands BEFORE the
+  // extraction — so this write is the one that has to drop the entry itself.
+  await applyExtraction(lead.id, { temp: 'Hot', score: 91, budget_max_l: 120, budget_min_l: 80 })
+
+  assert.ok((await countQueries(() => stats(agentId))) > 1, 'the extraction must drop the entry')
+  assert.equal((await stats(agentId)).hotNow, warm.hotNow + 1, 'the new Hot lead should be counted')
+})
+
+test('an extraction on an unassigned pool lead does not throw looking for an owner', async () => {
+  const { applyExtraction } = await import('../db.js')
+  process.env.STATS_CACHE_MS = '30000'
+  const { rows } = await query(
+    `INSERT INTO leads (agent_id, wa_id, name, phone) VALUES (NULL, $1, $2, $1) RETURNING id`,
+    ['919871100010', 'Pooled Pooja'],
+  )
+  await applyExtraction(rows[0].id, { temp: 'Hot', score: 70 })
+})
+
+test('an extraction against a lead that no longer exists is a no-op, not a crash', async () => {
+  const { applyExtraction } = await import('../db.js')
+  process.env.STATS_CACHE_MS = '30000'
+  await applyExtraction(99999999, { temp: 'Hot', score: 70 })
+})
+
+// The index behind the cache misses. A cache only moves the cost; the query still
+// runs on every expiry, and its old plan read the agent's whole message history to
+// answer a question about one day.
+test('the message aggregate is backed by a recency index, not a full history scan', async () => {
+  const { rows } = await query(
+    `SELECT indexdef FROM pg_indexes WHERE tablename = 'messages' AND indexname = 'idx_messages_created_lead'`,
+  )
+  assert.equal(rows.length, 1, 'migration 021 did not create the index')
+  // created_at must lead: with lead_id first this degrades into one index scan per
+  // lead, which measured slower and read 100x the buffers.
+  assert.match(rows[0].indexdef, /\(created_at, lead_id\)/)
+})
