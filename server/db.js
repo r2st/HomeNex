@@ -30,6 +30,12 @@ const pool = new pg.Pool({
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 10_000,
 })
+// Fires when postgres drops a connection that is sitting idle in the pool — a database
+// restart or an admin terminating the backend. Without the listener node treats it as
+// an unhandled 'error' event and takes the process down, which is the only reason it
+// exists. Not covered: provoking it means killing a backend of the pool the rest of the
+// suite is running on, and waiting for a client to be idle when you do it.
+/* node:coverage ignore next */
 pool.on('error', (err) => console.error('idle postgres client error', err.message))
 
 const q = (text, params) => pool.query(text, params)
@@ -71,6 +77,11 @@ export async function runMigrations(dir = path.join(__dirname, 'migrations')) {
       }
     }
   } finally {
+    // Swallowed on purpose: the unlock can only fail if the connection is already gone,
+    // in which case postgres has dropped the advisory lock for us and there is nothing
+    // to report — and throwing here would replace whatever real migration error we are
+    // unwinding from. Never taken under test, which is what the ignore records.
+    /* node:coverage ignore next */
     await client.query('SELECT pg_advisory_unlock($1)', [MIGRATION_LOCK]).catch(() => {})
     client.release()
   }

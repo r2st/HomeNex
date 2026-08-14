@@ -146,6 +146,28 @@ test('a rental lead reaching Deposit/Token captures a rental deal priced as mont
   )
 })
 
+test('a deal capture that throws does not take the stage move down with it', async () => {
+  // §5.4 calls captureDealForLead best-effort, and best-effort is only a claim until
+  // something fails: the `.catch` on that call is the last function in db.js that no
+  // test enters. Break the insert rather than the lead — taking the table out of the
+  // way is the one failure that is certain, immediate, and reverses cleanly, and it
+  // leaves the UPDATE the move actually consists of completely untouched.
+  const lead = await db.upsertLead(agent.id, '919744010003', 'Unlucky Uma')
+  await db.query('ALTER TABLE deals RENAME TO deals_hidden')
+  let moved
+  try {
+    moved = await db.setLeadStage(lead.id, agent.id, { stage: 'Token/Booking' })
+  } finally {
+    await db.query('ALTER TABLE deals_hidden RENAME TO deals')
+  }
+
+  assert.equal(moved.stage, 'Token/Booking', 'the move itself must still land')
+  const { rows } = await db.query('SELECT * FROM lead_stage_events WHERE lead_id = $1', [lead.id])
+  assert.equal(rows.length, 1, 'and the transition is still logged, capture or no capture')
+  const deals = await db.query('SELECT * FROM deals WHERE lead_id = $1', [lead.id])
+  assert.deepEqual(deals.rows, [], 'nothing was captured, which is the point of best-effort')
+})
+
 // === Micro-page slug for a property with no usable title ====================
 
 test('backfilling a slug for a property with an empty title still produces a usable one', async () => {

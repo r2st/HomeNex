@@ -207,6 +207,14 @@ const { PORT = 8787, WHATSAPP_VERIFY_TOKEN = 'homenex-verify', WHATSAPP_APP_SECR
 // Fail fast on a misconfigured production deploy; only warn in dev/test.
 const envCheck = validateEnv(process.env)
 for (const w of envCheck.warnings) console.warn('⚠ ' + w)
+// Unreachable in-process: importing this module under `node --test` means NODE_ENV is
+// 'test' and the config is the valid one the suite set up, so the body never runs.
+// It is not untested — bootstrap.test.js boots a real child on a broken production
+// config and asserts both the message and the exit code. What that test cannot do is
+// pay for the lines, because a child's V8 profile is deliberately kept out of the merge
+// (childEnv() in test/helpers.js). Excluded here so the report says "not measured here"
+// rather than borrowing a number from a race.
+/* node:coverage ignore next 7 */
 if (!envCheck.ok) {
   for (const e of envCheck.errors) console.error('✖ config error: ' + e)
   if (process.env.NODE_ENV === 'production') {
@@ -298,6 +306,11 @@ app.disable('x-powered-by')
 app.use(securityHeaders)
 app.use(cors())
 app.use(errorCodes)
+// Same shape as the config check above: the guard's whole purpose is that it is false
+// under test, so the mount cannot run in-process. serverProcess.test.js boots a child
+// with LOG_REQUESTS=1 and asserts an access log line comes out; middleware.test.js
+// covers requestLogger() itself, including the no-argument form mounted here.
+/* node:coverage ignore next 3 */
 if (process.env.NODE_ENV !== 'test' && process.env.LOG_REQUESTS !== '0') {
   app.use(requestLogger())
 }
