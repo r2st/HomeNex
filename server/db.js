@@ -526,8 +526,22 @@ export async function attachLeadContact(leadId, contactId) {
 }
 
 // Claim an unassigned lead. Only succeeds while the lead is still in the pool.
+// The claimer's team is stamped in the same statement, so a lead picked up from the
+// shared pool reaches the manager views like any other lead that member takes — the
+// team-scoped sibling, claimTeamLead, has always kept its tag, and a lead claimed
+// here without one was invisible to auto-assign and to the board.
+// COALESCE, not overwrite: a lead already tagged to a team is that team's to move
+// (assignTeamLead / claimTeamLead), and re-tagging it here would walk it across the
+// boundary. A pooled lead claimed by an outsider keeps its old tag, which is the
+// behaviour this route already had.
 export async function assignLead(leadId, agentId) {
-  const res = await q('UPDATE leads SET agent_id = $1 WHERE id = $2 AND agent_id IS NULL', [agentId, leadId])
+  const res = await q(
+    `UPDATE leads
+        SET agent_id = $1,
+            team_id = COALESCE(team_id, (SELECT team_id FROM team_members WHERE agent_id = $1))
+      WHERE id = $2 AND agent_id IS NULL`,
+    [agentId, leadId],
+  )
   return res.rowCount > 0 ? getLead(leadId) : null
 }
 
@@ -3952,6 +3966,7 @@ export async function createTeam(ownerAgentId, name) {
       ownerAgentId,
       'owner',
     ])
+    await backfillAgentLeadsTeam(client, ownerAgentId, rows[0].id)
     await client.query('COMMIT')
     return rows[0]
   } catch (e) {
@@ -4076,6 +4091,7 @@ export async function respondToInvite(inviteId, agent, accept) {
       agent.id,
       invite.role,
     ])
+    await backfillAgentLeadsTeam(client, agent.id, invite.team_id)
     await client.query("UPDATE team_invites SET status = 'accepted', responded_at = now() WHERE id = $1", [inviteId])
     // Any other pending invites to this number are now moot.
     await client.query(
@@ -4316,6 +4332,19 @@ export async function stampLeadTeam(leadId, agentId) {
   const teamId = await agentTeamId(agentId)
   if (!teamId) return
   await q('UPDATE leads SET team_id = $1 WHERE id = $2 AND team_id IS DISTINCT FROM $1', [teamId, leadId])
+}
+
+// The same stamp for every lead an agent already owns, applied when they join a team.
+// stampLeadTeam only ever runs as a lead is created, so without this an agent's back
+// catalogue stays invisible to the team they just joined: a solo agent with 200 worked
+// leads creates a team and the board, the leaderboard and GET /api/team/leads are all
+// empty on day one. removeMember has always cleared team_id on the way out; this is the
+// matching half on the way in. Takes the client so it lands in the same transaction as
+// the team_members row — a membership without its leads is the state this fixes.
+// Leads already tagged to another team are left alone: an agent can only be in one team,
+// so those rows are historical, and re-tagging them would move another team's lead.
+async function backfillAgentLeadsTeam(client, agentId, teamId) {
+  await client.query('UPDATE leads SET team_id = $1 WHERE agent_id = $2 AND team_id IS NULL', [teamId, agentId])
 }
 
 // --- Manager views (privacy wall: these are gated to managers/owners in routes) ---
