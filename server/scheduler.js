@@ -124,7 +124,7 @@ export async function generateStaleFollowupsForAgent(agentId, { limit = 20 } = {
     // Same fortnight-of-silence rule as the worklist's stale card, off the same two
     // columns, so the card an agent sees and the follow-up this job files can never
     // disagree about which leads have gone quiet.
-    `SELECT l.id, l.name, l.wa_id FROM leads l
+    `SELECT l.id, l.name, l.wa_id, ${LAST_CONTACT_AT} AS last_msg_at FROM leads l
      WHERE l.agent_id = $1 AND l.closed_at IS NULL
        AND COALESCE(l.stage, 'New') NOT IN ('Registered/Closed','Closed','Lost')
        AND (${LAST_CONTACT_AT} IS NULL OR ${LAST_CONTACT_AT} < now() - interval '14 days')
@@ -138,7 +138,14 @@ export async function generateStaleFollowupsForAgent(agentId, { limit = 20 } = {
       lead_id: l.id,
       due_at: new Date().toISOString(),
       type: 'ai_suggested',
-      note: 'No contact in 2+ weeks — check in or share a fresh option.',
+      // Split for the same reason the worklist card is (see buildWorklist): a NULL
+      // last contact is a lead that was typed in and never messaged, and "check in"
+      // is not the move — there is no conversation to check back into. The two
+      // sentences stay in step with the card's, so the follow-up an agent opens says
+      // the same thing the card that sent them there did.
+      note: l.last_msg_at
+        ? 'No contact in 2+ weeks — check in or share a fresh option.'
+        : 'Added by hand and never messaged — send a first hello to start the conversation.',
     })
     n++
   }

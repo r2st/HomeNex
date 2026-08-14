@@ -3155,10 +3155,18 @@ export async function worklist(agentId, now = new Date()) {
   // a closing window means an inbound message 20–24h ago, which is the very thing
   // "silent for a fortnight" measures, and the hot rule matches effective_temp =
   // 'Hot' where this one matches everything but.
+  // Two different leads reach this rule and they need two different sentences. A lead
+  // that has gone quiet needs resurfacing. A lead typed into Quick-add a minute ago
+  // has a NULL last_msg_at, which the query above deliberately counts as stale — but
+  // telling the agent "no contact in 2+ weeks" about a lead they created while making
+  // tea is false on its face, and it names the wrong next move: there is nothing to
+  // resurface, because the conversation has not started.
   for (const l of staleRows) {
     items.push(worklistItem('stale_lead', {
       lead_id: l.id, title: l.name || l.wa_id,
-      reason: 'No contact in 2+ weeks — resurface with a new property or a check-in.',
+      reason: l.last_msg_at
+        ? 'No contact in 2+ weeks — resurface with a new property or a check-in.'
+        : 'Added by hand and never messaged — send a first hello to start the conversation.',
       recencyAt: l.last_msg_at,
     }))
   }

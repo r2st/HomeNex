@@ -143,6 +143,29 @@ test('a lead inside its service window is never also called stale', async () => 
   assert.deepEqual(chandni.map((i) => i.type), ['service_window_closing'])
 })
 
+// Both halves of the stale rule, and the reason they read differently. The rule
+// deliberately counts a never-messaged lead as stale — silent for a fortnight is
+// trivially true of one that has never spoken — but the two leads it catches are
+// nothing alike, and one sentence for both was wrong for the newer of them.
+test('a lead that has gone quiet is told to resurface it', async () => {
+  assert.match(byType('stale_lead')[0].reason, /No contact in 2\+ weeks/)
+})
+
+test('a lead added by hand a minute ago is not told it has been silent for a fortnight', async () => {
+  // Exactly what Quick-add produces: a name, a number, and no conversation. The old
+  // wording told the agent their brand-new lead had been ignored for two weeks, and
+  // sent them to "resurface" a thread that does not exist yet.
+  const fresh = await upsertLead(agentId, '919851000009', 'Fresh Farida')
+  await query(`UPDATE leads SET stage = 'New', temp = 'Warm' WHERE id = $1`, [fresh.id])
+
+  const item = (await worklist(agentId)).items.find((i) => i.title === 'Fresh Farida')
+
+  assert.equal(item.type, 'stale_lead', 'still surfaced — an untouched lead is still work')
+  assert.doesNotMatch(item.reason, /2\+ weeks/, 'a lead created seconds ago has not been silent for two weeks')
+  assert.match(item.reason, /never messaged/i)
+  assert.equal(item.recency_at, null)
+})
+
 test('a hot lead gone quiet is chased as hot, not filed as stale', async () => {
   // Hema last spoke a month ago and has never been answered: silent long enough for
   // the stale rule, but Hot, which is the one temperature that rule skips.

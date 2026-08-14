@@ -89,6 +89,22 @@ test('generateStaleFollowups creates one AI-suggested follow-up and never nags t
   const fu = await (await req('GET', `/api/followups?lead_id=${lead.id}`)).json()
   assert.equal(fu.length, 1)
   assert.equal(fu[0].type, 'ai_suggested')
+  assert.match(fu[0].note, /No contact in 2\+ weeks/)
+})
+
+test('the follow-up for a never-messaged lead says so, instead of claiming silence', async () => {
+  // The same rule catches two very different leads (see buildWorklist), and this job
+  // writes a note the agent reads days later with no context but the sentence itself.
+  // "Check in" is the wrong instruction for a lead that was typed in and never
+  // written to — there is nothing to check back into.
+  const lead = await upsertLead(agentId, '919888820009', 'Never Nandini')
+
+  assert.equal(await generateStaleFollowupsForAgent(agentId), 1)
+
+  const fu = await (await req('GET', `/api/followups?lead_id=${lead.id}`)).json()
+  assert.equal(fu.length, 1)
+  assert.doesNotMatch(fu[0].note, /2\+ weeks/)
+  assert.match(fu[0].note, /never messaged/i)
 })
 
 test('siteVisitReminders notify the evening before', async () => {
