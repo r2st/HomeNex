@@ -335,6 +335,17 @@ const captureRawBody = (req, _res, buf) => {
 // and `html` at 512KB each, and JSON escaping inflates — while being 12x tighter than
 // what it replaces.
 app.use('/ingest', express.json({ limit: '2mb', verify: captureRawBody }))
+// Same argument for /webhook, and it bites harder: the signature check that makes this
+// route Meta-only lives INSIDE the handler, so the parse happens first. Every caller on
+// the internet — signature or not — can make the server buffer 25MB and JSON.parse it
+// before verifySignature gets a say and answers 401. Parsing is synchronous, so that is
+// the event loop, and /healthz stops answering with it.
+//
+// 1MB against a real Meta payload: a batched `entry[]` of message events is a few KB,
+// and a leadgen change carries an id rather than the answers (processLeadgen fetches
+// those from the Graph API). So this is ~100x the largest thing Meta actually sends and
+// 25x tighter than what it replaces.
+app.use('/webhook', express.json({ limit: '1mb', verify: captureRawBody }))
 app.use(
   express.json({
     limit: '25mb', // media library uploads arrive as base64 JSON

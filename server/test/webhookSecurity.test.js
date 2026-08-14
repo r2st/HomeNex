@@ -371,3 +371,57 @@ test('a Graph API outage during leadgen fetch does not take the webhook down', a
     delete process.env.META_PAGE_ACCESS_TOKEN
   }
 })
+
+test('an oversized webhook body is refused before the signature is even considered', async () => {
+  // The signature check is what makes this route Meta-only, and it lives INSIDE the
+  // handler — so until the body cap above it, the parse ran first. Anyone on the
+  // internet could make the server buffer 25MB and JSON.parse it, synchronously, on
+  // the way to a 401 they were always going to get. That is the event loop, 240 times
+  // a minute, and /healthz stops answering with it.
+  //
+  // Signed correctly on purpose: a valid signature must not buy a caller a bigger
+  // body. The cap sits above the route, so Meta itself would be refused too — which
+  // is the intent, since Meta has no reason to send one.
+  const payload = { object: 'whatsapp_business_account', filler: 'x'.repeat(2 * 1024 * 1024) }
+  const raw = JSON.stringify(payload)
+  const started = Date.now()
+  const res = await fetch(base + '/webhook', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-hub-signature-256': sign(raw) },
+    body: raw,
+  })
+
+  assert.equal(res.status, 413)
+  assert.equal((await res.json()).code, 'PAYLOAD_TOO_LARGE')
+  assert.ok(Date.now() - started < 2000, `the refusal itself took ${Date.now() - started}ms`)
+})
+
+test('a real-sized Meta payload still clears the cap and is processed', async () => {
+  // The ceiling has to leave a genuine batched delivery alone. Meta sends `entry[]`
+  // with several changes at once; this is far larger than that and still ordinary.
+  const payload = {
+    object: 'whatsapp_business_account',
+    entry: [{
+      changes: [{
+        field: 'messages',
+        value: {
+          metadata: { phone_number_id: 'pn-cap-test' },
+          contacts: [{ profile: { name: 'Capacity Kavya' } }],
+          messages: [{ from: '919876512345', id: 'wamid-cap-1', type: 'text', text: { body: 'Is the 3BHK still available? '.repeat(200) } }],
+        },
+      }],
+    }],
+  }
+  const res = await postWebhook(payload, sign(JSON.stringify(payload)))
+  assert.equal(res.status, 200)
+
+  const lead = await until(async () =>
+    (await query('SELECT * FROM leads WHERE wa_id = $1', ['919876512345'])).rows[0])
+  assert.ok(lead, 'the message became a lead rather than being refused at the parser')
+})
+
+test('the server is still answering after a refused webhook body', async () => {
+  const res = await fetch(base + '/healthz')
+  assert.equal(res.status, 200)
+  assert.equal((await res.json()).ok, true)
+})
