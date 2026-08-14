@@ -8,7 +8,7 @@
 // sheet's button, not about whether cards render.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { render, change, click } from '../test/render.jsx'
+import { render, change, click, submit } from '../test/render.jsx'
 import { installBrowser, mockFetch } from '../test/browserEnv.js'
 import PropertiesTab from './PropertiesTab.jsx'
 import DashboardTab from './DashboardTab.jsx'
@@ -189,4 +189,194 @@ test('Home asks for the inventory count and never downloads the inventory', asyn
 
   assert.equal(net.to('/api/properties', 'GET').length, 0, 'the property list was fetched')
   assert.ok(net.to('/api/properties/count', 'GET').length > 0, 'the count was never asked for')
+})
+
+// --- The filter sheet ----------------------------------------------------------
+//
+// Everything below is reached by tapping something, which is why none of it had run:
+// the four chip rows in the sheet, both ways of clearing them, the two empty-state
+// buttons, the add form and the detail panel a card opens.
+
+const openFilters = (ui) => click(ui.byText('Filters', { exact: true }))
+
+// A chip's label is a substring of what the cards behind the sheet say — "Villa" is in
+// "Villa One", "4 BHK" is in a card's "4 BHK · villa · …" line — and the cards render
+// first, so a loose byText would tap the list instead of the filter.
+const chip = (ui, label) => ui.byText(label, { exact: true })
+
+test('each chip row narrows the request the list makes', async (t) => {
+  const { net } = setup(t, [
+    property(1, { title: 'Villa One', property_type: 'villa', bhk: '4', status: 'sold' }),
+    property(2, { title: 'Flat Two', property_type: 'apartment', bhk: '2', status: 'available' }),
+  ])
+  const ui = await render(<PropertiesTab onOpenLead={() => {}} />)
+  const lastList = () => net.to('/api/properties', 'GET').at(-1).query
+
+  await openFilters(ui)
+  await click(chip(ui, 'Villa'))
+  assert.equal(lastList().type, 'villa')
+
+  await click(chip(ui, '4 BHK'))
+  assert.equal(lastList().bhk, '4')
+
+  await click(chip(ui, 'Sold'))
+  assert.equal(lastList().status, 'sold')
+
+  assert.match(ui.text(), /Villa One/)
+  assert.doesNotMatch(ui.text(), /Flat Two/, 'the list is the server\'s answer, not a client-side guess')
+})
+
+test('a price band is sent as the paise range the server filters on', async (t) => {
+  const { net } = setup(t, many(3))
+  const ui = await render(<PropertiesTab onOpenLead={() => {}} />)
+  await openFilters(ui)
+
+  await click(ui.byText('₹50L–1Cr'))
+  const q = net.to('/api/properties', 'GET').at(-1).query
+  assert.equal(q.min_price, String(50 * 1_00_000 * 100), '₹50L in paise')
+  assert.equal(q.max_price, String(100 * 1_00_000 * 100), '₹1Cr in paise')
+
+  // The open-ended top band has a floor and no ceiling — an empty max, not a zero,
+  // or every property above ₹2.5Cr would be filtered out by the band meant to find them.
+  await click(ui.byText('> ₹2.5Cr'))
+  const top = net.to('/api/properties', 'GET').at(-1).query
+  assert.equal(top.min_price, String(250 * 1_00_000 * 100))
+  assert.equal(top.max_price ?? '', '')
+})
+
+test('the Filters button counts what is active, and clearing empties it', async (t) => {
+  setup(t, many(4))
+  const ui = await render(<PropertiesTab onOpenLead={() => {}} />)
+
+  assert.equal(ui.queryByText('Clear all filters'), null, 'nothing to clear yet')
+
+  // The badge is a separate <span> inside the button, so the button reads "Filters2"
+  // with no space — assert on the button, not on a phrase in the whole screen's text.
+  const filtersButton = () => ui.byText(/^Filters\d*$/)
+
+  await openFilters(ui)
+  await click(ui.byText('Apartment', { exact: true }))
+  await click(ui.byText('2 BHK', { exact: true }))
+  await click(ui.byText(/^Show \d+ results?$/))
+
+  assert.match(ui.text(filtersButton()), /^Filters2$/, 'two filters are on and the button says so')
+
+  await click(ui.byText('Clear all filters'))
+  assert.match(ui.text(filtersButton()), /^Filters$/, 'the count went with the filters')
+  assert.equal(ui.queryByText('Clear all filters'), null)
+})
+
+test('Clear all inside the sheet leaves the sheet open with nothing selected', async (t) => {
+  const { net } = setup(t, many(4))
+  const ui = await render(<PropertiesTab onOpenLead={() => {}} />)
+
+  await openFilters(ui)
+  await click(ui.byText('Villa'))
+  await click(ui.byText('Clear all'))
+
+  assert.match(ui.text(), /Filter properties/, 'the sheet is still open to pick again')
+  assert.equal(net.to('/api/properties', 'GET').at(-1).query.type ?? '', '')
+})
+
+test('a search keeps the band the sheet set, rather than dropping it', async (t) => {
+  // clearedFilters exists because the two clears mean different things — the header
+  // one wipes the search too. This is the pairing that would break silently.
+  const { net } = setup(t, many(4))
+  const ui = await render(<PropertiesTab onOpenLead={() => {}} />)
+
+  await openFilters(ui)
+  await click(ui.byText('< ₹50L'))
+  await click(ui.byText('Show'))
+  await change(ui.byLabel('Search properties'), 'Tower')
+
+  const q = net.to('/api/properties', 'GET').at(-1).query
+  assert.equal(q.q, 'Tower')
+  assert.equal(q.max_price, String(50 * 1_00_000 * 100), 'the band survived the search')
+})
+
+// --- Empty states ---------------------------------------------------------------
+
+test('an empty inventory invites a first property; an empty filter offers to clear', async (t) => {
+  setup(t, [])
+  const ui = await render(<PropertiesTab onOpenLead={() => {}} />)
+
+  assert.match(ui.text(), /No properties yet/)
+  await click(ui.byText('Add your first property'))
+  assert.match(ui.text(), /Add property/, 'the add sheet opened')
+})
+
+test('the empty-filter state clears the filters it is complaining about', async (t) => {
+  setup(t, many(5))
+  const ui = await render(<PropertiesTab onOpenLead={() => {}} />)
+
+  await change(ui.byLabel('Search properties'), 'nothing matches this')
+  assert.match(ui.text(), /No properties match these filters/)
+
+  await click(ui.byText('Clear filters'))
+
+  assert.equal(ui.byLabel('Search properties').props.value, '', 'the search that produced nothing is gone')
+  assert.match(ui.text(), /5 in your inventory/)
+})
+
+// --- Adding ---------------------------------------------------------------------
+
+test('a new property is posted with price converted from lakhs to paise', async (t) => {
+  const { net } = setup(t, many(2))
+  net.set('POST /api/properties', { id: 99 })
+  const ui = await render(<PropertiesTab onOpenLead={() => {}} />)
+
+  await click(ui.byText('+ Add'))
+  await change(ui.byLabel('Title *'), '  Kolte Patil 24K  ')
+  await change(ui.byLabel('Locality'), 'Pimple Nilakh')
+  await change(ui.byLabel(/Price/), '85')
+  await submit(ui.get((f) => f.type === 'form', 'the add form'))
+
+  const [sent] = net.to('/api/properties', 'POST')
+  assert.equal(sent.body.title, 'Kolte Patil 24K', 'the title is trimmed')
+  assert.equal(sent.body.locality, 'Pimple Nilakh')
+  assert.equal(sent.body.price_paise, 85 * 1_00_000 * 100, '₹85L stored as paise')
+  assert.doesNotMatch(ui.text(), /Add property/, 'the sheet closes on success')
+})
+
+test('a refused create keeps the form open with the reason on it', async (t) => {
+  const { net } = setup(t, many(2))
+  net.set('POST /api/properties', { status: 400, body: { error: 'title must be 120 characters or fewer.' } })
+  const ui = await render(<PropertiesTab onOpenLead={() => {}} />)
+
+  await click(ui.byText('+ Add'))
+  await change(ui.byLabel('Title *'), 'A very long title')
+  await submit(ui.get((f) => f.type === 'form', 'the add form'))
+
+  assert.equal(net.to('/api/properties', 'POST').length, 1)
+  assert.match(ui.text(), /title must be 120 characters or fewer/)
+  assert.match(ui.text(), /Add property/, 'the sheet is still open so nothing typed is lost')
+})
+
+// --- Opening a card --------------------------------------------------------------
+
+test('tapping a card opens that property, and closing returns to the list', async (t) => {
+  const { net } = setup(t, [property(1, { title: 'Solitaire Villa', rera_project_number: 'P52100012345' })])
+  net.set('GET /api/properties/1', property(1, {
+    title: 'Solitaire Villa',
+    rera_project_number: 'P52100012345',
+    size_sqft: 1450,
+    builder_name: 'Solitaire Group',
+  }))
+  const ui = await render(<PropertiesTab onOpenLead={() => {}} />)
+
+  assert.match(ui.text(), /RERA ✓/, 'the card flags a RERA-registered listing')
+
+  await click(ui.byText('Solitaire Villa', { selector: 'p' }))
+  assert.ok(net.to('/api/properties/1', 'GET').length > 0, 'the detail fetched the full row')
+  assert.match(ui.text(), /Solitaire Group/, 'and shows what the card had no room for')
+})
+
+test('a card with no price and an unknown status still renders as a row', async (t) => {
+  // Both are nullable columns, and the card is the only place either is read without
+  // a fallback nearby — an em dash and the raw status beat a blank line.
+  setup(t, [property(1, { price_paise: null, status: 'under_offer', bhk: null, locality: null, photos: ['/uploads/a.jpg'] })])
+  const ui = await render(<PropertiesTab onOpenLead={() => {}} />)
+
+  assert.match(ui.text(), /—/)
+  assert.match(ui.text(), /under_offer/)
 })

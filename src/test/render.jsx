@@ -491,7 +491,9 @@ function makeView(root) {
     get tree() {
       return root.tree
     },
-    text: () => textOf(root.tree),
+    // Whole-screen text by default; pass an element to read just that subtree, for the
+    // assertions that would otherwise be satisfied by the same words appearing anywhere.
+    text: (fiber = root.tree) => textOf(fiber),
     debug: () => describe(root.tree),
 
     all: (predicate) => hosts().filter(predicate),
