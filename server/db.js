@@ -37,7 +37,12 @@ const q = (text, params) => pool.query(text, params)
 // --- Migrations: versioned SQL files in server/migrations/, applied in order once. ---
 const MIGRATION_LOCK = 727274 // arbitrary app-wide advisory lock id
 
-async function runMigrations() {
+// `dir` is a parameter only so a test can point the chain at a fixture directory —
+// production and every normal import use the default. The failure path is the whole
+// reason: a migration that throws mid-file must leave the database exactly as it was
+// and take the version row down with it, and that is not something the real chain
+// can be made to demonstrate without breaking every other suite's database.
+export async function runMigrations(dir = path.join(__dirname, 'migrations')) {
   const client = await pool.connect()
   try {
     await client.query('SELECT pg_advisory_lock($1)', [MIGRATION_LOCK])
@@ -46,7 +51,6 @@ async function runMigrations() {
         version TEXT PRIMARY KEY,
         applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
       )`)
-    const dir = path.join(__dirname, 'migrations')
     const files = fs.readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()
     const applied = new Set(
       (await client.query('SELECT version FROM schema_migrations')).rows.map((r) => r.version),
