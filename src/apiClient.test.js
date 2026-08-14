@@ -306,3 +306,101 @@ test('adminAgents unwraps the paginated shape and passes a bare array through', 
   responses.push(jsonResponse(200, [{ id: 2 }]))
   assert.deepEqual(await api.adminAgents(), [{ id: 2 }])
 })
+
+// --- the request each wrapper builds ------------------------------------------
+//
+// Most of `api` is one line: a method, a URL built by template literal, and a body
+// whose keys are renamed on the way out (`assigneeId` becomes assignee_id). Nothing
+// type-checks any of that, and the failure it produces is not a crash — a wrapper
+// that PUTs where the server expects POST, or writes /api/group/2 for /api/groups/2,
+// gets a 404 the UI reports as "Something went wrong on our side."
+//
+// The screens that call these are covered by their own component tests, but those
+// stub `api` wholesale, so the wrapper bodies themselves never run there. This is the
+// only place the URL, verb and payload shape are actually asserted, so it covers
+// every wrapper no screen test happens to reach rather than a chosen few.
+const REQUESTS = [
+  // Leads: notes, assignment, EMI.
+  ['emi', () => api.emi({ principal: 5000000, rate: 8.5 }), 'POST', '/api/emi', { principal: 5000000, rate: 8.5 }],
+  ['activity', () => api.activity(), 'GET', '/api/activity'],
+  ['leadNotes', () => api.leadNotes(5), 'GET', '/api/leads/5/notes'],
+  ['deleteLeadNote', () => api.deleteLeadNote(5, 9), 'DELETE', '/api/leads/5/notes/9'],
+  ['assignLeadTo', () => api.assignLeadTo(5, 42), 'POST', '/api/leads/5/assign-to', { assignee_id: 42 }],
+  // Broker network.
+  ['network', () => api.network(), 'GET', '/api/network'],
+  ['postNetwork', () => api.postNetwork({ text: '2BHK wanted in Baner' }), 'POST', '/api/network', { text: '2BHK wanted in Baner' }],
+  // Templates and quick replies.
+  ['updateTemplate', () => api.updateTemplate(7, { body: 'Hi {{name}}' }), 'PUT', '/api/templates/7', { body: 'Hi {{name}}' }],
+  ['requestTemplateReview', () => api.requestTemplateReview(7), 'POST', '/api/templates/7/request-review', {}],
+  ['updateQuickReply', () => api.updateQuickReply(3, { text: 'On my way' }), 'PUT', '/api/quick-replies/3', { text: 'On my way' }],
+  ['deleteContact', () => api.deleteContact(12), 'DELETE', '/api/contacts/12'],
+  // Deals and commissions (§5.4).
+  ['deal', () => api.deal(4), 'GET', '/api/deals/4'],
+  ['createDeal', () => api.createDeal({ lead_id: 5 }), 'POST', '/api/deals', { lead_id: 5 }],
+  ['updateDeal', () => api.updateDeal(4, { status: 'won' }), 'PUT', '/api/deals/4', { status: 'won' }],
+  ['createCommission', () => api.createCommission({ deal_id: 4 }), 'POST', '/api/commissions', { deal_id: 4 }],
+  ['updateCommission', () => api.updateCommission(6, { status: 'received' }), 'PUT', '/api/commissions/6', { status: 'received' }],
+  // Notifications.
+  ['markAllNotificationsRead', () => api.markAllNotificationsRead(), 'POST', '/api/notifications/read-all', {}],
+  // Groups and segments.
+  ['createGroup', () => api.createGroup({ name: 'Baner buyers' }), 'POST', '/api/groups', { name: 'Baner buyers' }],
+  ['updateGroup', () => api.updateGroup(2, { name: 'Baner' }), 'PUT', '/api/groups/2', { name: 'Baner' }],
+  ['groupMembers', () => api.groupMembers(2), 'GET', '/api/groups/2/members'],
+  ['addGroupMembers', () => api.addGroupMembers(2, [11, 12]), 'POST', '/api/groups/2/members', { contact_ids: [11, 12] }],
+  ['removeGroupMember', () => api.removeGroupMember(2, 12), 'DELETE', '/api/groups/2/members/12'],
+  ['previewSegment', () => api.previewSegment({ city: 'Pune' }), 'POST', '/api/segments/preview', { criteria: { city: 'Pune' } }],
+  // Team (§5.3).
+  ['teamMembers', () => api.teamMembers(), 'GET', '/api/team/members'],
+  ['teamPipeline', () => api.teamPipeline('buyer'), 'GET', '/api/team/pipeline?type=buyer'],
+  ['autoAssignTeamLead', () => api.autoAssignTeamLead(8), 'POST', '/api/team/leads/8/auto-assign', {}],
+  ['claimTeamLead', () => api.claimTeamLead(8), 'POST', '/api/team/leads/8/claim', {}],
+]
+
+for (const [name, call, method, url, body] of REQUESTS) {
+  test(`api.${name} sends ${method} ${url}`, async () => {
+    setToken('tok-wrap')
+    responses.push(jsonResponse(200, {}))
+    await call()
+
+    assert.equal(calls.length, 1, 'exactly one request')
+    assert.equal(calls[0].method, method)
+    assert.equal(calls[0].url, url)
+    assert.equal(calls[0].headers.authorization, 'Bearer tok-wrap', 'every one of these is authenticated')
+
+    if (body === undefined) {
+      assert.equal(calls[0].body, undefined, 'a read sends no body')
+    } else {
+      assert.deepEqual(JSON.parse(calls[0].body), body)
+      assert.equal(calls[0].headers['content-type'], 'application/json')
+    }
+  })
+}
+
+test('teamPipeline with no type asks for the whole pipeline, not "?type=undefined"', async () => {
+  responses.push(jsonResponse(200, {}))
+  await api.teamPipeline()
+  assert.equal(calls[0].url, '/api/team/pipeline')
+})
+
+test('coming back online replays the queue without anyone calling flush', async () => {
+  // The listener registered at import time is what makes the offline queue actually
+  // drain — flushOfflineQueue is well covered above, but only because the tests call
+  // it directly. In the app nothing does: the agent walks out of a basement showing
+  // and the browser fires 'online'. Drop this listener and every queued stage move
+  // sits in localStorage until the next full reload, which is the bug the queue was
+  // built to prevent.
+  setToken('tok-online')
+  responses.push(new TypeError('Failed to fetch'))
+  assert.deepEqual(await api.moveLeadStage(5, 'Site Visit'), { queued: true })
+  assert.equal(offlineQueueSize(), 1)
+
+  calls = []
+  responses.push(jsonResponse(200, { ok: true }))
+  listeners.get('online')()
+  for (let i = 0; i < 20 && offlineQueueSize(); i++) await new Promise((r) => setTimeout(r, 0))
+
+  assert.equal(offlineQueueSize(), 0, 'the queued move was replayed')
+  assert.equal(calls[0].url, '/api/leads/5/stage')
+  assert.equal(calls[0].method, 'PUT')
+  assert.ok(events.includes('homenex-queue-flushed'))
+})
