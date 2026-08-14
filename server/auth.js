@@ -6,6 +6,7 @@ import {
   getAgent,
   getAgentPasswordHash,
   getMeta,
+  isValidEmail,
   normalizePhone,
   setMeta,
   updateAgentPassword,
@@ -105,7 +106,7 @@ export async function signup({ name, phone, email, password, wa_phone_number }) 
   // A valid WhatsApp number is at least 10 digits (Indian mobile) once normalized.
   const digits = normalizePhone(phone).replace(/\D/g, '')
   if (digits.length < 10) throw new Error('Enter a valid WhatsApp number')
-  if (email && !/^\S+@\S+\.\S+$/.test(email)) throw new Error('Enter a valid email address')
+  if (email && !isValidEmail(email)) throw new Error('Enter a valid email address')
   if (password.length < MIN_PASSWORD_LENGTH)
     throw new Error(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`)
   // We now use a single number: the agent's WhatsApp number IS their WhatsApp Business

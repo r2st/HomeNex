@@ -773,7 +773,19 @@ app.post('/ingest/portal/:token/:portal', boundedText({
 }))
 
 // --- Auth: one-screen signup (name, phone, email, password) and login ---
-app.post('/api/auth/signup', ah(async (req, res) => {
+//
+// The only two routes an anonymous caller can POST a body to other than the ingest
+// pair, and until now the only body-accepting routes in the app wearing no bound at
+// all — so every field here arrived with express.json()'s 25MB ceiling as its only
+// limit. Each one is then handed to something that charges by the character: `email`
+// to the address check (see isValidEmail for what that used to cost), `password` to
+// scryptSync, `phone` to normalizePhone's four passes and then to Postgres.
+const AUTH_TEXT_LIMITS = {
+  name: TEXT.LINE, phone: TEXT.LINE, email: TEXT.LINE,
+  password: TEXT.PASSWORD, wa_phone_number: TEXT.LINE,
+}
+
+app.post('/api/auth/signup', boundedText(AUTH_TEXT_LIMITS), ah(async (req, res) => {
   try {
     res.json(await signup(req.body))
   } catch (err) {
@@ -781,7 +793,7 @@ app.post('/api/auth/signup', ah(async (req, res) => {
   }
 }))
 
-app.post('/api/auth/login', ah(async (req, res) => {
+app.post('/api/auth/login', boundedText(AUTH_TEXT_LIMITS), ah(async (req, res) => {
   try {
     res.json(await login(req.body))
   } catch (err) {

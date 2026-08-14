@@ -284,6 +284,17 @@ export const TEXT = {
   WHATSAPP: 4096,
   // A link. Well past any real URL, well short of a payload.
   URL: 2000,
+  // A password or passphrase, on the two public auth routes. Deliberately far looser
+  // than anything a human types or a password manager generates (those top out around
+  // 64), because the cost of being wrong here is a locked-out agent, not a slow one —
+  // and the thing being defended against is measured in megabytes, not characters.
+  //
+  // What it defends: both routes hand this string straight to scryptSync, which is
+  // synchronous by design and already ~100ms of deliberate work. A 25MB password took
+  // 229ms of that instead — not the amplification the email field had, but it is the
+  // event loop, on an unauthenticated route, and there is no reason to carry 25MB into
+  // a KDF to find out the answer is no.
+  PASSWORD: 1024,
   // One side of an email posted by an inbound-parse webhook (Mailgun / SendGrid /
   // Cloudflare Email Worker) — the text part or the HTML part, bounded separately.
   //

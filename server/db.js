@@ -155,6 +155,36 @@ export function normalizePhone(raw) {
   return '+' + d
 }
 
+// The one shape an email has to have to be stored. Three call sites used to spell
+// this out for themselves as /^\S+@\S+\.\S+$/, and that expression backtracks
+// catastrophically: `\S` matches `@` and `.`, so every one of the three runs can
+// start where the previous one ended, and the engine has to try each split before it
+// can say no. On a string of `@`s — which fails, so no early exit rescues it — the
+// cost is quadratic. Measured on the old pattern: 5k characters took 18ms, 20k took
+// 253ms, 50k took 1.6s, and it is all on the event loop.
+//
+// Two of the three call sites are reachable with an unbounded string. `signup()` runs
+// this check before it touches the database, on a route that is public by definition —
+// so one POST of `{name, phone, password, email: "@".repeat(n)}` from an
+// unauthenticated caller was enough to take the process away from every other request,
+// for as long as the attacker cared to pick n. The third, updateAgentProfileSelf, is
+// authenticated but deliberately wears no boundedText (its own per-field caps are
+// better worded, and avatar_url has to stay unbounded), so a length guard at the route
+// would not have covered it either.
+//
+// The fix is the pattern, not the length: the classes are made disjoint from the
+// delimiters they are separated by, so there is exactly one way to split any input and
+// nothing to backtrack through. `[^\s@]` cannot cross the `@`, and the final
+// `[^\s.@]` cannot cross a `.`, which pins the last dot instead of letting the middle
+// run swallow it. Same answer as before on every address the app accepts or rejects
+// today — `a@b` and `a b@c.in` are still refused, `beta@homenex.in` and `x@y.co.in`
+// still pass — and now linear on the inputs that used to hang.
+//
+// Stricter in two corners, both of them right: `a@b@c.d` and a trailing-dot `a@b.c.`
+// were accepted by the old pattern only because `\S` happily matched the delimiters.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s.@]+$/
+export const isValidEmail = (value) => EMAIL_RE.test(value)
+
 // Strict form of normalizePhone for numbers that must be Indian mobiles — the agent's
 // own login number. Accepts what agents actually type ("9876543210", "098765 43210",
 // "+91 98765-43210", "919876543210") and returns canonical "+919876543210".
@@ -1190,7 +1220,7 @@ export async function updateAgentProfile(agentId, { name, email, phone } = {}) {
   }
   if (email !== undefined) {
     const e = String(email || '').trim().toLowerCase() || null
-    if (e && !/^\S+@\S+\.\S+$/.test(e)) throw new Error('Enter a valid email address')
+    if (e && !isValidEmail(e)) throw new Error('Enter a valid email address')
     if (e) {
       const clash = (await q('SELECT id FROM agents WHERE lower(email) = $1 AND id != $2', [e, agentId])).rows[0]
       if (clash) {
@@ -1356,7 +1386,7 @@ export async function updateAgentProfileSelf(agentId, fields = {}) {
 
   if (fields.email !== undefined) {
     const email = String(fields.email ?? '').trim().toLowerCase() || null
-    if (email && !/^\S+@\S+\.\S+$/.test(email)) fail('Enter a valid email address')
+    if (email && !isValidEmail(email)) fail('Enter a valid email address')
     if (email) {
       const clash = (await q('SELECT id FROM agents WHERE lower(email) = $1 AND id != $2', [email, agentId])).rows[0]
       if (clash) fail('Another agent already uses this email', 'EMAIL_TAKEN')
