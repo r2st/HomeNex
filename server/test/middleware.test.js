@@ -527,6 +527,9 @@ test('the declared text sizes are the ones the product means', () => {
   // upstream *after* we have spent the send. EMAIL_PART is the odd one out — it
   // bounds what gets SCANNED rather than what gets stored, because parsePortalEmail
   // is a chain of regex passes on the event loop and /ingest/email is public.
+  // PASSWORD is the other exception: it bounds what reaches a synchronous scryptSync,
+  // and it is deliberately far looser than any real passphrase, because the cost of
+  // being wrong on that one is a locked-out agent rather than a slow request.
   assert.deepEqual(TEXT, {
     LINE: 120,
     BLURB: 500,
@@ -534,6 +537,7 @@ test('the declared text sizes are the ones the product means', () => {
     WHATSAPP: 4096,
     URL: 2000,
     EMAIL_PART: 512_000,
+    PASSWORD: 1024,
   })
 })
 
