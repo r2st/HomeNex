@@ -524,8 +524,17 @@ test('boundedText on a body that is not an object falls through', () => {
 
 test('the declared text sizes are the ones the product means', () => {
   // WHATSAPP in particular is Meta's own hard limit: anything longer is refused
-  // upstream *after* we have spent the send.
-  assert.deepEqual(TEXT, { LINE: 120, BLURB: 500, PROSE: 4000, WHATSAPP: 4096, URL: 2000 })
+  // upstream *after* we have spent the send. EMAIL_PART is the odd one out — it
+  // bounds what gets SCANNED rather than what gets stored, because parsePortalEmail
+  // is a chain of regex passes on the event loop and /ingest/email is public.
+  assert.deepEqual(TEXT, {
+    LINE: 120,
+    BLURB: 500,
+    PROSE: 4000,
+    WHATSAPP: 4096,
+    URL: 2000,
+    EMAIL_PART: 512_000,
+  })
 })
 
 // --- bounded links ------------------------------------------------------------------
