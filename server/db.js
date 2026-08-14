@@ -2136,6 +2136,30 @@ export async function createFollowup(agentId, f) {
   return rows[0]
 }
 
+// createFollowup for a whole batch, in one round trip. Returns how many were filed.
+// Same reason as createNotifications: the stale-followup job reads its candidates in
+// one SELECT (capped at 20) and then wrote them back one INSERT at a time, per agent,
+// across every active agent.
+export async function createFollowups(agentId, items = []) {
+  if (!items.length) return 0
+  for (const f of items) {
+    if (!f.lead_id || !f.due_at) throw new Error('lead_id and due_at are required')
+  }
+  const { rowCount } = await q(
+    `INSERT INTO followups (lead_id, agent_id, due_at, type, note)
+     SELECT t.lead_id, $1, t.due_at, t.type, t.note
+     FROM unnest($2::int[], $3::timestamptz[], $4::text[], $5::text[]) AS t(lead_id, due_at, type, note)`,
+    [
+      agentId,
+      items.map((f) => f.lead_id),
+      items.map((f) => f.due_at),
+      items.map((f) => f.type || 'manual'),
+      items.map((f) => f.note ?? null),
+    ],
+  )
+  return rowCount
+}
+
 export async function listFollowups(
   agentId,
   { pendingOnly = false, leadId = null, today = false, overdueOnly = false, byHeat = false } = {},
@@ -2888,6 +2912,47 @@ export async function createNotification(agentId, { type, title, body = null, en
     [agentId, type, title, body, entity_type, entity_id, dedupe_key],
   )
   return rows[0] || null // null = deduped (already notified for this reason)
+}
+
+// createNotification for a whole batch, in one round trip. Returns how many rows were
+// actually created — the same "null means deduped" answer, counted.
+//
+// The scheduler is the caller that needs it. Every notification job runs per agent,
+// over every active agent, on a cadence as tight as 10 minutes, and each one used to
+// INSERT once per candidate row: agents × candidates round trips per tick, against a
+// pool the request path is sharing. The candidates come from a single SELECT already,
+// so the writes may as well be a single statement too.
+//
+// Deduped on dedupe_key before the insert, not just by the unique index. ON CONFLICT
+// DO NOTHING resolves duplicates within one statement, but the RETURNING count is what
+// each job reports as its work done, and two identical keys in one batch would be
+// counted once by the index and twice by a caller that trusted the input length.
+export async function createNotifications(agentId, items = []) {
+  const seen = new Set()
+  const rows = []
+  for (const n of items) {
+    if (n.dedupe_key != null) {
+      if (seen.has(n.dedupe_key)) continue
+      seen.add(n.dedupe_key)
+    }
+    rows.push(n)
+  }
+  if (!rows.length) return 0
+  const { rowCount } = await q(
+    `INSERT INTO notifications (agent_id, type, title, body, entity_type, entity_id, dedupe_key)
+     SELECT $1, * FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::int[], $7::text[])
+     ON CONFLICT (agent_id, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING`,
+    [
+      agentId,
+      rows.map((n) => n.type),
+      rows.map((n) => n.title),
+      rows.map((n) => n.body ?? null),
+      rows.map((n) => n.entity_type ?? null),
+      rows.map((n) => n.entity_id ?? null),
+      rows.map((n) => n.dedupe_key ?? null),
+    ],
+  )
+  return rowCount
 }
 
 export async function listNotifications(agentId, { unreadOnly = false, limit = 50 } = {}) {

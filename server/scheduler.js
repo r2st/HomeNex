@@ -18,8 +18,8 @@ import {
   getMeta,
   setMeta,
   recomputeAgentScores,
-  createNotification,
-  createFollowup,
+  createNotifications,
+  createFollowups,
   addMessage,
   getMessages,
   logActivity,
@@ -51,27 +51,23 @@ export async function serviceWindowWatchForAgent(agentId) {
        AND last_inbound_at > now() - interval '24 hours'`,
     [agentId],
   )
-  let n = 0
-  for (const l of rows) {
-    // One notification per window occurrence (keyed to the inbound hour).
-    const windowHour = Math.floor(new Date(l.last_inbound_at).getTime() / 3600_000)
-    const created = await createNotification(agentId, {
+  return createNotifications(
+    agentId,
+    rows.map((l) => ({
       type: 'service_window_closing',
       title: `⏰ Window closing: ${l.name || l.wa_id}`,
       body: 'The 24h free-reply window closes soon. Reply now or you’re locked into a template.',
       entity_type: 'lead',
       entity_id: l.id,
-      dedupe_key: `sw:${l.id}:${windowHour}`,
-    })
-    if (created) n++
-  }
-  return n
+      // One notification per window occurrence (keyed to the inbound hour).
+      dedupe_key: `sw:${l.id}:${Math.floor(new Date(l.last_inbound_at).getTime() / 3600_000)}`,
+    })),
+  )
 }
 
 // Alert on strong engagement: a lead re-opening a property page repeatedly, or a
 // hot lead sitting unanswered. So the signal can't be lost while the agent is away.
 export async function detectHotLeadsForAgent(agentId, now = Date.now()) {
-  let n = 0
   const day = today(now)
 
   const repeat = await query(
@@ -81,17 +77,6 @@ export async function detectHotLeadsForAgent(agentId, now = Date.now()) {
      GROUP BY l.id, l.name, l.wa_id HAVING COUNT(*) >= 3`,
     [agentId],
   )
-  for (const l of repeat.rows) {
-    const created = await createNotification(agentId, {
-      type: 'hot_lead_waiting',
-      title: `🔥 ${l.name || l.wa_id} is looking hard`,
-      body: `Re-opened a property page ${l.views}× today. Call while it’s fresh.`,
-      entity_type: 'lead',
-      entity_id: l.id,
-      dedupe_key: `hotview:${l.id}:${day}`,
-    })
-    if (created) n++
-  }
 
   // The same "waiting on a reply" question the dashboard and the worklist ask, asked
   // the same way — off the lead row, not by reading the last message's role back out
@@ -103,18 +88,26 @@ export async function detectHotLeadsForAgent(agentId, now = Date.now()) {
        AND ${AWAITING_REPLY}`,
     [agentId],
   )
-  for (const l of waiting.rows) {
-    const created = await createNotification(agentId, {
+  // Both halves of this job go in one statement — a lead can qualify on views AND on
+  // waiting, and they carry different dedupe keys, so neither shadows the other.
+  return createNotifications(agentId, [
+    ...repeat.rows.map((l) => ({
+      type: 'hot_lead_waiting',
+      title: `🔥 ${l.name || l.wa_id} is looking hard`,
+      body: `Re-opened a property page ${l.views}× today. Call while it’s fresh.`,
+      entity_type: 'lead',
+      entity_id: l.id,
+      dedupe_key: `hotview:${l.id}:${day}`,
+    })),
+    ...waiting.rows.map((l) => ({
       type: 'hot_lead_waiting',
       title: `🔥 Hot lead waiting: ${l.name || l.wa_id}`,
       body: `Score ${l.effective_score} and waiting on your reply.`,
       entity_type: 'lead',
       entity_id: l.id,
       dedupe_key: `hotwait:${l.id}:${day}`,
-    })
-    if (created) n++
-  }
-  return n
+    })),
+  ])
 }
 
 // Resurface quiet leads: for every active-pipeline lead with no message in 14 days
@@ -132,11 +125,12 @@ export async function generateStaleFollowupsForAgent(agentId, { limit = 20 } = {
      ORDER BY l.updated_at LIMIT $2`,
     [agentId, limit],
   )
-  let n = 0
-  for (const l of rows) {
-    await createFollowup(agentId, {
+  const now = new Date().toISOString()
+  return createFollowups(
+    agentId,
+    rows.map((l) => ({
       lead_id: l.id,
-      due_at: new Date().toISOString(),
+      due_at: now,
       type: 'ai_suggested',
       // Split for the same reason the worklist card is (see buildWorklist): a NULL
       // last contact is a lead that was typed in and never messaged, and "check in"
@@ -146,10 +140,8 @@ export async function generateStaleFollowupsForAgent(agentId, { limit = 20 } = {
       note: l.last_msg_at
         ? 'No contact in 2+ weeks — check in or share a fresh option.'
         : 'Added by hand and never messaged — send a first hello to start the conversation.',
-    })
-    n++
-  }
-  return n
+    })),
+  )
 }
 
 // Remind the agent the evening before a scheduled site visit.
@@ -162,19 +154,17 @@ export async function siteVisitRemindersForAgent(agentId) {
        AND v.scheduled_at BETWEEN now() AND now() + interval '24 hours'`,
     [agentId],
   )
-  let n = 0
-  for (const v of rows) {
-    const created = await createNotification(agentId, {
+  return createNotifications(
+    agentId,
+    rows.map((v) => ({
       type: 'site_visit_tomorrow',
       title: `📍 Visit tomorrow: ${v.name || v.wa_id}`,
       body: `Site visit ${v.title ? `for ${v.title} ` : ''}is coming up. Confirm pickup and attendance.`,
       entity_type: 'site_visit',
       entity_id: v.id,
       dedupe_key: `visit:${v.id}`,
-    })
-    if (created) n++
-  }
-  return n
+    })),
+  )
 }
 
 // No-response nudge: a brand-new lead whose only messages are from the buyer and
@@ -190,20 +180,18 @@ export async function noResponseNudgeForAgent(agentId, now = Date.now()) {
        AND l.last_outbound_at IS NULL`,
     [agentId, String(NO_RESPONSE_NUDGE_MINUTES)],
   )
-  let n = 0
-  for (const l of rows) {
-    const windowHour = Math.floor(new Date(l.last_inbound_at).getTime() / 3600_000)
-    const created = await createNotification(agentId, {
+  return createNotifications(
+    agentId,
+    rows.map((l) => ({
       type: 'no_response_nudge',
       title: `🆕 Unanswered lead: ${l.name || l.wa_id}`,
       body: `A new buyer has waited ${NO_RESPONSE_NUDGE_MINUTES}+ min with no reply. First response wins the deal.`,
       entity_type: 'lead',
       entity_id: l.id,
-      dedupe_key: `noresp:${l.id}:${windowHour}`,
-    })
-    if (created) n++
-  }
-  return n
+      // Once per waiting spell, keyed to the last-inbound hour so a fresh message re-nudges.
+      dedupe_key: `noresp:${l.id}:${Math.floor(new Date(l.last_inbound_at).getTime() / 3600_000)}`,
+    })),
+  )
 }
 
 // Deliver one automated site-visit WhatsApp message: send it, mirror it into the
@@ -305,29 +293,29 @@ export async function commissionOverdueSweepForAgent(agentId) {
      ) inv ON true`,
     [agentId],
   )
-  let n = 0
-  for (const c of rows) {
-    // leads.name is nullable, so fall back to the wa_id, which is NOT NULL.
-    const who = c.name || c.wa_id
-    // An invoice that was raised and then cancelled leaves the commission 'invoiced'
-    // with nothing to quote, so the number is only named when there is one.
-    const body =
-      c.prior_status === 'invoiced'
-        ? c.invoice_number
-          ? `Invoice ${c.invoice_number} for ${who} is past its payout date. Chase the payment.`
-          : `Brokerage for ${who} is invoiced and past its payout date. Chase the payment.`
-        : `Brokerage for ${who} is past its payout date. Chase it.`
-    const created = await createNotification(agentId, {
-      type: 'commission_overdue',
-      title: `💰 Commission overdue`,
-      body,
-      entity_type: 'commission',
-      entity_id: c.id,
-      dedupe_key: `commov:${c.id}`,
-    })
-    if (created) n++
-  }
-  return n
+  return createNotifications(
+    agentId,
+    rows.map((c) => {
+      // leads.name is nullable, so fall back to the wa_id, which is NOT NULL.
+      const who = c.name || c.wa_id
+      // An invoice that was raised and then cancelled leaves the commission 'invoiced'
+      // with nothing to quote, so the number is only named when there is one.
+      const body =
+        c.prior_status === 'invoiced'
+          ? c.invoice_number
+            ? `Invoice ${c.invoice_number} for ${who} is past its payout date. Chase the payment.`
+            : `Brokerage for ${who} is invoiced and past its payout date. Chase the payment.`
+          : `Brokerage for ${who} is past its payout date. Chase it.`
+      return {
+        type: 'commission_overdue',
+        title: `💰 Commission overdue`,
+        body,
+        entity_type: 'commission',
+        entity_id: c.id,
+        dedupe_key: `commov:${c.id}`,
+      }
+    }),
+  )
 }
 
 // --- Orchestration ---
