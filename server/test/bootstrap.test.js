@@ -11,7 +11,7 @@ import { spawn } from 'node:child_process'
 import net from 'node:net'
 import { fileURLToPath } from 'node:url'
 import pg from 'pg'
-import { createTestDb, dropTestDb } from './helpers.js'
+import { childEnv, createTestDb, dropTestDb } from './helpers.js'
 
 const dbName = await createTestDb('bootstrap')
 const DATABASE_URL = process.env.DATABASE_URL
@@ -48,8 +48,7 @@ const children = []
 async function boot(env = {}) {
   const port = await freePort()
   const child = spawn(process.execPath, [ENTRYPOINT], {
-    env: {
-      ...process.env,
+    env: childEnv({
       NODE_ENV: 'production',
       DATABASE_URL,
       SESSION_SECRET: 'a'.repeat(32),
@@ -57,7 +56,7 @@ async function boot(env = {}) {
       PORT: String(port),
       LOG_REQUESTS: '0',
       ...env,
-    },
+    }),
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   children.push(child)

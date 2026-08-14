@@ -36,6 +36,32 @@ export async function withAdmin(fn) {
   }
 }
 
+// The environment to hand a spawned child, with the coverage directory taken back out.
+//
+// Under `--experimental-test-coverage` the runner points NODE_V8_COVERAGE at a scratch
+// directory and merges every profile it finds there when the run ends. A child spawned
+// from a test inherits that variable, so it writes a profile too — for the same source
+// files the in-process tests are measuring, from a process that only ever boots the
+// server and answers one request.
+//
+// Merging those is what made the report unstable. V8 only reports functions it has
+// actually compiled, and a booted server compiles route handlers the in-process suite
+// never brings into its own profile. Each child that lands therefore ADDS uncovered
+// functions to the denominator — index.js and leadSources.js swung between 100% and
+// 74% depending on how many children flushed before the runner read the directory,
+// which under `--test-concurrency=4` is a race with nothing holding it either way.
+//
+// Nothing is lost by dropping them: the code these children exist to exercise is the
+// bootstrap block in index.js, which carries `node:coverage disable` for exactly this
+// reason. Anything a child is meant to get *credit* for has to be reachable in-process
+// as well — see scripts/dropStaleTestDbs.js, whose CLI summary is exported as main()
+// so a test can call it rather than reading it back out of a subprocess profile.
+export function childEnv(extra = {}) {
+  const env = { ...process.env, ...extra }
+  delete env.NODE_V8_COVERAGE
+  return env
+}
+
 // Every throwaway database is `homenex_test_<file>_<pid>`. The pid suffix is what
 // makes the leftovers sweepable: a database whose pid is no longer a running process
 // can never be in use, whoever started it. Keep the two in step — dropStaleTestDbs.js

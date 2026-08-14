@@ -74,14 +74,28 @@ export async function dropStaleTestDbs({ dryRun = false, log = console.log } = {
   return dropped
 }
 
-// Only when run directly — importing this from a test must not drop anything.
-if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
-  const dryRun = process.argv.includes('--dry-run')
-  const dropped = await dropStaleTestDbs({ dryRun })
+// The CLI itself: argument parsing and the closing summary line, which is the only
+// output an operator running this by hand actually reads.
+//
+// Exported rather than written inline under the `run directly` guard so a test can
+// call it in its own process. A test that could only reach it by spawning `node
+// scripts/dropStaleTestDbs.js` would be relying on the child's V8 profile being
+// merged into the report, and that merge is a race — see childEnv() in test/helpers.js
+// for what it cost the last time this suite depended on it.
+export async function main(argv = process.argv, { log = console.log, run = dropStaleTestDbs } = {}) {
+  const dryRun = argv.includes('--dry-run')
+  const dropped = await run({ dryRun, log })
   const mb = (dropped.reduce((n, d) => n + d.bytes, 0) / 1024 / 1024).toFixed(1)
-  console.log(
+  log(
     dropped.length
       ? `${dryRun ? 'Would reclaim' : 'Reclaimed'} ${mb} MB from ${dropped.length} stale test database(s) at ${BASE}`
       : 'No stale test databases.',
   )
+  return dropped
+}
+
+// Only when run directly — importing this from a test must not drop anything.
+/* node:coverage ignore next 3 */
+if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+  await main()
 }

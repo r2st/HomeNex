@@ -10,8 +10,8 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { classifyTestDbs, dropStaleTestDbs, pidIsAlive } from '../scripts/dropStaleTestDbs.js'
-import { BASE, TEST_DB_NAME_RE, TEST_DB_PREFIX, withAdmin } from './helpers.js'
+import { classifyTestDbs, dropStaleTestDbs, main, pidIsAlive } from '../scripts/dropStaleTestDbs.js'
+import { BASE, TEST_DB_NAME_RE, TEST_DB_PREFIX, childEnv, withAdmin } from './helpers.js'
 
 // A stand-in for process.kill: alive pids return, dead ones throw ESRCH, and a pid
 // owned by another user throws EPERM.
@@ -90,7 +90,7 @@ const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'sc
 // A pid that is definitely not running: spawn something trivial and wait for it to
 // exit. Inventing a large number would work until the day the OS had reused it.
 async function deadPid() {
-  const child = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' })
+  const child = spawn(process.execPath, ['-e', ''], { stdio: 'ignore', env: childEnv() })
   await new Promise((resolve) => child.on('exit', resolve))
   assert.equal(pidIsAlive(child.pid), false, 'the probe process outlived its own exit event')
   return child.pid
@@ -110,7 +110,10 @@ const dbExists = async (name) =>
 
 const runScript = (args = []) =>
   new Promise((resolve) => {
-    const child = spawn(process.execPath, [SCRIPT, ...args], { stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn(process.execPath, [SCRIPT, ...args], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: childEnv(),
+    })
     let out = ''
     child.stdout.setEncoding('utf8').on('data', (c) => (out += c))
     child.stderr.setEncoding('utf8').on('data', (c) => (out += c))
@@ -201,4 +204,60 @@ test('the CLI names what a dry run would reclaim without reclaiming it', async (
   assert.match(out, /Would reclaim \d+\.\d MB from \d+ stale test database\(s\) at /)
   assert.doesNotMatch(out, /^Reclaimed/m, 'a dry run must not claim it reclaimed anything')
   assert.equal(await dbExists(stale), true, 'a dry run dropped a database')
+})
+
+// --- The summary line, in this process -------------------------------------------
+//
+// The three tests above run the real `node scripts/dropStaleTestDbs.js`, which is the
+// only way to prove the shebang-less entrypoint works at all. But a subprocess is a
+// blind spot for coverage — its V8 profile is deliberately thrown away (childEnv), so
+// nothing it executes is credited here. main() is exported to close that: the summing,
+// the megabyte rounding and the choice of sentence are exercised in-process, against a
+// stubbed sweep, with no postgres in the way.
+
+test('main() sums the bytes it was handed and rounds them to one decimal', async () => {
+  const lines = []
+  const dropped = await main([], {
+    log: (l) => lines.push(l),
+    run: async () => [
+      { name: 'homenex_test_a_1', bytes: 8 * 1024 * 1024 },
+      { name: 'homenex_test_b_2', bytes: 1.5 * 1024 * 1024 },
+    ],
+  })
+
+  assert.equal(lines.at(-1), `Reclaimed 9.5 MB from 2 stale test database(s) at ${BASE}`)
+  assert.equal(dropped.length, 2, 'main must hand back what was dropped, not just print it')
+})
+
+test('main() reads --dry-run out of the argv it is given, wherever it sits', async () => {
+  const lines = []
+  let sawDryRun = null
+  await main(['node', 'dropStaleTestDbs.js', '--dry-run'], {
+    log: (l) => lines.push(l),
+    run: async ({ dryRun }) => {
+      sawDryRun = dryRun
+      return [{ name: 'homenex_test_a_1', bytes: 1024 * 1024 }]
+    },
+  })
+
+  assert.equal(sawDryRun, true, '--dry-run never reached the sweep')
+  // "Would reclaim", not "Reclaimed" — a dry run that reports in the past tense reads
+  // as a sweep that already happened, which is the one thing it must not imply.
+  assert.equal(lines.at(-1), `Would reclaim 1.0 MB from 1 stale test database(s) at ${BASE}`)
+})
+
+test('main() says nothing was there rather than reclaiming 0.0 MB from 0 databases', async () => {
+  const lines = []
+  await main([], { log: (l) => lines.push(l), run: async () => [] })
+  assert.deepEqual(lines, ['No stale test databases.'])
+})
+
+test('main() gives the sweep the same log it prints its own summary with', async () => {
+  // The sweep's per-database lines and the summary have to land on the same stream, or
+  // `node scripts/dropStaleTestDbs.js > sweep.log` captures half the story.
+  const lines = []
+  let sawLog = null
+  await main([], { log: (l) => lines.push(l), run: async ({ log }) => (sawLog = log, log('swept'), []) })
+  assert.equal(typeof sawLog, 'function')
+  assert.deepEqual(lines, ['swept', 'No stale test databases.'])
 })

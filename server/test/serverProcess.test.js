@@ -22,7 +22,7 @@ import { spawn } from 'node:child_process'
 import net from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { createTestDb, dropTestDb } from './helpers.js'
+import { childEnv, createTestDb, dropTestDb } from './helpers.js'
 
 process.env.NODE_ENV = 'test'
 const dbName = await createTestDb('serverprocess')
@@ -47,8 +47,7 @@ const freePort = () =>
 async function boot({ mode = 'boot', env = {} } = {}) {
   const port = await freePort()
   const child = spawn(process.execPath, [HARNESS], {
-    env: {
-      ...process.env,
+    env: childEnv({
       // The guard under test is `NODE_ENV !== 'test'`. Our own process sets it to
       // 'test', so it has to come off explicitly or the child starts nothing at all.
       NODE_ENV: env.NODE_ENV ?? '',
@@ -59,7 +58,7 @@ async function boot({ mode = 'boot', env = {} } = {}) {
       // is otherwise never constructed under test.
       LOG_REQUESTS: '1',
       ...env,
-    },
+    }),
     stdio: ['ignore', 'pipe', 'pipe'],
   })
 
@@ -98,10 +97,9 @@ async function boot({ mode = 'boot', env = {} } = {}) {
     exited,
     waitFor,
     output: () => out,
-    // Ask nicely first. A SIGKILL'd child never runs its exit hooks, which under
-    // `--experimental-test-coverage` means the coverage it recorded is thrown away —
-    // the startup block would look untested even though this file just drove it.
-    // SIGKILL stays as the backstop for a child that will not go.
+    // Ask nicely first: a SIGKILL'd child never runs its exit hooks, so it leaves its
+    // Postgres connections for the server to reap and can outlive the drop of the test
+    // database. SIGKILL stays as the backstop for a child that will not go.
     kill: async () => {
       if (child.exitCode !== null || child.signalCode !== null) return exited
       child.kill('SIGTERM')

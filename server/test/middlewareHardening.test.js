@@ -20,7 +20,7 @@ import { execFile } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
-import { createTestDb, dropTestDb } from './helpers.js'
+import { childEnv, createTestDb, dropTestDb } from './helpers.js'
 
 process.env.NODE_ENV = 'test'
 delete process.env.OPENROUTER_API_KEY
@@ -49,7 +49,7 @@ after(async () => {
 const PROBE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'hstsProbe.mjs')
 const execFileAsync = promisify(execFile)
 const headersWith = async (env) => {
-  const { stdout } = await execFileAsync(process.execPath, [PROBE], { env: { ...process.env, ...env } })
+  const { stdout } = await execFileAsync(process.execPath, [PROBE], { env: childEnv(env) })
   return JSON.parse(stdout)
 }
 
