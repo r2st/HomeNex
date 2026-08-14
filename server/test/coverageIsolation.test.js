@@ -13,55 +13,101 @@
 // index.js and leadSources.js swung between 100% and 74% across runs of identical
 // code, and `--test-concurrency=4` made the race easy to lose.
 //
-// The fix is one line in helpers.js — childEnv() takes NODE_V8_COVERAGE back out — and
-// the fix is only as good as its use at every spawn site. Hence this file: one test
-// for the helper, and one that walks the suite looking for a child spawned without it.
+// The fix is one line in helpers.js — childEnv() blanks NODE_V8_COVERAGE — and it is
+// only as good as its use at every spawn site. Hence this file: tests for the helper,
+// and one that walks the suite looking for a child spawned without it.
+//
+// It has to *blank* the variable, not delete it, and that distinction was worth a
+// second round of this bug. child_process refills NODE_V8_COVERAGE from the parent's
+// process.env whenever the env you hand it lacks the key as an own property, so the
+// first version of childEnv() — a `delete` — did nothing in the one situation it
+// existed for. The proof is in the report: `BRDA:2513` and `BRDA:2514` (inside the
+// `node:coverage disable` bootstrap block at the foot of index.js, which no in-process
+// test can execute at all) turned up in one run's lcov and not the next.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, readdirSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { childEnv } from './helpers.js'
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url))
 
-test('childEnv hands on the environment with the coverage directory removed', () => {
+// What a child spawned with `env` reports for NODE_V8_COVERAGE. This file is the one
+// place allowed to spawn without childEnv — proving the inheritance needs a child that
+// *does* see the variable — which is why the guard below excludes it by name.
+const sees = (env) =>
+  new Promise((resolve) => {
+    const child = spawn(process.execPath, ['-p', 'process.env.NODE_V8_COVERAGE ?? "unset"'], {
+      env,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    let out = ''
+    child.stdout.setEncoding('utf8').on('data', (c) => (out += c))
+    child.on('exit', () => resolve(out.trim()))
+  })
+
+test('childEnv hands on the environment with the coverage directory turned off', () => {
   const env = childEnv({ HARNESS_MODE: 'boot' })
 
-  assert.equal(env.NODE_V8_COVERAGE, undefined)
+  // Empty, not absent — see the next test for why the difference is the whole fix.
+  assert.equal(env.NODE_V8_COVERAGE, '')
   assert.equal(env.HARNESS_MODE, 'boot', 'the overrides a caller asked for must survive')
   assert.equal(env.PATH, process.env.PATH, 'the rest of the environment must be handed on intact')
 })
 
-test('childEnv removes the coverage directory even when a caller passes one explicitly', () => {
-  // The delete has to come after the spread, not before it. Getting that order wrong
-  // leaves the variable in place for anyone who names it, which is the one call shape
-  // most likely to be reaching for it by mistake.
-  assert.equal(childEnv({ NODE_V8_COVERAGE: '/tmp/somewhere' }).NODE_V8_COVERAGE, undefined)
+test('childEnv keeps the key present, because deleting it lets child_process put it back', async () => {
+  // The trap this whole file exists for. child_process copies NODE_V8_COVERAGE out of
+  // the parent's process.env into the env you pass whenever that env lacks the key as
+  // an own property — so `delete env.NODE_V8_COVERAGE`, the obvious spelling, is a
+  // no-op at the point it matters. Assert the copy really happens rather than trusting
+  // this comment: if a future Node drops the behaviour, this test says so instead of
+  // silently guarding nothing.
+  const deleted = { ...process.env, NODE_V8_COVERAGE: '/tmp/cov-probe' }
+  delete deleted.NODE_V8_COVERAGE
+
+  assert.equal(
+    await sees(deleted),
+    process.env.NODE_V8_COVERAGE ?? 'unset',
+    'a deleted key is refilled from the parent, which is why childEnv blanks it instead',
+  )
+  assert.equal(childEnv({ NODE_V8_COVERAGE: '/tmp/somewhere' }).NODE_V8_COVERAGE, '')
 })
 
 test('a child really does inherit the coverage directory unless it is taken out', async () => {
   // The premise of the whole fix, asserted rather than assumed — and asserted in a way
   // that works whether or not this run is itself under --experimental-test-coverage,
   // by setting the variable here instead of relying on the runner having set it.
-  const sees = (env) =>
-    new Promise((resolve) => {
-      const child = spawn(process.execPath, ['-p', 'process.env.NODE_V8_COVERAGE ?? "unset"'], {
-        env,
-        stdio: ['ignore', 'pipe', 'ignore'],
-      })
-      let out = ''
-      child.stdout.setEncoding('utf8').on('data', (c) => (out += c))
-      child.on('exit', () => resolve(out.trim()))
-    })
-
   assert.equal(
     await sees({ ...process.env, NODE_V8_COVERAGE: '/tmp/cov-probe' }),
     '/tmp/cov-probe',
     'a plain env spread hands the coverage directory to the child',
   )
-  assert.equal(await sees(childEnv({ NODE_V8_COVERAGE: '/tmp/cov-probe' })), 'unset')
+  assert.equal(await sees(childEnv({ NODE_V8_COVERAGE: '/tmp/cov-probe' })), '')
+})
+
+test('a child given childEnv writes no profile into a coverage directory', async () => {
+  // The assertions above are about a variable; this one is about the file that variable
+  // causes, which is the thing that actually lands in the merge. Worth having both:
+  // a Node that changed how the value is spelled but still profiled would slip past the
+  // string comparisons and be caught here.
+  const dir = mkdtempSync(path.join(tmpdir(), 'homenex-cov-'))
+  try {
+    const run = (env) =>
+      new Promise((resolve) => {
+        spawn(process.execPath, ['-e', 'void 0'], { env, stdio: 'ignore' }).on('exit', resolve)
+      })
+
+    await run(childEnv({ NODE_V8_COVERAGE: dir }))
+    assert.deepEqual(readdirSync(dir), [], 'childEnv must leave the directory untouched')
+
+    await run({ ...process.env, NODE_V8_COVERAGE: dir })
+    assert.equal(readdirSync(dir).length, 1, 'without it the child drops a profile to merge')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('every child this suite spawns is given childEnv', () => {

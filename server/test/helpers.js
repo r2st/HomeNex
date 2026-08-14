@@ -56,10 +56,17 @@ export async function withAdmin(fn) {
 // reason. Anything a child is meant to get *credit* for has to be reachable in-process
 // as well — see scripts/dropStaleTestDbs.js, whose CLI summary is exported as main()
 // so a test can call it rather than reading it back out of a subprocess profile.
+//
+// Deleting the key is NOT enough, and looks like it works right up until you measure.
+// child_process copies NODE_V8_COVERAGE from the parent's process.env into whatever env
+// you pass unless that env carries the key as an *own property* — deleting it removes
+// the property, so the copy puts the runner's directory straight back and the child
+// profiles after all. (Node does this deliberately, so coverage follows a process tree;
+// here it is the opposite of what we want.) Setting the key to the empty string leaves
+// nothing to copy, and the child reads the value for truthiness before opening a
+// profile, so an empty one means "off".
 export function childEnv(extra = {}) {
-  const env = { ...process.env, ...extra }
-  delete env.NODE_V8_COVERAGE
-  return env
+  return { ...process.env, ...extra, NODE_V8_COVERAGE: '' }
 }
 
 // Every throwaway database is `homenex_test_<file>_<pid>`. The pid suffix is what
