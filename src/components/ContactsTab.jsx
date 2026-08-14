@@ -224,9 +224,15 @@ function GroupsPanel() {
 
   return (
     <section className="mt-4 bg-card rounded-2xl border border-line shadow-card overflow-hidden">
-      <button onClick={toggle} className="w-full flex items-center justify-between px-4 py-3 active:scale-[0.99] transition">
-        <span className="text-[10.5px] font-bold tracking-[0.18em] text-brand">GROUPS & SEGMENTS</span>
-        <span className="text-ink-faint text-[13px]">{open ? '▲' : '▼'}</span>
+      {/* aria-expanded is the whole state of this control: the caret is the only thing
+          that says whether the panel below is open, and a caret is not announced. */}
+      <button
+        onClick={toggle}
+        aria-expanded={open}
+        className="w-full flex items-center justify-between px-4 py-3 active:scale-[0.99] transition"
+      >
+        <span className="text-[10.5px] font-bold tracking-[0.18em] text-brand">GROUPS &amp; SEGMENTS</span>
+        <span aria-hidden="true" className="text-ink-faint text-[13px]">{open ? '▲' : '▼'}</span>
       </button>
       {open && (
         <div className="px-4 pb-4">
@@ -250,8 +256,23 @@ function GroupsPanel() {
                 <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: g.color }} />
                 <span className="text-[13px] font-bold text-ink truncate flex-1">{g.name}</span>
                 <span className="text-[11px] text-ink-faint tabular-nums">{g.member_count}</span>
-                <button onClick={() => setBlastGroup(g)} className="text-[11.5px] font-bold text-brand active:scale-95 transition">Send</button>
-                <button onClick={() => remove(g)} className="text-ink-faint text-[14px] leading-none active:scale-90 transition">×</button>
+                {/* Both controls repeat once per group, so the group has to be in the
+                    name — especially the second one, which is a delete announced as
+                    nothing more than "button". */}
+                <button
+                  onClick={() => setBlastGroup(g)}
+                  aria-label={`Send a message to ${g.name}`}
+                  className="text-[11.5px] font-bold text-brand active:scale-95 transition"
+                >
+                  Send
+                </button>
+                <button
+                  onClick={() => remove(g)}
+                  aria-label={`Delete the group ${g.name}`}
+                  className="text-ink-faint text-[14px] leading-none active:scale-90 transition"
+                >
+                  <span aria-hidden="true">×</span>
+                </button>
               </div>
             ))}
             {groups && groups.length === 0 && (

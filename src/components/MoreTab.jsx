@@ -69,13 +69,19 @@ function FollowupsScreen({ onBack, onOpenLead }) {
           const done = Boolean(f.completed_at)
           return (
             <div key={f.id} className="flex items-center gap-3 px-4 py-3">
+              {/* The tick is `text-transparent` until the follow-up is done, so this
+                  control's entire visible content is invisible half the time and a bare
+                  "✓" the other half. aria-pressed carries the state; the name carries
+                  which of the listed follow-ups it belongs to. */}
               <button
                 onClick={() => toggle(f)}
+                aria-pressed={done}
+                aria-label={`Mark the follow-up for ${f.lead_name || f.lead_wa_id} ${done ? 'not done' : 'done'}`}
                 className={`shrink-0 w-6 h-6 rounded-full border-2 text-[12px] leading-none transition active:scale-90 ${
                   done ? 'bg-brand border-brand text-white' : 'border-brand/50 text-transparent'
                 }`}
               >
-                ✓
+                <span aria-hidden="true">✓</span>
               </button>
               <button onClick={() => onOpenLead(f.lead_id)} className="min-w-0 flex-1 text-left">
                 <p className={`text-[13px] font-bold truncate ${done ? 'line-through text-ink-faint' : f.overdue ? 'text-hot' : 'text-ink'}`}>

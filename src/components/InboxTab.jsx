@@ -394,11 +394,15 @@ function Conversation({ leadId, onBack }) {
             </p>
           )}
         </div>
+        {/* The count is the only visible content when there are notes, and nothing at
+            all when there aren't — so the name carries both what the button opens and
+            how many notes are behind it. */}
         <button
           onClick={() => setSheet('notes')}
+          aria-label={lead.notes?.length ? `Private notes (${lead.notes.length})` : 'Private notes'}
           className="shrink-0 text-white/90 text-[11px] font-bold bg-white/15 rounded-full px-2.5 py-1.5 active:scale-95 transition"
         >
-          📝{lead.notes?.length ? ` ${lead.notes.length}` : ''}
+          <span aria-hidden="true">📝{lead.notes?.length ? ` ${lead.notes.length}` : ''}</span>
         </button>
         <button
           onClick={toggleAi}

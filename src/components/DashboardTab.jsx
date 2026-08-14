@@ -246,13 +246,24 @@ export default function DashboardTab({ agent, onGoTo, onOpenConversation, onOpen
                   {n.body && <p className="text-[12px] text-ink-soft leading-snug mt-0.5">{n.body}</p>}
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
+                  {/* Up to four alerts stack here, each with the same pair of controls.
+                      "Open" and "Dismiss" on their own name the action and not the
+                      alert, so read aloud the list is four identical rows. */}
                   {n.entity_type === 'lead' && n.entity_id && (
-                    <button onClick={() => onOpenLead(n.entity_id)} className="text-[12px] font-bold text-brand active:scale-95 transition">
+                    <button
+                      onClick={() => onOpenLead(n.entity_id)}
+                      aria-label={`Open the lead for "${n.title}"`}
+                      className="text-[12px] font-bold text-brand active:scale-95 transition"
+                    >
                       Open
                     </button>
                   )}
-                  <button onClick={() => dismissNotification(n.id)} title="Dismiss" className="text-ink-faint text-[15px] leading-none active:scale-90 transition">
-                    ×
+                  <button
+                    onClick={() => dismissNotification(n.id)}
+                    aria-label={`Dismiss alert "${n.title}"`}
+                    className="text-ink-faint text-[15px] leading-none active:scale-90 transition"
+                  >
+                    <span aria-hidden="true">×</span>
                   </button>
                 </div>
               </div>
