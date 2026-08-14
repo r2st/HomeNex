@@ -91,11 +91,31 @@ test('GET /webhook 403s on a wrong or missing verify token', async () => {
     'hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=1',
     'hub.mode=subscribe&hub.challenge=1', // no token at all
     'hub.mode=unsubscribe&hub.verify_token=test-verify-token&hub.challenge=1', // wrong mode
+    'hub.mode=subscribe&hub.verify_token=test-verify-token&hub.verify_token=x&hub.challenge=1', // repeated: an array
+    'hub.mode=subscribe&hub.verify_token=homenex-verify&hub.challenge=1', // the dev default is not a second key
     '', // nothing
   ]) {
     const res = await fetch(`${base}/webhook?${qs}`)
     assert.equal(res.status, 403, qs)
   }
+})
+
+// The handshake's answer is a string the CALLER chose, echoed back on the origin that
+// serves the SPA and stores every agent's token. res.send(aString) labels that
+// text/html, which made /webhook a reflected-XSS sink for anyone who could clear the
+// token check — and until this was fixed the token had a published default, so on any
+// deploy that hadn't overridden it, "anyone" meant anyone.
+test('the echoed challenge is never served as HTML', async () => {
+  const payload = '<script>alert(document.cookie)</script>'
+  const res = await fetch(
+    `${base}/webhook?hub.mode=subscribe&hub.verify_token=test-verify-token&hub.challenge=${encodeURIComponent(payload)}`,
+  )
+
+  assert.equal(res.status, 200)
+  assert.match(res.headers.get('content-type'), /text\/plain/, 'the challenge is served as HTML')
+  // Echoed verbatim — Meta compares the bytes, so escaping it would break the
+  // handshake. The content type is what makes it inert, which is why that is asserted.
+  assert.equal(await res.text(), payload)
 })
 
 // --- POST /webhook: X-Hub-Signature-256 --------------------------------------

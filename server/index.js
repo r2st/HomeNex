@@ -200,9 +200,9 @@ import {
   ensureBody, boundedText, TEXT, boundedNumber, NUM, boundedUrl,
 } from './middleware.js'
 import { validateEnv } from './env.js'
-import { verifyWebhookSignature } from './webhookSignature.js'
+import { verifyWebhookSignature, verifyWebhookChallenge } from './webhookSignature.js'
 
-const { PORT = 8787, WHATSAPP_VERIFY_TOKEN = 'homenex-verify', WHATSAPP_APP_SECRET } = process.env
+const { PORT = 8787, WHATSAPP_APP_SECRET } = process.env
 
 // Fail fast on a misconfigured production deploy; only warn in dev/test.
 const envCheck = validateEnv(process.env)
@@ -614,13 +614,22 @@ async function processLeadgen(value) {
 
 // --- Meta webhook verification (GET) ---
 app.get('/webhook', (req, res) => {
-  if (
-    req.query['hub.mode'] === 'subscribe' &&
-    req.query['hub.verify_token'] === WHATSAPP_VERIFY_TOKEN
-  ) {
-    return res.status(200).send(req.query['hub.challenge'])
-  }
-  res.sendStatus(403)
+  // NODE_ENV is read per request, not captured at import, for the same reason the
+  // signature check does it: the fail-closed arm is the one that must not be baked in
+  // by whatever the environment happened to be when the module loaded.
+  const ok = verifyWebhookChallenge({
+    configured: process.env.WHATSAPP_VERIFY_TOKEN,
+    isProd: process.env.NODE_ENV === 'production',
+    mode: req.query['hub.mode'],
+    presented: req.query['hub.verify_token'],
+  })
+  if (!ok) return res.sendStatus(403)
+  // text/plain, deliberately. This route's whole job is to echo a caller-supplied
+  // string back, and res.send(aString) labels it text/html — which makes /webhook a
+  // reflected-XSS sink on the very origin that serves the SPA and stores agent tokens,
+  // for anyone who clears the handshake. Meta compares the body bytes and does not
+  // care what they are labelled, so nothing is lost by saying what this actually is.
+  res.type('text/plain').send(String(req.query['hub.challenge'] ?? ''))
 })
 
 // --- Real incoming WhatsApp messages (POST) ---

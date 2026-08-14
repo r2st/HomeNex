@@ -60,9 +60,33 @@ test('validateEnv: production passes with the required secrets set', () => {
     WHATSAPP_PHONE_NUMBER_ID: 'y',
     OPENROUTER_API_KEY: 'z',
     WHATSAPP_APP_SECRET: 's',
+    WHATSAPP_VERIFY_TOKEN: 'a-token-of-our-own',
   })
   assert.equal(r.ok, true)
   assert.deepEqual(r.warnings, [])
+})
+
+test('validateEnv: production is warned when the webhook handshake is open or dead', () => {
+  const warn = (WHATSAPP_VERIFY_TOKEN) =>
+    validateEnv({
+      NODE_ENV: 'production',
+      DATABASE_URL: 'postgres://u:p@db.internal:5432/homenex',
+      SESSION_SECRET: 'a'.repeat(32),
+      PUBLIC_BASE_URL: 'https://homenex.example',
+      WHATSAPP_ACCESS_TOKEN: 'x',
+      WHATSAPP_PHONE_NUMBER_ID: 'y',
+      OPENROUTER_API_KEY: 'z',
+      WHATSAPP_APP_SECRET: 's',
+      WHATSAPP_VERIFY_TOKEN,
+    }).warnings
+
+  // Unset: the handshake fails closed, so inbound is dead until it is set. Silent is
+  // the wrong way for that to happen.
+  assert.ok(warn(undefined).some((w) => /REFUSED \(403\)/.test(w)))
+  // Set, but to the value .env.example ships — which is worse than unset, because it
+  // looks configured while letting anyone complete the handshake.
+  assert.ok(warn('homenex-verify').some((w) => /published example value/.test(w)))
+  assert.deepEqual(warn('a-token-of-our-own'), [])
 })
 
 test('validateEnv: rejects the local dev DB fallback and a too-short secret in prod', () => {

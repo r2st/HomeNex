@@ -4,6 +4,8 @@
 // session secret that changes on every restart, silently logging everyone out).
 // Missing WhatsApp / AI / signature secret only downgrade features, so they warn.
 
+import { DEV_VERIFY_TOKEN } from './webhookSignature.js'
+
 // The connection string db.js falls back to when DATABASE_URL is unset — treated as
 // "not really configured" in production.
 const DEV_DB_FALLBACK = 'postgres://homenex:homenex@localhost:5432/homenex'
@@ -43,6 +45,24 @@ export function validateEnv(env = process.env) {
       isProd
         ? 'WHATSAPP_APP_SECRET missing — inbound webhooks will be REJECTED (401) until it is set.'
         : 'WHATSAPP_APP_SECRET missing — inbound webhook signatures are not verified (dev only; production fails closed).',
+    )
+  }
+
+  // Same shape, and the same reason to say it out loud: verifyWebhookChallenge()
+  // fails closed in production without this, so Meta's subscription handshake — the
+  // step that has to succeed before any message is ever delivered — will 403 until it
+  // is set. Left as a warning, and the value is checked for being the published dev
+  // constant too, because a deploy that copied .env.example forward is exactly the
+  // case where the handshake looks configured and is not.
+  if (!env.WHATSAPP_VERIFY_TOKEN) {
+    warnings.push(
+      isProd
+        ? 'WHATSAPP_VERIFY_TOKEN missing — Meta\'s webhook handshake will be REFUSED (403) until it is set.'
+        : 'WHATSAPP_VERIFY_TOKEN missing — the webhook handshake accepts the dev default (dev only; production refuses).',
+    )
+  } else if (isProd && env.WHATSAPP_VERIFY_TOKEN === DEV_VERIFY_TOKEN) {
+    warnings.push(
+      'WHATSAPP_VERIFY_TOKEN is still the published example value — anyone can complete the webhook handshake. Change it.',
     )
   }
 
