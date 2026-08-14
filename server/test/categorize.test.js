@@ -107,6 +107,34 @@ test('auto-fill proposes only fields that differ from the current lead', () => {
   assert.match(budget.suggested_display, /₹80L/)
 })
 
+// The canonical inquiry states only a ceiling, so the floor's own display formatter
+// had never been called. A buyer who states a band ("80 se 95 ke beech") produces
+// both, and both must be shown in lakhs — the column is paise, and an agent shown
+// "8000000000" instead of "₹80L" cannot tell a correct suggestion from a wrong one.
+test('auto-fill renders a stated budget floor in lakhs, like the ceiling', () => {
+  const lead = { budget_min: null, budget_max: null }
+  const suggestions = buildAutofillSuggestions(lead, { ...HINGLISH, budget_min_l: 80, budget_max_l: 95 })
+  const floor = suggestions.find((s) => s.field === 'budget_min')
+  const ceiling = suggestions.find((s) => s.field === 'budget_max')
+
+  assert.ok(floor, 'a stated budget floor produced no suggestion')
+  assert.equal(floor.suggested, 800000000) // paise
+  assert.equal(floor.suggested_display, '₹80L')
+  assert.equal(ceiling.suggested_display, '₹95L')
+})
+
+test('auto-fill skips a budget the lead already carries, in either direction', () => {
+  // 80L is 800000000 paise; the column hands it back as a numeric string, which must
+  // still compare equal to the number the extraction produced.
+  const suggestions = buildAutofillSuggestions(
+    { budget_min: '800000000', budget_max: 950000000 },
+    { ...HINGLISH, budget_min_l: 80, budget_max_l: 95 },
+  )
+  const fields = suggestions.map((s) => s.field)
+  assert.ok(!fields.includes('budget_min'), 'proposed a floor the lead already had')
+  assert.ok(!fields.includes('budget_max'), 'proposed a ceiling the lead already had')
+})
+
 test('auto-fill returns [] when there is no extraction to draw from', () => {
   assert.deepEqual(buildAutofillSuggestions({ bhk: '2' }, null), [])
   assert.deepEqual(buildAutofillSuggestions(null, null), [])

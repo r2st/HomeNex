@@ -145,6 +145,24 @@ test('the admin profile edit reports a phone taken mid-save the same way', async
   assert.match(err.message, /already uses this phone number|Another agent/)
 })
 
+test('the admin profile edit names the EMAIL when that is what was taken', async () => {
+  // The same catch serves both columns and picks its message and its code off the
+  // constraint that fired. Only the phone half had ever run here, so an admin losing
+  // an email race would have been told somebody had taken the phone number — and the
+  // 409 the dashboard shows would have pointed at the wrong field.
+  const other = await newAgent('+919700001004', 'Fourth Agent')
+  const held = await hold('UPDATE agents SET email = $1 WHERE id = $2', ['taken@homenex.test', rivalId])
+  const err = await loseRaceTo(held, () => updateAgentProfile(other, { email: 'taken@homenex.test' }))
+
+  assert.ok(err, 'the admin edit succeeded even though the email was gone')
+  assert.equal(err.code, 'EMAIL_TAKEN')
+  assert.match(err.message, /already uses this email/)
+
+  // The losing agent keeps the email they had, which is none.
+  const { rows } = await query('SELECT email FROM agents WHERE id = $1', [other])
+  assert.equal(rows[0].email, null)
+})
+
 // --- properties.micro_page_slug ---------------------------------------------
 
 test('a slug taken mid-backfill is retried rather than thrown', async () => {
@@ -195,5 +213,36 @@ test('a createTeam failure that is not a membership clash keeps its own error', 
 
   // The rolled-back transaction must not leave the team row behind.
   const { rows } = await query(`SELECT COUNT(*)::int AS n FROM teams WHERE name = 'Ghost Realty'`)
+  assert.equal(rows[0].n, 0, 'the failed create left an orphan team')
+})
+
+test('an agent who joined a team mid-create is told so, not handed a 500', async () => {
+  // createTeam checks "are you already in a team?" first, but that check reads
+  // committed rows: accepting an invite in another tab between the check and the
+  // INSERT slips past it. team_members.agent_id is UNIQUE, so the insert raises
+  // 23505 and the catch has to turn it into the same sentence the pre-check gives.
+  const joiner = await newAgent('+919700001005', 'Joining Agent')
+  const rivalTeam = (
+    await query(`INSERT INTO teams (name, owner_agent_id) VALUES ('Rival Realty', $1) RETURNING id`, [rivalId])
+  ).rows[0].id
+  await query('INSERT INTO team_members (team_id, agent_id, role) VALUES ($1, $2, $3)', [
+    rivalTeam,
+    rivalId,
+    'owner',
+  ])
+
+  const held = await hold('INSERT INTO team_members (team_id, agent_id, role) VALUES ($1, $2, $3)', [
+    rivalTeam,
+    joiner,
+    'agent',
+  ])
+  const err = await loseRaceTo(held, () => createTeam(joiner, 'Own Realty'))
+
+  assert.ok(err, 'the create succeeded even though the agent had joined a team')
+  assert.equal(err.code, 'ALREADY_IN_TEAM')
+  assert.match(err.message, /already in a team/)
+
+  // The whole create rolled back — no orphan team named after the failed attempt.
+  const { rows } = await query(`SELECT COUNT(*)::int AS n FROM teams WHERE name = 'Own Realty'`)
   assert.equal(rows[0].n, 0, 'the failed create left an orphan team')
 })
