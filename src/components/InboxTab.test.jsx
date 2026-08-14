@@ -90,11 +90,15 @@ test('tapping a thread reports the lead id upward', async (t) => {
   assert.deepEqual(picked, [5])
 })
 
-test('a dead server is reported on the inbox list', async (t) => {
+test('a dead server is reported on the inbox list, and announced', async (t) => {
   setup(t, { routes: { 'GET /api/leads': { status: 502, body: {} } } })
   const ui = await render(<InboxTab leadId={null} onSelectLead={() => {}} />)
 
-  assert.match(ui.text(), /Can't reach the HomeNex server/)
+  // The banner names what actually happened — a 502 is the server answering badly,
+  // not the phone being offline — and it is a live region, because it arrives on a
+  // poll with nothing on screen having been touched.
+  const banner = ui.byRole('alert')
+  assert.match(banner.props.children, /briefly unavailable/)
 })
 
 // --- Conversation view -----------------------------------------------------

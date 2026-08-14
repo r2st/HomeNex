@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { api, usePoll } from '../api.js'
 import { paiseToDisplay, lakhsToPaise } from '../money.js'
-import { Chip, Sheet, inputCls, LoadingRows } from './ui.jsx'
+import { Chip, Sheet, inputCls, LoadingRows, ErrorBanner } from './ui.jsx'
 import PropertyDetail, { PropertyForm, STATUS_LABEL } from './PropertyDetail.jsx'
 import { activeFilterCount, clearedFilters } from '../lib/propertyFilters.js'
 
@@ -97,11 +97,7 @@ export default function PropertiesTab({ onOpenLead }) {
         </button>
       </header>
 
-      {error && (
-        <p className="mt-6 text-[12.5px] text-hot bg-amber-wash rounded-xl px-4 py-3">
-          Can't reach the HomeNex server: {error.message}
-        </p>
-      )}
+      <ErrorBanner error={error} className="mt-6" />
 
       <div className="flex items-center gap-2 mt-4">
         <input

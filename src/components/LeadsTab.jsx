@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api, usePoll, fmtAgo } from '../api.js'
 import { paiseRangeToDisplay } from '../money.js'
-import { Avatar, Chip, Sheet, TEMP_STYLE, inputCls } from './ui.jsx'
+import { Avatar, Chip, Sheet, TEMP_STYLE, inputCls, ErrorBanner } from './ui.jsx'
 import LeadDetail from './LeadDetail.jsx'
 import QuickAddLead from './QuickAddLead.jsx'
 import { stageEmptyText, stageEmptyIcon } from '../lib/stageEmpty.js'
@@ -249,11 +249,7 @@ export default function LeadsTab({ onOpenConversation }) {
         </p>
       </header>
 
-      {error && (
-        <p className="mx-5 mt-6 text-[12.5px] text-hot bg-amber-wash rounded-xl px-4 py-3">
-          Can't reach the HomeNex server: {error.message}
-        </p>
-      )}
+      <ErrorBanner error={error} className="mx-5 mt-6" />
       {moveError && (
         <p className="mx-5 mt-3 text-[12.5px] text-hot bg-amber-wash rounded-xl px-4 py-2.5">{moveError}</p>
       )}

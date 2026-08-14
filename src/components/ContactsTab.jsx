@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { api, usePoll, fmtAgo } from '../api.js'
-import { Avatar, SlideOver, Sheet, inputCls, useConfirm, LoadingRows, InfoTip, DetailOverlay } from './ui.jsx'
+import { Avatar, SlideOver, Sheet, inputCls, useConfirm, LoadingRows, InfoTip, DetailOverlay, ErrorBanner } from './ui.jsx'
 import { glossary } from '../lib/glossary.js'
 import { friendlyMessage } from '../lib/friendlyError.js'
 import { pipelineLabel, tempBadge } from '../lib/labels.js'
@@ -287,11 +287,7 @@ export default function ContactsTab({ onOpenLead }) {
         </p>
       </header>
 
-      {error && (
-        <p className="mt-6 text-[12.5px] text-hot bg-amber-wash rounded-xl px-4 py-3">
-          Can't reach the HomeNex server: {error.message}
-        </p>
-      )}
+      <ErrorBanner error={error} className="mt-6" />
 
       <GroupsPanel />
 

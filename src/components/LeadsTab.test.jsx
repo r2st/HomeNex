@@ -282,11 +282,11 @@ test('a rejected stage move surfaces the reason instead of failing quietly', asy
   assert.match(ui.text(), /Site visit must be booked first/)
 })
 
-test('a dead server is reported on the leads list', async (t) => {
+test('a dead server is reported on the leads list, and announced', async (t) => {
   setup(t, { routes: { 'GET /api/leads': { status: 503, body: {} } } })
   const ui = await render(<LeadsTab onOpenConversation={() => {}} />)
 
-  assert.match(ui.text(), /Can't reach the HomeNex server/)
+  assert.match(ui.byRole('alert').props.children, /temporarily unavailable/)
 })
 
 test('Stats view renders the funnel, dwell times and lost-reason mix', async (t) => {

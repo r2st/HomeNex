@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, usePoll, fmtTime, fmtAgo } from '../api.js'
-import { Sheet, Field, inputCls, InfoTip } from './ui.jsx'
+import { Sheet, Field, inputCls, InfoTip, ErrorBanner } from './ui.jsx'
 import { glossary } from '../lib/glossary.js'
 import { replyModeBadge, REPLY_MODE_HELP } from '../lib/replyMode.js'
 import { windowState, fmtCountdown } from '../lib/waWindow.js'
@@ -572,11 +572,7 @@ export default function InboxTab({ leadId, onSelectLead }) {
         <p className="text-[11.5px] text-ink-faint mt-2 leading-snug">{REPLY_MODE_HELP}</p>
       </header>
 
-      {error && (
-        <p className="mt-6 text-[12.5px] text-hot bg-amber-wash rounded-xl px-4 py-3">
-          Can't reach the HomeNex server: {error.message}
-        </p>
-      )}
+      <ErrorBanner error={error} className="mt-6" />
 
       {/* Skeletons, not a bare screen: the thread list is the first thing an agent
           looks at, and an empty page with no explanation reads as "everything is gone"

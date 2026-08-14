@@ -1,4 +1,5 @@
 import { api, usePoll } from '../api.js'
+import { ErrorBanner } from './ui.jsx'
 
 function fmtSeconds(s) {
   if (s == null) return '—'
@@ -19,9 +20,7 @@ export default function InsightsTab() {
     return (
       <div className="px-5 pt-7">
         {error ? (
-          <p className="text-[12.5px] text-hot bg-amber-wash rounded-xl px-4 py-3">
-            Can't reach the HomeNex server: {error.message}
-          </p>
+          <ErrorBanner error={error} />
         ) : (
           <p className="text-center text-[13px] text-ink-faint pt-16" aria-busy="true">
             Loading…
@@ -47,8 +46,13 @@ export default function InsightsTab() {
         <p className="text-[13px] text-ink-soft mt-0.5">Computed live from your real conversations</p>
       </header>
 
+      {/* role="status" and not "alert": the numbers on screen are still worth
+          reading, so this is advice rather than an interruption. It is a live
+          region all the same — it appears on its own, mid-poll, and without one
+          nothing tells an agent reading the screen that the figures have stopped
+          being current. */}
       {error && (
-        <p className="mt-4 text-[12px] text-gold bg-amber-wash rounded-xl px-4 py-2.5">
+        <p role="status" className="mt-4 text-[12px] text-gold bg-amber-wash rounded-xl px-4 py-2.5">
           Showing the last numbers HomeNex could load — the server isn't answering right now.
         </p>
       )}

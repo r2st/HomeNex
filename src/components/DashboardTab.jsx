@@ -4,6 +4,7 @@ import ShareNumberCard from './ShareNumberCard.jsx'
 import { onboardingSteps, shouldShowOnboarding, ONBOARDING_DISMISS_KEY } from '../lib/onboarding.js'
 import { homeSections } from '../lib/homeSections.js'
 import { tempBadge, visitStatusLabel } from '../lib/labels.js'
+import { ErrorBanner } from './ui.jsx'
 
 const DOT = {
   hot: 'bg-hot',
@@ -192,11 +193,7 @@ export default function DashboardTab({ agent, onGoTo, onOpenConversation, onOpen
         )}
       </header>
 
-      {error && (
-        <p className="mt-6 text-[12.5px] text-hot bg-amber-wash rounded-xl px-4 py-3">
-          Can't reach the HomeNex server: {error.message}
-        </p>
-      )}
+      <ErrorBanner error={error} className="mt-6" />
 
       {/* Every section below is `{data && …}`, so before the first response Home was
           a greeting over empty space with nothing to say it was still working. This

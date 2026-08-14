@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { useState } from 'react'
 import { render, click, keyDown, act } from '../test/render.jsx'
 import { installBrowser } from '../test/browserEnv.js'
-import { InfoTip, ScoreRing, Avatar, Sheet, SlideOver, Chip, Field, Confirm, useConfirm, Skeleton, LoadingRows, ErrorBoundary, TEMP_STYLE } from './ui.jsx'
+import { InfoTip, ScoreRing, Avatar, Sheet, SlideOver, Chip, Field, Confirm, useConfirm, Skeleton, LoadingRows, ErrorBoundary, ErrorBanner, TEMP_STYLE } from './ui.jsx'
 
 // --- InfoTip ---------------------------------------------------------------
 
@@ -482,4 +482,51 @@ test('a crash after mount is caught too', async (t) => {
 test('every lead temperature has a style, and Cold is the fallback', async () => {
   for (const temp of ['Hot', 'Warm', 'Cold']) assert.ok(TEMP_STYLE[temp], `${temp} needs a style`)
   assert.equal(TEMP_STYLE[undefined], undefined)
+})
+
+// --- ErrorBanner -----------------------------------------------------------
+//
+// The banner every polled list shows when its refresh stops coming back. It
+// replaced six hand-copied paragraphs that all began "Can't reach the HomeNex
+// server:" and then printed the raw failure — a sentence that was wrong about the
+// cause whenever the server had in fact answered, followed by the technical noise
+// friendlyMessage exists to keep off the screen.
+
+test('the error banner says what actually failed, not that the server is unreachable', async () => {
+  // A 500 IS the server answering. Telling the agent to check their connection
+  // sends them to the one place the problem isn't.
+  const server = await render(<ErrorBanner error={Object.assign(new Error('HTTP 500'), { status: 500 })} />)
+  assert.match(server.text(), /wrong on our side/)
+  assert.doesNotMatch(server.text(), /reach the HomeNex server/)
+  // And the bare "HTTP 500" the failure carried never reaches the agent.
+  assert.doesNotMatch(server.text(), /HTTP 500/)
+
+  // The case the old wording was guessing at, now named properly.
+  const offline = await render(<ErrorBanner error={new TypeError('Failed to fetch')} />)
+  assert.match(offline.text(), /offline/)
+
+  // An expired session is an instruction, not a network report.
+  const expired = await render(<ErrorBanner error={Object.assign(new Error('HTTP 401'), { status: 401 })} />)
+  assert.match(expired.text(), /session has expired/)
+})
+
+test('the error banner announces itself, because nobody asked for it', async () => {
+  // These screens poll. The banner appears seconds after the agent last touched
+  // anything, above a list still showing the data that arrived before the failure —
+  // so a colour change is the only other signal that the screen has gone stale.
+  const ui = await render(<ErrorBanner error={Object.assign(new Error('x'), { status: 503 })} />)
+  assert.equal(ui.byRole('alert').type, 'p')
+})
+
+test('no error means no banner, not an empty red strip', async () => {
+  for (const nothing of [null, undefined, false]) {
+    const ui = await render(<ErrorBanner error={nothing} />)
+    assert.equal(ui.text(), '')
+    assert.equal(ui.queryByRole('alert'), null)
+  }
+})
+
+test('the banner keeps the caller\'s spacing, since each screen sits it differently', async () => {
+  const ui = await render(<ErrorBanner error={new Error('x')} className="mx-5 mt-6" />)
+  assert.match(ui.byRole('alert').props.className, /mx-5 mt-6/)
 })

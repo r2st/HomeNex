@@ -1,5 +1,6 @@
 // Small shared UI primitives for the dashboard tabs.
 import { useState, useCallback, useEffect, useId, Component } from 'react'
+import { friendlyMessage } from '../lib/friendlyError.js'
 
 // Tappable ⓘ that reveals a one-sentence plain-language explanation. Used to
 // demystify jargon (RERA, WhatsApp Business / WABA) for first-time agents without
@@ -288,6 +289,32 @@ export function LoadingRows({ rows = 4 }) {
         </div>
       ))}
     </div>
+  )
+}
+
+// The banner a polled screen shows when its refresh stops coming back.
+//
+// Six screens each carried their own copy, and every copy said the same thing:
+// "Can't reach the HomeNex server: " followed by the raw error message. It was
+// wrong twice over. The server usually HAD been reached — a 500, an expired
+// session, a 403 all arrived as an answer, and the sentence told the agent to go
+// looking at their phone signal instead. And what followed the colon was whatever
+// string the failure carried, which is exactly the "HTTP 500" and "Failed to fetch"
+// that friendlyMessage exists to keep off an agent's screen. Both are fixed by
+// letting friendlyMessage write the whole sentence, which it already knows how to
+// do — including the offline case the old wording was guessing at.
+//
+// role="alert" is the accessibility half, and it is the half that matters most on a
+// polled screen: these banners appear on their own, seconds after the agent stopped
+// touching anything, over a list that still shows the last data that arrived.
+// Without it the only signal that the screen has gone stale is a colour, and an
+// agent reading the list aloud carries on trusting it.
+export function ErrorBanner({ error, className = '' }) {
+  if (!error) return null
+  return (
+    <p role="alert" className={`text-[12.5px] text-hot bg-amber-wash rounded-xl px-4 py-3 ${className}`}>
+      {friendlyMessage(error)}
+    </p>
   )
 }
 

@@ -53,7 +53,9 @@ test('a failed contacts request stops the skeletons and explains itself', async 
   // The skeletons used to keep pulsing under the error banner, which reads as
   // "the list is still on its way" when in fact nothing more is coming.
   assert.equal(busy(ui), false, 'skeletons kept pulsing after the request failed')
-  assert.match(ui.text(), /Can't reach the HomeNex server/)
+  // A 500 is the server answering, so the banner must not send the agent off to
+  // check their signal — and it announces itself rather than only turning red.
+  assert.match(ui.byRole('alert').props.children, /wrong on our side/)
 })
 
 test('an empty contacts list is only called empty once it has actually loaded', async (t) => {
@@ -91,7 +93,7 @@ test('the properties list shows skeletons while loading and drops them on failur
   setup(t, { 'GET /api/properties': { status: 500, body: {} } })
   const failedUi = await render(<PropertiesTab onOpenLead={() => {}} />)
   assert.equal(busy(failedUi), false, 'skeletons outlived a failed properties request')
-  assert.match(failedUi.text(), /Can't reach the HomeNex server/)
+  assert.match(failedUi.byRole('alert').props.children, /wrong on our side/)
 })
 
 // --- Commissions: receivables -------------------------------------------------
@@ -135,14 +137,14 @@ test('insights says it is loading, not that the server is unreachable, while the
 
   assert.match(ui.text(), /Loading…/)
   assert.equal(busy(ui), true)
-  assert.doesNotMatch(ui.text(), /Can't reach the HomeNex server/)
+  assert.equal(ui.queryByRole('alert'), null, 'a request still in flight is not a failure')
 })
 
 test('insights with no numbers at all reports the failure and stops claiming to load', async (t) => {
   setup(t, { 'GET /api/stats': { status: 500, body: {} } })
   const ui = await render(<InsightsTab />)
 
-  assert.match(ui.text(), /Can't reach the HomeNex server/)
+  assert.match(ui.byRole('alert').props.children, /wrong on our side/)
   assert.equal(busy(ui), false, 'still advertising a load that has already failed')
 })
 
@@ -162,7 +164,10 @@ test('a dropped poll leaves the numbers on screen and downgrades the error to a 
   assert.match(ui.text(), /Your numbers with HomeNex/, 'one dropped poll replaced the charts screen')
   assert.match(ui.text(), /62%/, 'the last good numbers were thrown away')
   assert.match(ui.text(), /Showing the last numbers HomeNex could load/)
-  assert.doesNotMatch(ui.text(), /Can't reach the HomeNex server/)
+  assert.equal(ui.queryByRole('alert'), null, 'a soft downgrade must not interrupt')
+  // Polite, not assertive: the numbers are still worth reading, but something has
+  // to say they have stopped being current.
+  assert.match(ui.byRole('status').props.children, /Showing the last numbers/)
 })
 
 test('a poll that recovers clears the stale strip', async (t) => {
@@ -231,7 +236,7 @@ test('the home skeleton clears on failure too, and the failure is named', async 
   // A skeleton that never resolves is the worst of both: it hides the error AND
   // promises data that is never coming.
   assert.equal(skeleton(ui), null, 'the skeleton kept pulsing after the request failed')
-  assert.match(ui.text(), /Can't reach the HomeNex server/)
+  assert.match(ui.byRole('alert').props.children, /wrong on our side/)
 })
 
 // --- Follow-ups and site visits (More tab) --------------------------------------
