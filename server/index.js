@@ -685,75 +685,91 @@ app.post('/webhook', (req, res) => {
         // every message on that line belongs to them (no shared pool needed).
         const lineOwner = await findAgentByPhoneNumberId(phoneNumberId)
         for (const msg of value?.messages ?? []) {
-          // FIRST: is the sender one of our registered agents? Then this is an agent
-          // command (add a client, list clients, ...), not a buyer conversation.
-          const agent = await findAgentByPhone(msg.from)
-          if (agent) {
+          // One message must not take the rest of the delivery with it. Meta batches
+          // messages into a single POST, and everything below runs in one shared async
+          // block — so before this, a throw on the first message abandoned the second
+          // and third silently. That is unrecoverable rather than merely lossy: the 200
+          // was already sent above (Meta retries on timeout, so the ack has to be fast),
+          // so Meta considers the whole batch delivered and never sends it again. The
+          // buyer's enquiry is simply gone, with nothing in the inbox to show for it.
+          //
+          // Real triggers are ordinary: a payload with no `from` (wa_id is NOT NULL, so
+          // upsertLead throws), a deadlock on one lead's row, a failure inside one
+          // agent command. None of them are reasons to drop a different buyer's message.
+          // The leadgen arm above already works this way — per item, not per batch.
+          try {
+            // FIRST: is the sender one of our registered agents? Then this is an agent
+            // command (add a client, list clients, ...), not a buyer conversation.
+            const agent = await findAgentByPhone(msg.from)
+            if (agent) {
+              markRead(msg.id, phoneNumberId)
+              await handleAgentCommand({ agent, msg, phoneNumberId })
+              continue
+            }
+            // Non-text messages (photos, documents, voice notes, location, button/list
+            // taps, ...) used to be silently dropped — the buyer's message vanished with
+            // no record and no reply. We don't download/store the media itself, but a
+            // readable placeholder keeps the conversation and lead-capture pipeline
+            // intact so a human agent can follow up. Reactions and other message types
+            // with no useful text (unsupported/system/order) are still skipped.
+            const text = inboundMessageText(msg)
+            if (!text) continue
             markRead(msg.id, phoneNumberId)
-            await handleAgentCommand({ agent, msg, phoneNumberId })
-            continue
-          }
-          // Non-text messages (photos, documents, voice notes, location, button/list
-          // taps, ...) used to be silently dropped — the buyer's message vanished with
-          // no record and no reply. We don't download/store the media itself, but a
-          // readable placeholder keeps the conversation and lead-capture pipeline
-          // intact so a human agent can follow up. Reactions and other message types
-          // with no useful text (unsupported/system/order) are still skipped.
-          const text = inboundMessageText(msg)
-          if (!text) continue
-          markRead(msg.id, phoneNumberId)
-          // Click-to-WhatsApp ads attach a referral to the opening message.
-          const referral = extractReferral(msg)
+            // Click-to-WhatsApp ads attach a referral to the opening message.
+            const referral = extractReferral(msg)
 
-          // Per-agent line: if this number belongs to a specific agent, route directly
-          // to them. When that agent runs a round-robin team, a brand-new sender is
-          // handed to the next member instead; a returning sender stays with whoever
-          // already owns them. The sender is auto-remembered as a contact of whoever
-          // ends up handling them.
-          if (lineOwner) {
-            const assignee = await resolveTeamLineAgent(lineOwner, msg.from)
-            try {
-              await addContact(assignee.id, msg.from, waProfileName || msg.from)
-              await logActivity(assignee.id, null, 'lead', `Auto-added client: ${waProfileName || msg.from} (${msg.from})`)
-            } catch { /* already exists */ }
-            await handleInbound({
-              agentId: assignee.id,
-              brokerName: assignee.name,
-              waId: msg.from,
-              name: waProfileName,
-              text,
-              phoneNumberId,
-              referral,
-              waMessageId: msg.id,
-            })
-            continue
-          }
+            // Per-agent line: if this number belongs to a specific agent, route directly
+            // to them. When that agent runs a round-robin team, a brand-new sender is
+            // handed to the next member instead; a returning sender stays with whoever
+            // already owns them. The sender is auto-remembered as a contact of whoever
+            // ends up handling them.
+            if (lineOwner) {
+              const assignee = await resolveTeamLineAgent(lineOwner, msg.from)
+              try {
+                await addContact(assignee.id, msg.from, waProfileName || msg.from)
+                await logActivity(assignee.id, null, 'lead', `Auto-added client: ${waProfileName || msg.from} (${msg.from})`)
+              } catch { /* already exists */ }
+              await handleInbound({
+                agentId: assignee.id,
+                brokerName: assignee.name,
+                waId: msg.from,
+                name: waProfileName,
+                text,
+                phoneNumberId,
+                referral,
+                waMessageId: msg.id,
+              })
+              continue
+            }
 
-          // Shared-number fallback: match the sender against every agent's saved clients.
-          const contact = await findContactByWaId(msg.from)
-          if (contact) {
-            await handleInbound({
-              agentId: contact.agent_id,
-              brokerName: (await getAgent(contact.agent_id))?.name,
-              waId: msg.from,
-              name: contact.name || waProfileName,
-              text,
-              phoneNumberId,
-              referral,
-              waMessageId: msg.id,
-            })
-          } else {
-            // Unknown sender on a shared number → unassigned pool, visible to all agents to claim.
-            await handleInbound({
-              agentId: null,
-              brokerName: 'the HomeNex team',
-              waId: msg.from,
-              name: waProfileName,
-              text,
-              phoneNumberId,
-              referral,
-              waMessageId: msg.id,
-            })
+            // Shared-number fallback: match the sender against every agent's saved clients.
+            const contact = await findContactByWaId(msg.from)
+            if (contact) {
+              await handleInbound({
+                agentId: contact.agent_id,
+                brokerName: (await getAgent(contact.agent_id))?.name,
+                waId: msg.from,
+                name: contact.name || waProfileName,
+                text,
+                phoneNumberId,
+                referral,
+                waMessageId: msg.id,
+              })
+            } else {
+              // Unknown sender on a shared number → unassigned pool, visible to all agents to claim.
+              await handleInbound({
+                agentId: null,
+                brokerName: 'the HomeNex team',
+                waId: msg.from,
+                name: waProfileName,
+                text,
+                phoneNumberId,
+                referral,
+                waMessageId: msg.id,
+              })
+            }
+          } catch (err) {
+            console.error('inbound message processing error', msg?.id, err.message)
           }
         }
       }

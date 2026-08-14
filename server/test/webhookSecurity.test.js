@@ -72,6 +72,11 @@ before(async () => {
 
 after(async () => {
   server?.close()
+  // POST /webhook acks before it processes, so the last delivery's pipeline is still
+  // running when the final assertion returns. Closing the pool under it turns that
+  // into "Cannot use a pool after calling end on the pool" on the way out — noise
+  // that looks like a failure and isn't. Same drain as ingestRouteEdges.test.js.
+  await new Promise((r) => setTimeout(r, 150))
   await closePool()
   await dropTestDb(dbName)
   delete process.env.WHATSAPP_APP_SECRET
@@ -424,4 +429,43 @@ test('the server is still answering after a refused webhook body', async () => {
   const res = await fetch(base + '/healthz')
   assert.equal(res.status, 200)
   assert.equal((await res.json()).ok, true)
+})
+
+test('one unprocessable message does not take the rest of the batch with it', async () => {
+  // Meta batches messages into a single POST, and the ack goes out before any of them
+  // is processed — so a throw part-way through is not merely lossy, it is final: Meta
+  // has been told the batch was delivered and will never send it again.
+  //
+  // The first message here has no `from`. wa_id is NOT NULL, so the insert throws,
+  // which is the realistic shape of the problem (a deadlock on one lead's row, or a
+  // failure inside one agent command, arrive the same way). The two behind it are
+  // ordinary buyer enquiries from different people, and they are the assertion.
+  const payload = {
+    object: 'whatsapp_business_account',
+    entry: [{
+      changes: [{
+        field: 'messages',
+        value: {
+          metadata: { phone_number_id: 'pn-batch-test' },
+          messages: [
+            { id: 'wamid-batch-broken', type: 'text', text: { body: 'no sender on this one' } },
+            { from: '919876590001', id: 'wamid-batch-1', type: 'text', text: { body: 'Is the 2BHK available?' } },
+            { from: '919876590002', id: 'wamid-batch-2', type: 'text', text: { body: 'Sharing my budget' } },
+          ],
+        },
+      }],
+    }],
+  }
+  const res = await postWebhook(payload, sign(JSON.stringify(payload)))
+  assert.equal(res.status, 200)
+
+  for (const waId of ['919876590001', '919876590002']) {
+    const lead = await until(async () =>
+      (await query('SELECT * FROM leads WHERE wa_id = $1', [waId])).rows[0])
+    assert.ok(lead, `the message from ${waId} was processed despite the one before it failing`)
+  }
+
+  // And the broken one left nothing behind.
+  const orphan = await query('SELECT COUNT(*)::int AS n FROM messages WHERE wa_message_id = $1', ['wamid-batch-broken'])
+  assert.equal(orphan.rows[0].n, 0)
 })

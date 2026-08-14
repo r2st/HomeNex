@@ -323,7 +323,10 @@ test('a webhook whose message cannot be stored is reported, not left unhandled',
       ],
     })
     assert.equal(res.status, 200, 'Meta is acked before any of this runs')
-    await until(() => /webhook processing error/.test(errors()), 'the processing failure to be reported')
+    // Reported per message rather than per delivery: the handler wraps each message
+    // so a failure like this one cannot abandon the others Meta batched with it, and
+    // the log line carries the message id that actually failed.
+    await until(() => /inbound message processing error/.test(errors()), 'the processing failure to be reported')
   })
 
   assert.equal(
@@ -378,5 +381,5 @@ test('a click-to-WhatsApp lead is still created when its attribution row fails',
   assert.equal(rows.length, 1, 'the buyer became a lead')
   assert.ok(rows[0].free_entry_at, 'the click-to-WhatsApp free window was opened')
   assert.equal(await countOf('SELECT COUNT(*)::int AS n FROM lead_source_events'), before, 'the audit row was lost')
-  assert.doesNotMatch(errors(), /webhook processing error/, 'and it never became a processing failure')
+  assert.doesNotMatch(errors(), /(webhook|inbound message) processing error/, 'and it never became a processing failure')
 })
