@@ -60,13 +60,49 @@ export function detectPortal({ from = '', subject = '', text = '' } = {}) {
   return null
 }
 
+// Drop <script>/<style> blocks, contents and all, in one forward pass.
+//
+// This was `/<(script|style)[\s\S]*?<\/\1>/gi`, which reads correctly and is
+// quadratic on the input this function is actually given. A lazy body with no
+// closing tag to stop at rescans to the end of the string, and it does that from
+// EVERY opening tag: 512KB of `<script` repeated — the ceiling TEXT.EMAIL_PART
+// allows — took 53.7 SECONDS of event loop, on a public route, at 240 requests a
+// minute. Doubling the input quadrupled the time, which is the signature.
+//
+// indexOf does the same job in one pass because the cursor only ever moves
+// forward: each search for a closing tag starts where the previous block ended, so
+// no byte is examined twice. An unterminated block drops the rest of the document,
+// which is what a browser does with one too.
+const BLOCK_OPEN = /<(script|style)\b/gi
+function stripBlockElements(html) {
+  const lower = html.toLowerCase()
+  let out = ''
+  let cursor = 0
+  BLOCK_OPEN.lastIndex = 0
+  let m
+  while ((m = BLOCK_OPEN.exec(html))) {
+    const closer = `</${m[1].toLowerCase()}`
+    const end = lower.indexOf(closer, m.index)
+    out += html.slice(cursor, m.index) + ' '
+    if (end === -1) return out // unterminated — the rest of the document is inside it
+    cursor = lower.indexOf('>', end)
+    cursor = cursor === -1 ? html.length : cursor + 1
+    BLOCK_OPEN.lastIndex = cursor
+  }
+  return out + html.slice(cursor)
+}
+
 // Very small HTML→text so we can parse portal emails that only ship an HTML body.
 function stripHtml(html = '') {
-  return String(html)
-    .replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ')
+  return stripBlockElements(String(html))
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/(p|div|tr|li|h[1-6]|table)>/gi, '\n')
-    .replace(/<[^>]+>/g, ' ')
+    // `[^<>]`, not `[^>]`: a lone `<` with no `>` after it used to let the class
+    // consume the whole remainder and then backtrack a character at a time, from
+    // every `<` in the document — 256KB of `<` cost 31s. Excluding `<` means a run
+    // of them fails in one step each, and it also matches what a browser does with
+    // `<a <b>`: the second `<` starts a new tag rather than living inside the first.
+    .replace(/<[^<>]+>/g, ' ')
     .replace(/&nbsp;/gi, ' ')
     .replace(/&amp;/gi, '&')
     .replace(/&#39;|&apos;/gi, "'")
@@ -86,7 +122,23 @@ function labelled(text, labels) {
   return null
 }
 
-const EMAIL_RE = /[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}/i
+// Scans a whole email body for an address, so unlike db.js's anchored isValidEmail
+// this one cannot rely on `^` to pin where a candidate starts — and without a pin it
+// was quadratic. `[a-z0-9._%+\-]+@` retried from every offset inside a run of
+// local-part characters, each attempt consuming to the end of the run before it could
+// conclude there is no `@`: 512KB of `a` took 166 SECONDS of event loop on the public
+// ingest route, 256KB took 42s, which is the same doubling signature as the two HTML
+// passes above.
+//
+// The lookbehind is the pin. A candidate may only begin where the preceding character
+// could not itself have been part of the local part, so a run of `a` offers exactly
+// one start instead of half a million, and each failure costs one step. The RFC length
+// caps (64 for the local part, 253 for the domain, 24 for the TLD) then bound what a
+// surviving candidate can spend backtracking.
+//
+// Same answer on every address the parser meets in practice; the only inputs whose
+// treatment changes are ones no portal email contains.
+const EMAIL_RE = /(?<![a-z0-9._%+\-])[a-z0-9._%+\-]{1,64}@[a-z0-9.\-]{1,253}\.[a-z]{2,24}/i
 // Indian mobile: optional +91/91/0 prefix, then a 10-digit number starting 6-9.
 const PHONE_RE = /(?:\+?91[\s\-]?|0)?([6-9]\d{4}[\s\-]?\d{5})\b/
 
