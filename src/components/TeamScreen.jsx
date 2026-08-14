@@ -277,6 +277,13 @@ function Inbox({ ctx, reload }) {
         </button>
       )}
       <Err error={error} />
+      {/* Three states, not two: still loading is not "no leads yet", which is the
+          reading a manager acts on by going to look for where the leads went. */}
+      {!leads && !error && (
+        <p className="text-[12.5px] text-ink-faint mt-3" aria-busy="true">
+          Loading…
+        </p>
+      )}
       {leads && leads.length === 0 && <p className="text-[12.5px] text-ink-faint mt-3">No leads in the team yet.</p>}
       <div className="space-y-2">
         {(leads || []).map((l) => (
@@ -320,20 +327,52 @@ function Inbox({ ctx, reload }) {
 }
 
 // --- Manager board: response-time leaderboard + stale leads to reassign. ---
-function Board({ reload }) {
+// `refreshKey` is only ever a dependency — a new value refetches. It is not callable.
+function Board({ refreshKey }) {
   const [board, setBoard] = useState(null)
   const [stale, setStale] = useState(null)
+  // Both loads used to `.catch(() => {})`, which left the two lists at null and
+  // rendered them as empty ones. The leaderboard is the screen a manager judges their
+  // team on, so a dropped request read back as "nobody on this team has responded to
+  // anything" — and the stale list, as "nothing needs chasing", which is the answer
+  // that stops them looking. Same shape f976270 fixed one level up, in the ctx load.
+  const [error, setError] = useState(null)
   useEffect(() => {
-    api.teamLeaderboard().then(setBoard).catch(() => {})
-    api.teamStale(3).then(setStale).catch(() => {})
-  }, [reload])
+    let live = true
+    setError(null)
+    Promise.all([api.teamLeaderboard(), api.teamStale(3)]).then(
+      ([rows, idle]) => {
+        if (!live) return
+        setBoard(rows)
+        setStale(idle)
+      },
+      (e) => {
+        if (live) setError(e)
+      },
+    )
+    return () => {
+      live = false
+    }
+  }, [refreshKey])
+
+  if (error) return <ErrorBanner error={error} className="mt-4" />
+  // In flight is not the same as empty: a team whose leaderboard is still loading
+  // must not be shown the "no activity" reading of an empty board.
+  if (!board) {
+    return (
+      <p className="mt-4 text-[13px] text-ink-faint" aria-busy="true">
+        Loading…
+      </p>
+    )
+  }
 
   return (
     <div className="mt-4 space-y-5">
       <div>
         <p className="text-[12px] font-bold text-ink-soft mb-2">Response-time leaderboard</p>
+        {board.length === 0 && <p className="text-[12.5px] text-ink-faint">No responses recorded yet.</p>}
         <div className="bg-card rounded-2xl border border-line shadow-card divide-y divide-line">
-          {(board || []).map((r, i) => (
+          {board.map((r, i) => (
             <div key={r.agent_id} className="flex items-center gap-3 px-4 py-2.5">
               <span className="w-5 text-center font-display font-bold text-[13px] text-ink-faint">{i + 1}</span>
               <div className="min-w-0 flex-1">
@@ -515,7 +554,7 @@ export default function TeamScreen() {
 
       {view === 'members' && <Members ctx={ctx} reload={reload} />}
       {view === 'inbox' && canManage && <Inbox ctx={ctx} reload={reload} />}
-      {view === 'board' && canManage && <Board reload={ctx} />}
+      {view === 'board' && canManage && <Board refreshKey={ctx} />}
       {view === 'settings' && isOwner && <Settings ctx={ctx} reload={reload} />}
     </div>
   )
