@@ -812,7 +812,7 @@ app.use('/api', (req, res, next) => {
 
 // Agent changes their own WhatsApp (login) number. Requires the current password.
 const PHONE_ERROR_STATUS = { BAD_PASSWORD: 403, PHONE_TAKEN: 409, NOT_FOUND: 404 }
-app.put('/api/agent/phone', ah(async (req, res) => {
+app.put('/api/agent/phone', boundedText({ phone: TEXT.LINE, password: TEXT.PASSWORD }), ah(async (req, res) => {
   const { phone, password } = req.body
   const previous = req.agent.phone
   try {
@@ -828,7 +828,10 @@ app.put('/api/agent/phone', ah(async (req, res) => {
 
 // Agent changes their own password. Requires the current password.
 const PASSWORD_ERROR_STATUS = { BAD_PASSWORD: 403, WEAK_PASSWORD: 400, SAME_PASSWORD: 400, NOT_FOUND: 404 }
-app.put('/api/agent/password', ah(async (req, res) => {
+// Both fields reach scryptSync, and this route runs it up to three times (verify the
+// current one, check the new one isn't the same, hash the new one) — so it is the most
+// expensive password route in the app and was the least bounded.
+app.put('/api/agent/password', boundedText({ current_password: TEXT.PASSWORD, new_password: TEXT.PASSWORD }), ah(async (req, res) => {
   const { current_password, new_password } = req.body
   try {
     // The change signs every other device out, so the caller gets a token signed
@@ -890,7 +893,9 @@ app.get('/api/agent/phone-config', ah(async (req, res) => {
   })
 }))
 
-app.put('/api/agent/phone-config', ah(async (req, res) => {
+// wa_phone_number is normalised down to digits before it is stored, but
+// wa_phone_number_id is written to its column exactly as it arrives.
+app.put('/api/agent/phone-config', boundedText({ wa_phone_number: TEXT.LINE, wa_phone_number_id: TEXT.LINE }), ah(async (req, res) => {
   const { wa_phone_number, wa_phone_number_id } = req.body
   try {
     const agent = await updateAgentPhoneConfig(req.agent.id, wa_phone_number || null, wa_phone_number_id || null)
@@ -901,7 +906,7 @@ app.put('/api/agent/phone-config', ah(async (req, res) => {
 }))
 
 // Agent sets/updates their WA Business phone number (for WABA registration).
-app.put('/api/agent/wa-phone', ah(async (req, res) => {
+app.put('/api/agent/wa-phone', boundedText({ wa_phone_number: TEXT.LINE }), ah(async (req, res) => {
   const { wa_phone_number } = req.body
   if (!wa_phone_number) return res.status(400).json({ error: 'wa_phone_number is required' })
   // normalizePhone is total, and the only remaining failure is the UPDATE itself —

@@ -141,6 +141,16 @@ test('the named sizes are the ones the product actually uses', () => {
 // and one that doesn't reject it gives itself away with a 404.
 const BOUNDED = [
   ['PUT', '/api/agent/preferences', 'timezone', TEXT.LINE],
+  // The agent's own account routes. Every one of these reaches something that charges
+  // by the character — scryptSync for the two password routes, normalizePhone and a
+  // stored TEXT column for the rest — and none of them was bounded.
+  ['PUT', '/api/agent/phone', 'phone', TEXT.LINE],
+  ['PUT', '/api/agent/phone', 'password', TEXT.PASSWORD],
+  ['PUT', '/api/agent/password', 'current_password', TEXT.PASSWORD],
+  ['PUT', '/api/agent/password', 'new_password', TEXT.PASSWORD],
+  ['PUT', '/api/agent/phone-config', 'wa_phone_number', TEXT.LINE],
+  ['PUT', '/api/agent/phone-config', 'wa_phone_number_id', TEXT.LINE],
+  ['PUT', '/api/agent/wa-phone', 'wa_phone_number', TEXT.LINE],
   ['PUT', '/api/leads/999999', 'name', TEXT.LINE],
   ['PUT', '/api/leads/999999', 'notes', TEXT.PROSE],
   ['PUT', '/api/leads/999999', 'preferred_localities', TEXT.BLURB],

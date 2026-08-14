@@ -68,6 +68,28 @@ test('the owner can rename the team and set an assignment strategy', async () =>
   assert.equal(team.assignment_strategy, 'round_robin')
 })
 
+test('a rename is held to the same length limit as the original name', async () => {
+  // createTeam has always capped this at 120; updateTeam only checked that it was not
+  // empty. So the limit was enforced when a team was created and forgotten when it was
+  // renamed — and the name is rendered on every screen the whole team looks at.
+  // Bounded twice now: here at the route, and in updateTeam for any other caller
+  // (see team.test.js). The route's own message is the one an agent reads.
+  const res = await req('PUT', '/api/team', { name: 'x'.repeat(121) }, owner.token)
+  assert.equal(res.status, 400)
+  assert.equal((await json(res)).code, 'FIELD_TOO_LONG')
+
+  // Off-by-none in the other direction: 120 is still a legal name.
+  const ok = await req('PUT', '/api/team', { name: 'y'.repeat(120) }, owner.token)
+  assert.equal(ok.status, 200)
+  assert.equal((await json(ok)).name, 'y'.repeat(120))
+})
+
+test('an empty rename is still refused', async () => {
+  const res = await req('PUT', '/api/team', { name: '   ' }, owner.token)
+  assert.equal(res.status, 400)
+  assert.match((await json(res)).error, /Team name cannot be empty/)
+})
+
 test('an unknown assignment strategy is refused before it reaches the database', async () => {
   const res = await req('PUT', '/api/team', { assignment_strategy: 'coin_flip' }, owner.token)
   assert.equal(res.status, 400)

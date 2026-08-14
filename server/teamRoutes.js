@@ -105,7 +105,7 @@ router.post('/', ah(async (req, res) => {
 }))
 
 // PUT /api/team — owner edits name / assignment strategy / shared line.
-router.put('/', requireOwner, boundedText({ assignment_strategy: TEXT.LINE, shared_wa_phone_number_id: TEXT.LINE }), ah(async (req, res) => {
+router.put('/', requireOwner, boundedText({ name: TEXT.LINE, assignment_strategy: TEXT.LINE, shared_wa_phone_number_id: TEXT.LINE }), ah(async (req, res) => {
   const { name, assignment_strategy, shared_wa_phone_number_id } = req.body
   const fields = {}
   if (name !== undefined) fields.name = name

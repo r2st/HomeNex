@@ -206,6 +206,22 @@ test('assigning to a non-member is rejected', async () => {
   assert.equal((await res.json()).code, 'NOT_MEMBER')
 })
 
+test('updateTeam caps the name itself, not only the route in front of it', async () => {
+  // createTeam refuses a name over 120; updateTeam used to accept any length, so the
+  // rule held on the way in and not on the way past. The route now bounds it too, but
+  // the guarantee belongs here — this is the function every caller goes through, and
+  // the asymmetry is what made a legal team renameable to megabytes.
+  const team = await getAgentTeam(owner.id)
+  const before = team.name
+
+  await assert.rejects(() => updateTeam(team.id, { name: 'x'.repeat(121) }), /Team name is too long/)
+  assert.equal((await getAgentTeam(owner.id)).name, before, 'and nothing was written')
+
+  const renamed = await updateTeam(team.id, { name: 'z'.repeat(120) })
+  assert.equal(renamed.name, 'z'.repeat(120), 'exactly 120 is still allowed')
+  await updateTeam(team.id, { name: before })
+})
+
 // --- Round-robin & locality assignment (engine, via db) ---
 
 test('round-robin cycles through members who accept leads', async () => {

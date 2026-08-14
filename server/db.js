@@ -4229,10 +4229,14 @@ async function getTeamById(teamId) {
 }
 
 // Create a team; the creator becomes its owner member. An agent can be in one team.
+// One cap, named, because create and rename both write the same column and only one
+// of them used to check.
+const TEAM_NAME_MAX = 120
+
 export async function createTeam(ownerAgentId, name) {
   const nm = String(name ?? '').trim()
   if (!nm) fail('Team name is required')
-  if (nm.length > 120) fail('Team name is too long (max 120 characters)')
+  if (nm.length > TEAM_NAME_MAX) fail(`Team name is too long (max ${TEAM_NAME_MAX} characters)`)
   if (await agentTeamId(ownerAgentId)) fail('You are already in a team', 'ALREADY_IN_TEAM')
   const client = await pool.connect()
   try {
@@ -4259,7 +4263,13 @@ export async function createTeam(ownerAgentId, name) {
 }
 
 export async function updateTeam(teamId, fields = {}) {
-  if (fields.name !== undefined && !String(fields.name).trim()) fail('Team name cannot be empty')
+  if (fields.name !== undefined) {
+    // createTeam caps this at 120 and rename did not, so the limit was enforced on the
+    // way in and forgotten on the way past — a team created with a legal name could be
+    // renamed to megabytes of one, into the column the whole team's screens render.
+    if (!String(fields.name).trim()) fail('Team name cannot be empty')
+    if (String(fields.name).length > TEAM_NAME_MAX) fail(`Team name is too long (max ${TEAM_NAME_MAX} characters)`)
+  }
   const { sets, params } = buildSet(
     { name: 'text', assignment_strategy: 'text', shared_wa_phone_number_id: 'text' },
     fields,
