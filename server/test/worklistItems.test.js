@@ -47,12 +47,11 @@ before(async () => {
   agentId = agent.id
   const property = await createProperty(agentId, { title: 'Worklist Towers', locality: 'Baner', city: 'Pune' })
 
-  // 1. Service window closing: last inbound 21h ago, so ~3h of the 24h left.
-  // Her stored messages are backdated a month, so she also qualifies as stale —
-  // which is what the stale rule's suppression list exists to catch.
+  // 1. Service window closing: her one message came in 21h ago, so ~3h of the 24h
+  // is left. Backdating the message is all it takes — the lead's last_inbound_at
+  // follows it, which is the property the stale rule now leans on.
   const closing = await lead('919851000001', 'Closing Chandni')
-  await query(`UPDATE messages SET created_at = now() - interval '30 days' WHERE lead_id = $1`, [closing.id])
-  await query(`UPDATE leads SET last_inbound_at = now() - interval '21 hours' WHERE id = $1`, [closing.id])
+  await query(`UPDATE messages SET created_at = now() - interval '21 hours' WHERE lead_id = $1`, [closing.id])
 
   // 2. Site visit inside 48h and not yet confirmed.
   const soon = await lead('919851000002', 'Soon Sohail')
@@ -134,10 +133,22 @@ test('the counts roll up exactly the items that were returned', async () => {
   assert.equal(counts.by_type.site_visit_no_followup, 1)
 })
 
-test('the stale rule stands down for leads another signal already raised', async () => {
-  // Chandni's last message really is a month old, so the stale query does return
-  // her — but she is already at the top of the list as a closing service window,
-  // and listing her twice would be noise.
+// A lead used to be able to appear as both a closing service window and a stale
+// lead, and the stale rule dropped the duplicate afterwards. It can't any more:
+// both rules read the same two columns, and a message 21h ago is not silence. These
+// two tests hold the exclusivity in place from either end, so the dropped filter
+// can't quietly become necessary again.
+test('a lead inside its service window is never also called stale', async () => {
   const chandni = items.filter((i) => i.title === 'Closing Chandni')
   assert.deepEqual(chandni.map((i) => i.type), ['service_window_closing'])
+})
+
+test('a hot lead gone quiet is chased as hot, not filed as stale', async () => {
+  // Hema last spoke a month ago and has never been answered: silent long enough for
+  // the stale rule, but Hot, which is the one temperature that rule skips.
+  const hema = (await query(`SELECT id FROM leads WHERE wa_id = '919851000003'`)).rows[0]
+  await query(`UPDATE messages SET created_at = now() - interval '30 days' WHERE lead_id = $1`, [hema.id])
+  const after = await worklist(agentId)
+  const hers = after.items.filter((i) => i.title === 'Hot Hema')
+  assert.deepEqual(hers.map((i) => i.type), ['hot_lead_waiting'])
 })

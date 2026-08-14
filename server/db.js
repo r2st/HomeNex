@@ -552,13 +552,15 @@ export async function addMessage(leadId, role, text, waMessageId = null) {
     'INSERT INTO messages (lead_id, role, text, wa_message_id) VALUES ($1, $2, $3, $4) RETURNING *',
     [leadId, role, text, waMessageId],
   )
-  // A buyer message (re)opens the WhatsApp 24-hour service window. The owning agent
-  // comes back from the UPDATE that was happening anyway, so freshening their cached
-  // counters (messages today, threads active in 24h) costs no extra round-trip.
+  // The 24h service window's anchor (last_inbound_at) and its outbound twin are no
+  // longer stamped here: migration 025 moved both onto an AFTER INSERT trigger, so
+  // they hold for every write path rather than only this one, and they carry the
+  // message's own created_at instead of now(). This UPDATE still runs — updated_at is
+  // what orders every lead list — and the owning agent comes back from it, so
+  // freshening their cached counters (messages today, threads active in 24h) costs no
+  // extra round-trip.
   const touched = await q(
-    role === 'buyer'
-      ? 'UPDATE leads SET last_inbound_at = now(), updated_at = now() WHERE id = $1 RETURNING agent_id'
-      : 'UPDATE leads SET updated_at = now() WHERE id = $1 RETURNING agent_id',
+    'UPDATE leads SET updated_at = now() WHERE id = $1 RETURNING agent_id',
     [leadId],
   )
   const ownerId = touched.rows[0]?.agent_id
@@ -573,6 +575,22 @@ export function serviceWindow(lead) {
   const expires = new Date(new Date(lead.last_inbound_at).getTime() + 24 * 3600_000)
   return { open: expires.getTime() > Date.now(), expires_at: expires.toISOString() }
 }
+
+// --- Who spoke last, straight off the lead row -----------------------------
+// Both columns are maintained by the trigger added in migration 025, which is also
+// where the reasoning lives. These two fragments are the only way the app should ask
+// the question: written once, they stay word-for-word identical to the predicates on
+// idx_leads_awaiting_reply and idx_leads_last_contact, which is what lets the planner
+// prove those partial indexes apply.
+
+// The buyer has spoken since we last did — the lead is waiting on a reply. A lead
+// with no inbound at all is not waiting, and a tie counts as answered.
+export const AWAITING_REPLY =
+  '(l.last_inbound_at IS NOT NULL AND (l.last_outbound_at IS NULL OR l.last_outbound_at < l.last_inbound_at))'
+
+// The last time anyone said anything, in either direction. NULL for a lead created by
+// hand that has never exchanged a message.
+export const LAST_CONTACT_AT = 'GREATEST(l.last_inbound_at, l.last_outbound_at)'
 
 export async function getMessages(leadId, limit = 200) {
   return (await q('SELECT * FROM messages WHERE lead_id = $1 ORDER BY id LIMIT $2', [leadId, limit])).rows
@@ -2595,6 +2613,12 @@ export async function dashboard(agentId) {
     await Promise.all([
       // Unanswered: open leads whose most recent message is from the buyer,
       // oldest wait first. The client renders the age timer from last_at.
+      //
+      // AWAITING_REPLY does the filtering from the lead row (see migration 025); the
+      // LATERAL stays because the widget shows the message text, but it now runs once
+      // per waiting lead instead of once per open lead — 400 lookups instead of 8,400
+      // on a busy broker. `ON lm.role = 'buyer'` is kept as the authority on what
+      // counts as unanswered, so the answer is identical either way.
       q(
         `SELECT l.id, l.name, l.wa_id, l.temp, l.score, l.stage, l.pipeline_type,
                 lm.text AS last_msg, lm.created_at AS last_at
@@ -2603,7 +2627,7 @@ export async function dashboard(agentId) {
            SELECT role, text, created_at FROM messages m
            WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1
          ) lm ON lm.role = 'buyer'
-         WHERE l.agent_id = $1 AND l.closed_at IS NULL
+         WHERE l.agent_id = $1 AND l.closed_at IS NULL AND ${AWAITING_REPLY}
          ORDER BY lm.created_at`,
         [agentId],
       ),
@@ -2994,11 +3018,13 @@ export async function worklist(agentId, now = new Date()) {
            AND v.scheduled_at BETWEEN now() AND now() + interval '48 hours'`,
         [agentId],
       ),
+      // A hot lead whose last word was theirs. The LATERAL this replaced ran once per
+      // hot lead just to read the role of a row the lead already knows about.
       q(
-        `SELECT l.id, l.name, l.wa_id, l.effective_score, lm.created_at AS last_at
+        `SELECT l.id, l.name, l.wa_id, l.effective_score, l.last_inbound_at AS last_at
          FROM leads l
-         JOIN LATERAL (SELECT role, created_at FROM messages m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) lm ON lm.role = 'buyer'
-         WHERE l.agent_id = $1 AND l.closed_at IS NULL AND l.effective_temp = 'Hot'`,
+         WHERE l.agent_id = $1 AND l.closed_at IS NULL AND l.effective_temp = 'Hot'
+           AND ${AWAITING_REPLY}`,
         [agentId],
       ),
       q(
@@ -3014,14 +3040,16 @@ export async function worklist(agentId, now = new Date()) {
          GROUP BY l.id, l.name, l.wa_id HAVING COUNT(*) >= 2`,
         [agentId],
       ),
+      // Visited, then dropped: a completed visit nobody followed up on. "Did we say
+      // anything after the visit?" is last_outbound_at, so the NOT EXISTS that used
+      // to scan the lead's messages per visit row is now a comparison of two
+      // timestamps the lead already carries.
       q(
         `SELECT DISTINCT ON (l.id) l.id, l.name, l.wa_id, v.scheduled_at
          FROM site_visits v JOIN leads l ON l.id = v.lead_id
          WHERE v.agent_id = $1 AND v.status = 'completed' AND l.closed_at IS NULL
            AND v.scheduled_at < now() - interval '3 days'
-           AND NOT EXISTS (
-             SELECT 1 FROM messages m WHERE m.lead_id = l.id AND m.role IN ('agent','ai')
-               AND m.created_at > v.scheduled_at)
+           AND (l.last_outbound_at IS NULL OR l.last_outbound_at <= v.scheduled_at)
          ORDER BY l.id, v.scheduled_at DESC`,
         [agentId],
       ),
@@ -3032,14 +3060,19 @@ export async function worklist(agentId, now = new Date()) {
            OR (c.status = 'expected' AND c.expected_payout_date IS NOT NULL AND c.expected_payout_date < now()::date))`,
         [agentId],
       ),
+      // Gone quiet: nothing said in either direction for a fortnight. This is the
+      // query the migration's numbers came from — it read `messages` twice per
+      // candidate (once for the MAX, once for the NOT EXISTS) to return ~22 rows.
+      // A lead that has never exchanged a message has never been contacted, so it
+      // is stale by this rule too — which is what NULL means here, and why the
+      // NULL arm is spelled out rather than left to a comparison that would drop it.
       q(
-        `SELECT l.id, l.name, l.wa_id, l.stage,
-                (SELECT MAX(created_at) FROM messages m WHERE m.lead_id = l.id) AS last_msg_at
+        `SELECT l.id, l.name, l.wa_id, l.stage, ${LAST_CONTACT_AT} AS last_msg_at
          FROM leads l
          WHERE l.agent_id = $1 AND l.closed_at IS NULL
            AND COALESCE(l.stage, 'New') NOT IN ('Registered/Closed','Closed','Lost')
            AND COALESCE(l.effective_temp, l.temp) IS DISTINCT FROM 'Hot'
-           AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.lead_id = l.id AND m.created_at >= now() - interval '14 days')`,
+           AND (${LAST_CONTACT_AT} IS NULL OR ${LAST_CONTACT_AT} < now() - interval '14 days')`,
         [agentId],
       ),
     ])
@@ -3115,9 +3148,14 @@ export async function worklist(agentId, now = new Date()) {
   }
 
   // 8. Stale lead: active pipeline, no message either way in 14 days, not Hot.
-  const staleExclude = new Set(items.filter((i) => i.type === 'service_window_closing' || i.type === 'hot_lead_waiting').map((i) => i.lead_id))
+  //
+  // This used to filter out leads already raised as a closing service window or as a
+  // hot lead waiting, so neither could be listed twice. Neither overlap is reachable
+  // any more, and the rules say so themselves rather than a set doing it afterwards:
+  // a closing window means an inbound message 20–24h ago, which is the very thing
+  // "silent for a fortnight" measures, and the hot rule matches effective_temp =
+  // 'Hot' where this one matches everything but.
   for (const l of staleRows) {
-    if (staleExclude.has(l.id)) continue
     items.push(worklistItem('stale_lead', {
       lead_id: l.id, title: l.name || l.wa_id,
       reason: 'No contact in 2+ weeks — resurface with a new property or a check-in.',

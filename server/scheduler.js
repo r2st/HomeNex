@@ -12,6 +12,8 @@
 // active agent. Jobs are idempotent: notifications dedupe, follow-ups don't nag twice.
 
 import {
+  AWAITING_REPLY,
+  LAST_CONTACT_AT,
   query,
   getMeta,
   setMeta,
@@ -91,11 +93,14 @@ export async function detectHotLeadsForAgent(agentId, now = Date.now()) {
     if (created) n++
   }
 
+  // The same "waiting on a reply" question the dashboard and the worklist ask, asked
+  // the same way — off the lead row, not by reading the last message's role back out
+  // of `messages` once per hot lead.
   const waiting = await query(
     `SELECT l.id, l.name, l.wa_id, l.effective_score
      FROM leads l
-     JOIN LATERAL (SELECT role FROM messages m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) lm ON lm.role = 'buyer'
-     WHERE l.agent_id = $1 AND l.closed_at IS NULL AND l.effective_temp = 'Hot'`,
+     WHERE l.agent_id = $1 AND l.closed_at IS NULL AND l.effective_temp = 'Hot'
+       AND ${AWAITING_REPLY}`,
     [agentId],
   )
   for (const l of waiting.rows) {
@@ -116,10 +121,13 @@ export async function detectHotLeadsForAgent(agentId, now = Date.now()) {
 // and NO already-open follow-up ("don't nag twice"), create an AI-suggested one.
 export async function generateStaleFollowupsForAgent(agentId, { limit = 20 } = {}) {
   const { rows } = await query(
+    // Same fortnight-of-silence rule as the worklist's stale card, off the same two
+    // columns, so the card an agent sees and the follow-up this job files can never
+    // disagree about which leads have gone quiet.
     `SELECT l.id, l.name, l.wa_id FROM leads l
      WHERE l.agent_id = $1 AND l.closed_at IS NULL
        AND COALESCE(l.stage, 'New') NOT IN ('Registered/Closed','Closed','Lost')
-       AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.lead_id = l.id AND m.created_at >= now() - interval '14 days')
+       AND (${LAST_CONTACT_AT} IS NULL OR ${LAST_CONTACT_AT} < now() - interval '14 days')
        AND NOT EXISTS (SELECT 1 FROM followups f WHERE f.lead_id = l.id AND f.completed_at IS NULL)
      ORDER BY l.updated_at LIMIT $2`,
     [agentId, limit],
@@ -171,7 +179,8 @@ export async function noResponseNudgeForAgent(agentId, now = Date.now()) {
      FROM leads l
      WHERE l.agent_id = $1 AND l.closed_at IS NULL AND l.last_inbound_at IS NOT NULL
        AND l.last_inbound_at <= now() - ($2 || ' minutes')::interval
-       AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.lead_id = l.id AND m.role IN ('agent','ai'))`,
+       -- "No agent/AI message has ever gone out" is exactly a NULL last_outbound_at.
+       AND l.last_outbound_at IS NULL`,
     [agentId, String(NO_RESPONSE_NUDGE_MINUTES)],
   )
   let n = 0
