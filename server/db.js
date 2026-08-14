@@ -3769,6 +3769,26 @@ export async function recordCtwaReferral(leadId, referral = {}) {
   return getLead(leadId)
 }
 
+// `raw` is a diagnostic copy of whatever the portal sent, and on /ingest/portal that
+// is the caller's entire request body — an unauthenticated one, since the ingest token
+// is published as a contact address on portal listings. The route's boundedText only
+// measures the string fields it names, so an unlisted key, or a nested object, reaches
+// this column unmeasured. The body cap in index.js is the primary bound; this is the
+// backstop at the point of storage, covering every caller of this function rather than
+// one route, because the column is JSONB and grows the table forever.
+//
+// 64KB is far past any real portal payload (the largest is a scraped email already
+// sliced to 4000 characters) and far short of a problem. When it trips, the marker is
+// stored instead — an audit blob that says it was too big is useful; a truncated one
+// that no longer parses is not.
+const RAW_EVENT_MAX_BYTES = 64 * 1024
+
+export function boundRawEvent(raw) {
+  const json = JSON.stringify(raw || {})
+  if (json.length <= RAW_EVENT_MAX_BYTES) return json
+  return JSON.stringify({ _truncated: true, _bytes: json.length, _limit: RAW_EVENT_MAX_BYTES })
+}
+
 // Log an ingestion attempt. Dedupes on (agent_id, channel, external_id): a second event
 // for the same portal lead id returns { event, duplicate:true } without inserting.
 export async function createLeadSourceEvent(e) {
@@ -3781,7 +3801,7 @@ export async function createLeadSourceEvent(e) {
        RETURNING *`,
       [e.agent_id, e.lead_id ?? null, e.channel, e.portal ?? null, e.external_id,
        e.status ?? 'received', e.contact_phone ?? null, e.contact_name ?? null,
-       e.auto_reply_status ?? null, JSON.stringify(e.raw || {}), e.error ?? null],
+       e.auto_reply_status ?? null, boundRawEvent(e.raw), e.error ?? null],
     )
     if (rows[0]) return { event: rows[0], duplicate: false }
     const existing = (
@@ -3796,7 +3816,7 @@ export async function createLeadSourceEvent(e) {
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11) RETURNING *`,
     [e.agent_id ?? null, e.lead_id ?? null, e.channel, e.portal ?? null, e.external_id ?? null,
      e.status ?? 'received', e.contact_phone ?? null, e.contact_name ?? null,
-     e.auto_reply_status ?? null, JSON.stringify(e.raw || {}), e.error ?? null],
+     e.auto_reply_status ?? null, boundRawEvent(e.raw), e.error ?? null],
   )
   return { event: rows[0], duplicate: false }
 }

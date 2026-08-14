@@ -315,12 +315,30 @@ if (process.env.NODE_ENV !== 'test' && process.env.LOG_REQUESTS !== '0') {
   app.use(requestLogger())
 }
 
+const captureRawBody = (req, _res, buf) => {
+  req.rawBody = buf
+}
+
+// The 25MB ceiling below exists for exactly one caller — the media library, which
+// posts a photo as base64 — and it was being extended to the two public ingest routes,
+// which post a lead. A lead is a few hundred bytes. That gap mattered because the
+// ingest token is not a secret: it is the local part of the address agents publish on
+// their 99acres and MagicBricks listings, so anyone who can read a listing can post
+// here. /ingest/portal then stores the WHOLE body as JSONB (`raw: b`), and boundedText
+// only measures the named string fields, so the bulk travels in an unlisted key and
+// lands on disk untouched. 25MB a request at 240 requests a minute is a disk-filling
+// primitive, not a lead.
+//
+// Mounted before the general parser: body-parser marks a request parsed and the later
+// one skips it, so /ingest gets this limit and answers 413 above it. 2MB is generous
+// against the largest thing the routes themselves permit — /ingest/email bounds `text`
+// and `html` at 512KB each, and JSON escaping inflates — while being 12x tighter than
+// what it replaces.
+app.use('/ingest', express.json({ limit: '2mb', verify: captureRawBody }))
 app.use(
   express.json({
     limit: '25mb', // media library uploads arrive as base64 JSON
-    verify: (req, _res, buf) => {
-      req.rawBody = buf
-    },
+    verify: captureRawBody,
   }),
 )
 // Immediately after the parser, so every handler below can read req.body as an

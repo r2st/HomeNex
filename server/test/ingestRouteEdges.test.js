@@ -126,11 +126,16 @@ test('an unknown ingest address is a 404 rather than a lead for nobody', async (
 test('an oversized email body is refused before it reaches the parser', async () => {
   // parsePortalEmail runs ten chained regex passes over the body and then builds a
   // fresh RegExp per label, all on the event loop, at a cost that grows faster than
-  // the input: 1MB of HTML measured at 41ms, 25MB at 1.85 SECONDS. Until this bound
-  // the express.json limit was the only ceiling, and that is 25MB because the media
-  // library posts base64 photos on an authenticated route — so anyone holding an
-  // ingest token could spend 1.85s of the single-threaded server per request, 240
-  // times a minute, and /healthz would stop answering along with everything else.
+  // the input: 1MB of HTML measured at 41ms, 25MB at 1.85 SECONDS. So anyone holding
+  // an ingest token — which is printed on the agent's public listings — could spend
+  // that much of the single-threaded server per request, 240 times a minute, and
+  // /healthz would stop answering along with everything else.
+  //
+  // Two ceilings sit in front of that now, and this is the inner one. ~1MB clears
+  // the 2MB body cap on /ingest and so reaches boundedText, which measures `html`
+  // against TEXT.EMAIL_PART (512KB) and names the field it refused. Anything past
+  // the body cap never gets that far and 413s instead, which is the outer ceiling
+  // and is asserted below.
   //
   // Assert the refusal is cheap as well as correct. A 400 that still cost a second
   // to produce would be no defence at all.
@@ -138,7 +143,7 @@ test('an oversized email body is refused before it reaches the parser', async ()
   const res = await req('POST', `/ingest/email/${ingestToken}`, {
     from: 'noreply@99acres.com',
     subject: 'Lead',
-    html: '<div>Mobile: 9876500013</div>'.repeat(200_000), // ~5.8MB
+    html: '<div>Mobile: 9876500013</div>'.repeat(35_000), // ~1MB: over the field bound, under the body cap
   })
   assert.equal(res.status, 400)
   const body = await res.json()
@@ -215,6 +220,75 @@ test('a push to a portal we do not syndicate to, or with no phone, is refused', 
   const phoneless = await req('POST', `/ingest/portal/${ingestToken}/housing`, { name: 'No Number Nikhil' })
   assert.equal(phoneless.status, 400)
   assert.equal((await phoneless.json()).error, 'phone required')
+})
+
+// --- What the field bounds don't measure -------------------------------------
+
+test('an ingest body past the ceiling is refused whole, in a key no field bound names', async () => {
+  // boundedText measures the fields it is given by name. /ingest/portal names eight,
+  // and then hands ingestLead the WHOLE body as `raw`, which lands in a JSONB column.
+  // So the cheapest way past the bounds is a key nobody listed: `bulk` here is neither
+  // measured nor read, and before the mount below it travelled under express.json()'s
+  // 25MB ceiling — the one that exists for the media library posting base64 photos on
+  // an authenticated route, extended by accident to a route whose token is printed on
+  // public 99acres listings.
+  //
+  // 240 requests a minute is the ingest limiter's allowance, so the gap was 6GB a
+  // minute of attacker-chosen JSONB, on the VPS where disk is the scarce thing.
+  const res = await req('POST', `/ingest/portal/${ingestToken}/99acres`, {
+    phone: '9876500031',
+    bulk: 'x'.repeat(3 * 1024 * 1024),
+  })
+  assert.equal(res.status, 413)
+  assert.equal((await res.json()).code, 'PAYLOAD_TOO_LARGE')
+
+  // Refused before the handler, so there is no lead and no event to show for it.
+  assert.equal(
+    (await query('SELECT COUNT(*)::int AS n FROM leads WHERE wa_id LIKE $1', ['%9876500031'])).rows[0].n,
+    0,
+  )
+})
+
+test('the tighter ingest ceiling is not the ceiling the media library gets', async () => {
+  // The mount is path-scoped (`app.use('/ingest', ...)`) and relies on body-parser
+  // marking a request parsed so the general 25MB parser skips it. Get that wrong in
+  // the other direction — mount it app-wide, or above the wrong prefix — and photo
+  // uploads start failing at 2MB with nothing in the ingest tests to notice.
+  //
+  // Unauthenticated on purpose: 401 comes from the auth middleware, which sits BELOW
+  // the parser, so reaching it at all is the proof that 3MB was parsed rather than
+  // refused. It also keeps a multi-megabyte junk file off the uploads directory.
+  const res = await req('POST', '/api/uploads', {
+    filename: 'brochure.pdf',
+    data_base64: 'A'.repeat(3 * 1024 * 1024),
+  }, null)
+  assert.equal(res.status, 401, 'a 413 here would mean the 2MB cap leaked onto every route')
+})
+
+test('a raw payload under the body ceiling but past the column ceiling is stored as a marker', async () => {
+  // Between the two bounds sits a band the body cap allows and no field bound
+  // measures: ~100KB of unlisted key. Small enough to be ordinary traffic, large
+  // enough that lead_source_events.raw grows by 100KB a lead and never shrinks —
+  // and the column is diagnostic, so nothing ever reads it back to notice.
+  //
+  // boundRawEvent is the backstop at the point of storage, which is why it lives in
+  // db.js and covers every caller of createLeadSourceEvent rather than this route.
+  const body = await json('POST', `/ingest/portal/${ingestToken}/housing`, {
+    phone: '9876500032',
+    name: 'Bulky Bhaskar',
+    notes: 'n'.repeat(100_000),
+  })
+  assert.equal(body.ok, true)
+
+  const event = await eventFor(body.lead_id)
+  assert.equal(event.raw._truncated, true)
+  assert.equal(event.raw._limit, 64 * 1024)
+  assert.ok(event.raw._bytes > 100_000, 'the size it would have been is kept')
+  assert.equal(event.raw.notes, undefined, 'and the payload itself is not')
+
+  // The lead is still a lead: the marker replaces the audit copy, not the ingestion.
+  const { rows } = await query('SELECT name FROM leads WHERE id = $1', [body.lead_id])
+  assert.equal(rows[0].name, 'Bulky Bhaskar')
 })
 
 // --- Meta Lead Ads -----------------------------------------------------------
