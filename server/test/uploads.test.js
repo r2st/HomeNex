@@ -63,6 +63,36 @@ test('POST /api/uploads rejects a missing payload', async () => {
   assert.match(body.error, /data_base64/)
 })
 
+// A present-but-empty payload is not the same as a missing one: it gets past the
+// route's `data_base64 is required` guard and reaches saveUpload with zero bytes.
+// A picker that hands over a 0-byte file, or a data URL whose payload was truncated
+// in transit, lands exactly here — and used to write an empty file and hand back a
+// URL that renders as a broken image.
+test('POST /api/uploads refuses a payload that decodes to nothing', async () => {
+  const res = await req('POST', '/api/uploads', { data_base64: 'data:image/png;base64,', filename: 'blank.png' })
+  assert.equal(res.status, 400)
+  assert.match((await res.json()).error, /empty upload/)
+})
+
+// The two fields the caller may leave out entirely. The stored name is the one on
+// disk (a random name, never the caller's), and an unknown type is reported as null
+// rather than guessed at — express.static will derive the response Content-Type from
+// the extension either way.
+test('POST /api/uploads fills in a name of its own, and admits when it has no mime', async () => {
+  const png = PNG_DATA_URL.split(',')[1]
+
+  const named = await (await req('POST', '/api/uploads', { data_base64: PNG_DATA_URL })).json()
+  assert.match(named.filename, /^[a-f0-9]{24}\.png$/, 'the stored name stands in for the missing one')
+  assert.ok(named.url.endsWith(named.filename), 'and it is the name actually served')
+  assert.equal(named.mime, 'image/png', 'read off the data URL')
+
+  // Raw base64 with no data URL and no mime: only the filename says what this is.
+  const bare = await (await req('POST', '/api/uploads', { data_base64: png, filename: 'flat.jpg' })).json()
+  assert.equal(bare.filename, 'flat.jpg', 'a supplied name is kept')
+  assert.equal(bare.mime, null)
+  assert.match(bare.url, /\.jpg$/)
+})
+
 test('POST /api/uploads requires auth', async () => {
   const res = await req('POST', '/api/uploads', { data_base64: PNG_DATA_URL }, null)
   assert.equal(res.status, 401)
