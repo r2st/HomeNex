@@ -158,3 +158,56 @@ test('deliverDueFestiveSchedules claims due rows exactly once', async () => {
   assert.equal(scheduled[0].status, 'sent') // zero contacts -> sent with 0 recipients
   assert.equal(scheduled[0].sent_count, 0)
 })
+
+// A scheduled delivery runs unattended on the once-a-minute tick, so the only thing
+// standing between a failing send and a schedule stuck on 'sending' for ever is the
+// loop's own catch. The immediate-send route has a caller to hand a 503 to; this one
+// has nobody, and has to mark itself failed and move on to the next schedule.
+
+// Pick a timezone in which "now" is the middle of the working day, whenever the
+// suite happens to run. Automated deliveries enforce the send window, so a fixed
+// timezone would make this test pass or fail depending on the clock.
+function middayTimezone(now = new Date()) {
+  const offset = (12 - now.getUTCHours() + 24) % 24
+  return offset <= 14 ? `Etc/GMT-${offset}` : `Etc/GMT+${24 - offset}`
+}
+
+test('a scheduled delivery that fails is marked failed, and the next one still runs', async () => {
+  const one = await (
+    await req('POST', '/api/auth/signup', { name: 'Failing Agent', phone: '+919800000054', password: 'secret123' })
+  ).json()
+  const two = await (
+    await req('POST', '/api/auth/signup', { name: 'Second Agent', phone: '+919800000055', password: 'secret123' })
+  ).json()
+
+  const tz = middayTimezone()
+  for (const who of [one, two]) {
+    await req('PUT', '/api/agent/preferences', { timezone: tz }, who.token)
+  }
+  // Only the first has a contact, so only the first actually attempts a send — and
+  // with WhatsApp unconfigured that attempt throws WA_NOT_CONFIGURED.
+  await addContact(one.agent.id, '+919777700054', 'Doomed Recipient')
+
+  for (const who of [one, two]) {
+    await createFestiveSchedule(who.agent.id, {
+      festival_key: 'diwali',
+      message: 'Happy Diwali, {name}!',
+      send_at: new Date(Date.now() - 60_000).toISOString(),
+    })
+  }
+
+  // Both are claimed — a failure must not leave the second one unclaimed on the queue.
+  assert.equal(await deliverDueFestiveSchedules(), 2)
+
+  const first = (await (await req('GET', '/api/templates/festive', undefined, one.token)).json()).scheduled[0]
+  assert.equal(first.status, 'failed', 'a delivery that threw was not recorded as failed')
+  assert.equal(first.sent_count, 0)
+
+  // The whole point of catching per-schedule rather than per-run: one agent's broken
+  // WhatsApp config must not stop every other agent's greetings going out.
+  const second = (await (await req('GET', '/api/templates/festive', undefined, two.token)).json()).scheduled[0]
+  assert.equal(second.status, 'sent', 'the second schedule was taken down by the first one failing')
+
+  // And nothing is left claimable, so the tick a minute later does not retry for ever.
+  assert.equal(await deliverDueFestiveSchedules(), 0)
+})

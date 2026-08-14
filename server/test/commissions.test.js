@@ -346,3 +346,28 @@ test('manual deal create is one-per-lead and editable', async () => {
   assert.equal(updated.status, 'won')
   assert.equal(updated.builder_name, 'Puravankara Ltd')
 })
+
+test('a deal edit the columns refuse is a 400, not a 500', async () => {
+  // status and deal_type are CHECK-constrained in the schema rather than validated in
+  // the handler, so a value outside the set arrives as a pg 23514. Letting that reach
+  // the error handler would answer a typo with "Something went wrong on our side" —
+  // an apology for the caller's mistake, and one that reads as an outage.
+  const lead = await upsertLead(agentId, '919000000016', 'Typo Tarun')
+  const deal = await jreq('POST', '/api/deals', { lead_id: lead.id, deal_type: 'sale' })
+
+  for (const body of [{ status: 'nearly-won' }, { deal_type: 'lease' }]) {
+    const res = await req('PUT', `/api/deals/${deal.id}`, body)
+    assert.equal(res.status, 400, `${JSON.stringify(body)} should be a 400`)
+    assert.notEqual((await res.json()).code, 'INTERNAL')
+  }
+
+  // The refused edits left the row exactly as it was.
+  const unchanged = await jreq('GET', `/api/deals/${deal.id}`)
+  assert.equal(unchanged.status, 'open')
+  assert.equal(unchanged.deal_type, 'sale')
+
+  // A value out of range for the money column is the same class of mistake, and gets
+  // the same answer rather than an overflow 500.
+  const huge = await req('PUT', `/api/deals/${deal.id}`, { deal_value_paise: 1e30 })
+  assert.equal(huge.status, 400)
+})

@@ -122,6 +122,28 @@ test('formatEmiMessage produces a WhatsApp-ready breakdown', () => {
   assert.match(assumed, /Assumed 8\.5% p\.a\. and 20 years/)
 })
 
+test('a figure under a lakh is written in rupees, not as "₹0 L"', () => {
+  // The big-number formatter has three arms — Cr, L, and plain rupees — and only the
+  // first two are reached by a normal home loan. Total interest on a small, short
+  // one lands in the third, and rounding it to lakhs would print "₹0 L" for ₹4,386:
+  // the one number in the message an agent would forward to a buyer verbatim.
+  const msg = formatEmiMessage(parseEmiQuery('emi for 1L at 8% for 1 year'))
+  assert.match(msg, /Total interest: ₹4,386\b/)
+  assert.doesNotMatch(msg, /interest: ₹0/)
+  // The loan amount itself is exactly at the lakh boundary and still reads as lakhs.
+  assert.match(msg, /Loan amount: ₹1 L/)
+})
+
+test('a crore-scale loan is written in Cr, not as a nine-digit rupee figure', () => {
+  // The other end of the same formatter. ₹2.5 Cr is how the amount is said out loud;
+  // "₹2,50,00,000" is not something a buyer reads back off a WhatsApp message.
+  const msg = formatEmiMessage(parseEmiQuery('emi for 2.5 crore at 9% for 20 years'))
+  assert.match(msg, /Loan amount: ₹2\.5 Cr/)
+  // The monthly EMI is deliberately NOT abbreviated — it is the number that has to be
+  // exact, so it stays in full rupees however large the loan is.
+  assert.match(msg, /Monthly EMI: \*₹2,2\d,\d{3}\*/)
+})
+
 test('emiReplyFor only answers EMI questions with a parseable amount', () => {
   assert.match(emiReplyFor('what will be the emi for 80L at 8.5% for 20 years'), /Monthly EMI/)
   assert.equal(emiReplyFor('2bhk chahiye wakad me'), null)

@@ -110,6 +110,37 @@ test('a rename to blank is refused, and an empty patch is a no-op read', async (
   assert.equal(await updateTeam(MISSING_TEAM, {}), null, 'and a missing team reads back as null')
 })
 
+test('PUT /api/team turns that refusal into a 400 with the reason, not a 500', async () => {
+  // Same rejection as above, but through the route — which is where it actually
+  // reaches an agent. updateTeam throws a plain Error with no `code`, so this is
+  // also the check that sendErr's `?? 400` fallback holds: an uncoded throw must
+  // land as a bad request the settings form can display, not as an unhandled 500.
+  const ownerAuth = await signup('Rename Route Owner', '+919812000009')
+  await req('POST', '/api/team', { name: 'Route Rename Realty' }, ownerAuth.token)
+
+  const res = await req('PUT', '/api/team', { name: '   ' }, ownerAuth.token)
+  assert.equal(res.status, 400)
+  assert.match((await res.json()).error, /name cannot be empty/i)
+
+  // And the team is genuinely untouched — a refused rename must not half-apply.
+  const after = await (await req('GET', '/api/team', undefined, ownerAuth.token)).json()
+  assert.equal(after.team.name, 'Route Rename Realty')
+})
+
+test('PUT /api/team still applies the strategy when the name is left out entirely', async () => {
+  // The neighbouring arm: `name !== undefined` is what separates "rename to blank"
+  // from "don't touch the name", and confusing the two would make every strategy
+  // change fail with an empty-name error.
+  const ownerAuth = await signup('Strategy Owner', '+919812000010')
+  await req('POST', '/api/team', { name: 'Strategy Realty' }, ownerAuth.token)
+
+  const res = await req('PUT', '/api/team', { assignment_strategy: 'round_robin' }, ownerAuth.token)
+  assert.equal(res.status, 200)
+  const team = await res.json()
+  assert.equal(team.assignment_strategy, 'round_robin')
+  assert.equal(team.name, 'Strategy Realty')
+})
+
 // --- Invitations ----------------------------------------------------------------
 
 test('an invite is refused for a bad number, a bad role, and a member already on the roster', async () => {

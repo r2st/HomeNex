@@ -10,7 +10,7 @@ delete process.env.WHATSAPP_APP_SECRET
 const dbName = await createTestDb('micropage')
 
 const { app } = await import('../index.js')
-const { closePool, query, pool, recordPropertyView } = await import('../db.js')
+const { closePool, query, pool, recordPropertyView, ensurePropertySlug } = await import('../db.js')
 
 let server
 let base
@@ -194,6 +194,58 @@ test('micro-page endpoint backfills a slug for legacy properties', async () => {
   // Idempotent: a second call returns the same slug.
   const again = await (await req('POST', `/api/properties/${rows[0].id}/micro-page`)).json()
   assert.equal(again.slug, page.slug)
+})
+
+test('a slug that cannot be made unique gives up rather than looping for ever', async () => {
+  // The random six-character suffix makes a genuine collision vanishingly unlikely,
+  // which is exactly why the retry loop has never run: it is insurance against a
+  // narrowing of the suffix, not against today's odds. Pin the randomness so every
+  // attempt produces the same slug and the loop has to reach its own ceiling.
+  //
+  // What matters is that it STOPS. Three tries and a clear error is a 500 someone can
+  // read; retrying until a unique slug appears would spin against the unique index
+  // and hold a database connection open for as long as it took to notice.
+  const agentId = (await query('SELECT id FROM agents ORDER BY id LIMIT 1')).rows[0].id
+  // Derived the same way makePropertySlug derives it, rather than hardcoded, so this
+  // stays honest if the suffix scheme is ever changed.
+  const FIXED = 0.2818047613178
+  const SUFFIX = FIXED.toString(36).slice(2, 8)
+  assert.equal(SUFFIX.length, 6, 'the pinned value must yield a full-length suffix')
+
+  const taken = await query(
+    `INSERT INTO properties (agent_id, title, micro_page_slug) VALUES ($1, 'Collision Court', $2) RETURNING id`,
+    [agentId, `collision-court-${SUFFIX}`],
+  )
+  const legacy = await query(
+    `INSERT INTO properties (agent_id, title, micro_page_slug) VALUES ($1, 'Collision Court', NULL) RETURNING id`,
+    [agentId],
+  )
+
+  const realRandom = Math.random
+  Math.random = () => FIXED
+  try {
+    assert.match(
+      (await ensurePropertySlug(legacy.rows[0].id, agentId).then(
+        () => null,
+        (e) => e.message,
+      )) ?? '',
+      /Could not generate a unique micro-page slug/,
+      'the loop did not give up',
+    )
+  } finally {
+    Math.random = realRandom
+  }
+
+  // The row is left as it was — no half-written slug for the next call to trip over.
+  const after = await query('SELECT micro_page_slug FROM properties WHERE id = $1', [legacy.rows[0].id])
+  assert.equal(after.rows[0].micro_page_slug, null)
+
+  // And with real randomness back, the very same row gets a slug on the next attempt.
+  const recovered = await ensurePropertySlug(legacy.rows[0].id, agentId)
+  assert.match(recovered.micro_page_slug, /^collision-court-[a-z0-9]{6}$/)
+  assert.notEqual(recovered.micro_page_slug, `collision-court-${SUFFIX}`)
+
+  await query('DELETE FROM properties WHERE id = ANY($1)', [[taken.rows[0].id, legacy.rows[0].id]])
 })
 
 test('micro-page endpoint is agent-scoped', async () => {
