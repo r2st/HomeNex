@@ -16,7 +16,7 @@
 //
 // The harness (fixtures/bootServer.mjs) shrinks the 60s tick and the 10s force-exit
 // backstop before importing, so this file costs about a second rather than a minute.
-import { test, before, after } from 'node:test'
+import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import net from 'node:net'
@@ -91,7 +91,15 @@ async function boot({ mode = 'boot', env = {} } = {}) {
 
   // Resolve as soon as the pattern has appeared, or reject with everything printed so
   // far — a bare timeout on a child process is otherwise undebuggable.
-  const waitFor = (re, ms = 15_000) =>
+  //
+  // The deadline is generous because of what the FIRST child has to do before it can
+  // print anything: createTestDb hands out an empty database, so that child runs the
+  // whole migration chain on boot while four other suites (--test-concurrency=4) are
+  // using the same postgres. Measured alone it is about four seconds; contended it is
+  // not, and at 15s this file failed in the full suite on a shutdown test that had
+  // nothing to do with startup. Every later child finds the chain applied and is ready
+  // in ~250ms, so the ceiling only ever costs anything when it is genuinely needed.
+  const waitFor = (re, ms = 45_000) =>
     new Promise((resolve, reject) => {
       if (re.test(out)) return resolve()
       const timer = setTimeout(
@@ -131,12 +139,6 @@ const start = async (opts) => {
   running.push(s)
   return s
 }
-
-before(() => {
-  // The harness runs migrations on import. Doing it once here would be pointless —
-  // each child re-runs them against the same database and they are idempotent — but
-  // the first child pays for it, so give the boot waits room.
-})
 
 after(async () => {
   await Promise.all(running.map((s) => s.kill()))
