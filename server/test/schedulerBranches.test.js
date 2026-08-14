@@ -416,3 +416,45 @@ test('one failing visit does not stop the others in the same tick', async () => 
   ).rows[0].n
   assert.equal(stamped, 1)
 })
+
+// --- The WhatsApp reminder's two per-visit fallbacks ---------------------------
+
+test('a WhatsApp reminder for an unnamed lead is addressed to its number', async () => {
+  const id = await newAgent()
+  const waId = '919751050001'
+  const lead = await upsertLead(id, waId, null)
+  assert.equal(lead.name, null, 'the fixture must be the unnamed case')
+  const now = Date.now()
+  await createSiteVisit(id, { lead_id: lead.id, scheduled_at: new Date(now + 90 * 60_000).toISOString() })
+
+  const [sent, send] = fakeSender()
+  assert.equal(await siteVisitWaRemindersForAgent(id, now, send), 1)
+  assert.equal(sent.length, 1)
+  // The activity log is the agent-facing record of the automated send, and an
+  // unnamed lead must still be identifiable in it.
+  const { rows } = await query(
+    `SELECT text FROM activity WHERE agent_id = $1 AND lead_id = $2 AND kind = 'agent' ORDER BY id DESC LIMIT 1`,
+    [id, lead.id],
+  )
+  assert.equal(rows[0].text, `Auto site-visit reminder sent to ${waId}`)
+})
+
+test('a reminder mid-Hinglish thread is written in the buyer’s own language', async () => {
+  const id = await newAgent()
+  const lead = await upsertLead(id, '919751050002', 'Hinglish Hetal')
+  // The transcript is what detectConversationLanguage reads; without it the reminder
+  // falls back to English, which is the arm the other reminder tests already take.
+  await addMessage(lead.id, 'buyer', 'bhai 2bhk chahiye wakad me, budget 80 tak hai')
+  await addMessage(lead.id, 'buyer', 'kal site visit ka time theek rahega kya')
+  const now = Date.now()
+  await createSiteVisit(id, { lead_id: lead.id, scheduled_at: new Date(now + 90 * 60_000).toISOString() })
+
+  const [sent, send] = fakeSender()
+  assert.equal(await siteVisitWaRemindersForAgent(id, now, send), 1)
+  assert.equal(sent.length, 1)
+  assert.match(
+    sent[0].text,
+    /Aapki site visit ~2 ghante mein hai/,
+    'the T-2h reminder must be the Hinglish copy, not the English default',
+  )
+})
