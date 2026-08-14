@@ -22,7 +22,7 @@
 // contain a letter or a digit. "✓", "←", "→", "🗑" are names a browser will happily
 // expose and a screen reader will announce as "check mark button" — which tells an
 // agent using one exactly as much as silence does.
-import { CONTROLS, isInteractive, visibleText } from './domish.js'
+import { CONTROLS, isInteractive, isKeyboardOperable, visibleText } from './domish.js'
 
 /** Text of a subtree as a screen reader would read it — aria-hidden removed. */
 export { visibleText, isInteractive }
@@ -103,5 +103,29 @@ export function assertAllControlsNamed(assert, view, screen) {
     nameless,
     [],
     `${screen}: ${nameless.length} control(s) announce nothing to a screen reader:\n  ${nameless.join('\n  ')}`,
+  )
+}
+
+/**
+ * Every interactive control the agent can see but cannot reach from the keyboard.
+ * A `role="button"` on a <span> or <div> is the shape this catches: it looks and
+ * clicks like a button, and without both a tabIndex and a key handler it is a
+ * mouse-only control that a keyboard or switch user simply cannot operate.
+ */
+export function mouseOnlyControls(view) {
+  return view.all(isInteractive).filter((f) => !isKeyboardOperable(f)).map(describeControl)
+}
+
+/**
+ * Assert the screen has no mouse-only control. The companion to
+ * `assertAllControlsNamed`: that one asks whether a control says what it does,
+ * this one asks whether the agent can reach it at all.
+ */
+export function assertAllControlsKeyboardOperable(assert, view, screen) {
+  const stranded = mouseOnlyControls(view)
+  assert.deepEqual(
+    stranded,
+    [],
+    `${screen}: ${stranded.length} control(s) cannot be reached from the keyboard:\n  ${stranded.join('\n  ')}`,
   )
 }

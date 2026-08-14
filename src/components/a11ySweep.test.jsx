@@ -14,7 +14,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { render, click, act } from '../test/render.jsx'
 import { installBrowser, mockFetch } from '../test/browserEnv.js'
-import { assertAllControlsNamed } from '../test/a11y.js'
+import { assertAllControlsNamed, assertAllControlsKeyboardOperable } from '../test/a11y.js'
 import DashboardTab from './DashboardTab.jsx'
 import LeadsTab from './LeadsTab.jsx'
 import InboxTab from './InboxTab.jsx'
@@ -226,11 +226,27 @@ for (const screen of SCREENS) {
     }
     assertAllControlsNamed(assert, ui, screen.name)
   })
+
+  // Naming and reachability are separate failures: a control can announce itself
+  // perfectly and still be unreachable without a mouse. This app puts role="button"
+  // on spans deliberately (InfoTip nests inside card buttons, where a nested
+  // <button> would be invalid HTML), and each of those has to carry its own
+  // tabIndex and key handler to stay operable — a regression that is invisible on
+  // screen and total for anyone driving the app from a keyboard or a switch.
+  test(`every control on ${screen.name} can be reached from the keyboard`, async (t) => {
+    mount(t)
+    const ui = await render(screen.el())
+    if (screen.open) {
+      await screen.open(ui)
+      await act(() => {})
+    }
+    assertAllControlsKeyboardOperable(assert, ui, screen.name)
+  })
 }
 
 // --- The states a sweep of the resting screen never reaches ----------------------
 
-test('every control in the groups panel announces what it does', async (t) => {
+test('every control in the groups panel announces what it does, and is reachable', async (t) => {
   // Collapsed on arrival, so the resting sweep of Contacts never sees it — and the
   // rows inside it are the shape most likely to go unnamed: one line per group with
   // an icon-only delete at the end.
@@ -244,27 +260,30 @@ test('every control in the groups panel announces what it does', async (t) => {
 
   assert.equal(ui.byText('GROUPS & SEGMENTS', { selector: 'button' }).props['aria-expanded'], true)
   assertAllControlsNamed(assert, ui, 'Contacts → groups')
+  assertAllControlsKeyboardOperable(assert, ui, 'Contacts → groups')
 })
 
-test('every control in the new-property form announces what it does', async (t) => {
+test('every control in the new-property form announces what it does, and is reachable', async (t) => {
   mount(t)
   const ui = await render(<PropertiesTab onOpenLead={() => {}} />)
   await click(ui.byText('+ Add', { selector: 'button' }))
   await act(() => {})
 
   assertAllControlsNamed(assert, ui, 'Properties → new property')
+  assertAllControlsKeyboardOperable(assert, ui, 'Properties → new property')
 })
 
-test('every control in the lead edit form announces what it does', async (t) => {
+test('every control in the lead edit form announces what it does, and is reachable', async (t) => {
   mount(t)
   const ui = await render(<LeadDetail leadId={5} onClose={() => {}} onChanged={() => {}} onOpenConversation={() => {}} />)
   await click(ui.byText('Add details', { selector: 'button' }))
   await act(() => {})
 
   assertAllControlsNamed(assert, ui, 'Lead detail → edit')
+  assertAllControlsKeyboardOperable(assert, ui, 'Lead detail → edit')
 })
 
-test('every control on an errored screen announces what it does', async (t) => {
+test('every control on an errored screen announces what it does, and is reachable', async (t) => {
   // The failure path renders its own retry affordances, and they are exactly the
   // controls an agent needs when they can least afford a mystery button.
   mount(t, {
@@ -274,4 +293,5 @@ test('every control on an errored screen announces what it does', async (t) => {
   const ui = await render(<LeadsTab onOpenConversation={() => {}} />)
 
   assertAllControlsNamed(assert, ui, 'Leads (server error)')
+  assertAllControlsKeyboardOperable(assert, ui, 'Leads (server error)')
 })
