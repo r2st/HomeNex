@@ -322,9 +322,11 @@ test('the lead count endpoint counts only what the caller can see', async () => 
   const betaCounts = await jsonOf(await req('GET', '/api/leads/count', undefined, beta.owner.token))
   const betaList = await jsonOf(await req('GET', '/api/leads?limit=500', undefined, beta.owner.token))
   assert.equal(betaCounts.total, betaList.length, 'the count and the list disagree about what is visible')
-  // Alpha's team pool lead has agent_id NULL, which the shared-pool arm of the query
-  // matches for everyone — the one lead crossing this line, and by design.
-  assert.ok(betaCounts.total <= 1, `Beta sees ${betaCounts.total} leads; only the shared pool should reach them`)
+  // Alpha's pool lead has agent_id NULL, and the shared-pool arm of the query used to
+  // match it for every agent on the platform. It carries Alpha's team tag, so it is
+  // Alpha's shared inbox, not the open pool — Beta must count zero.
+  assert.equal(betaCounts.total, 0, `Beta sees ${betaCounts.total} leads; Alpha's pool is not theirs`)
+  assert.equal(betaCounts.unassigned, 0, "Alpha's pool lead was counted in Beta's unassigned badge")
 })
 
 test('a manager cannot page the team inbox past their own team either', async () => {

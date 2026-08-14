@@ -106,16 +106,24 @@ test('property-matches names the missing entity in its 404', async () => {
 
 // Claiming is not a read: an unassigned-pool lead that someone else already owns is
 // not "not found" (the caller can legitimately see it in the pool listing) — it is a
-// conflict. It must still be impossible to claim, and the message must not confirm
-// who owns it.
+// conflict, and a retryable one, so it says so. It must still be impossible to claim,
+// and the message must not confirm who owns it.
 test('claiming a lead that is already owned is a 409, and reveals nothing', async () => {
-  for (const id of [MISSING, bOwned.lead]) {
-    const res = await A('POST', `/api/leads/${id}/assign`)
-    assert.equal(res.status, 409, `assign ${id}`)
-    const { error } = await res.json()
-    assert.equal(error, 'lead is not available to claim')
-    assert.ok(!/Other Omkar|919888840001/.test(error), 'the 409 must not name the real owner')
-  }
+  const res = await A('POST', `/api/leads/${bOwned.lead}/assign`)
+  assert.equal(res.status, 409, `assign ${bOwned.lead}`)
+  const { error, code } = await res.json()
+  assert.equal(code, 'LEAD_ALREADY_CLAIMED')
+  assert.match(error, /claimed/i, 'the 409 must say why the claim failed')
+  assert.ok(!/Other Omkar|919888840001/.test(error), 'the 409 must not name the real owner')
+})
+
+// An id that matches no row at all is a different answer: there is nothing to
+// conflict with, and a 409 there invited the client to retry a claim that can never
+// succeed. It is the same 404 every other id-bearing lead route gives.
+test('claiming an id that does not exist is a 404, not a retryable conflict', async () => {
+  const res = await A('POST', `/api/leads/${MISSING}/assign`)
+  assert.equal(res.status, 404, `assign ${MISSING}`)
+  assert.equal((await res.json()).error, 'not found')
 })
 
 test('property routes 404 on missing and cross-tenant ids', async () => {

@@ -525,21 +525,48 @@ export async function attachLeadContact(leadId, contactId) {
   )
 }
 
-// Claim an unassigned lead. Only succeeds while the lead is still in the pool.
+// Which shared-pool rows a caller may see and claim.
+//
+// A lead with agent_id IS NULL is "in the pool", and until now the pool was one
+// global heap: every /api/leads query matched it for every agent on the platform.
+// That is right for a lead that belongs to nobody — an unknown sender on a shared
+// number — but wrong the moment the lead carries a team tag. A tagged pool row IS a
+// team's shared inbox: inbound routing puts it there, `pool` strategy leaves it
+// there, and a manager dropping a lead back sends it there. /api/team/* has always
+// kept those rows inside the team (claimTeamLead joins on team_id), but the solo
+// routes reach the very same rows, so an outsider could list, open and — via
+// POST /api/leads/:id/assign — CLAIM another brokerage's pipeline just by walking
+// sequential lead ids.
+//
+// So: an untagged pool lead stays open to everyone, and a tagged one is reachable
+// only by that team's members. An agent in no team gets NULL from the subquery, so
+// `team_id = NULL` is NULL — never true — and they see only the untagged pool.
+//
+// `prefix` is the leads alias with its dot ('l.' or ''); `agentParam` is the
+// placeholder already bound to the caller's agent id. The subquery is uncorrelated,
+// so the planner runs it once as an InitPlan rather than per row.
+const poolReachable = (prefix, agentParam) =>
+  `(${prefix}team_id IS NULL
+     OR ${prefix}team_id = (SELECT tm.team_id FROM team_members tm WHERE tm.agent_id = ${agentParam}))`
+
+// Claim an unassigned lead. Only succeeds while the lead is still in the pool AND
+// the pool row is one this agent may reach (see poolReachable) — the guard is in the
+// same statement as the write, so two agents racing for the same lead still resolve
+// by rowCount rather than by a check that has already gone stale.
 // The claimer's team is stamped in the same statement, so a lead picked up from the
 // shared pool reaches the manager views like any other lead that member takes — the
 // team-scoped sibling, claimTeamLead, has always kept its tag, and a lead claimed
 // here without one was invisible to auto-assign and to the board.
 // COALESCE, not overwrite: a lead already tagged to a team is that team's to move
 // (assignTeamLead / claimTeamLead), and re-tagging it here would walk it across the
-// boundary. A pooled lead claimed by an outsider keeps its old tag, which is the
-// behaviour this route already had.
+// boundary. With the guard above, a tagged lead can now only be claimed by its own
+// team's members, so the COALESCE is preserving the tag it already agrees with.
 export async function assignLead(leadId, agentId) {
   const res = await q(
     `UPDATE leads
         SET agent_id = $1,
             team_id = COALESCE(team_id, (SELECT team_id FROM team_members WHERE agent_id = $1))
-      WHERE id = $2 AND agent_id IS NULL`,
+      WHERE id = $2 AND agent_id IS NULL AND ${poolReachable('', '$1')}`,
     [agentId, leadId],
   )
   return res.rowCount > 0 ? getLead(leadId) : null
@@ -554,10 +581,17 @@ export async function getLeadForAgent(id, agentId) {
   return (await q('SELECT * FROM leads WHERE id = $1 AND agent_id = $2', [id, agentId])).rows[0]
 }
 
-// Like getLeadForAgent, but also returns unassigned-pool leads so any agent can inspect/claim them.
+// Like getLeadForAgent, but also returns the shared-pool leads this agent may claim,
+// so the detail view, notes and labels work on a lead before anyone owns it. The pool
+// arm is team-scoped (poolReachable): the read side has to match the write side, or an
+// outsider refused the claim could still open the thread and its internal notes.
 export async function getAssignableLead(id, agentId) {
   return (
-    await q('SELECT * FROM leads WHERE id = $1 AND (agent_id = $2 OR agent_id IS NULL)', [id, agentId])
+    await q(
+      `SELECT * FROM leads
+        WHERE id = $1 AND (agent_id = $2 OR (agent_id IS NULL AND ${poolReachable('', '$2')}))`,
+      [id, agentId],
+    )
   ).rows[0]
 }
 
@@ -740,7 +774,7 @@ export async function listLeads(
   agentId,
   { pipelineType = '', stage = '', search = '', limit, offset } = {},
 ) {
-  const where = ['(l.agent_id = $1 OR l.agent_id IS NULL)']
+  const where = [`(l.agent_id = $1 OR (l.agent_id IS NULL AND ${poolReachable('l.', '$1')}))`]
   const params = [agentId]
   // Pipeline filters only apply to the agent's own leads; a lead that predates the CRM
   // columns counts as buy_primary/New (the defaults attachLeadContact would give it).
@@ -819,7 +853,7 @@ export async function leadCounts(agentId) {
             (l.agent_id IS NULL) AS unassigned,
             COUNT(*)::int AS n
        FROM leads l
-      WHERE (l.agent_id = $1 OR l.agent_id IS NULL)
+      WHERE (l.agent_id = $1 OR (l.agent_id IS NULL AND ${poolReachable('l.', '$1')}))
       GROUP BY 1, 2, 3`,
     [agentId],
   )

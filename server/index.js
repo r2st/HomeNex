@@ -1137,9 +1137,25 @@ app.get('/api/leads/:id/property-matches', ah(async (req, res) => {
 }))
 
 // Claim an unassigned lead from the shared pool, and remember the sender as a client.
+//
+// assignLead refuses three different ways, and they are not the same answer to give:
+// the lead may not exist, it may already have been claimed by someone else in the
+// seconds since the list was polled, or it may sit in ANOTHER team's pool — which the
+// caller should not learn exists, so it reads as a 404 exactly like a missing id.
+// Only the second case is a 409 worth retrying, and telling the three apart is one
+// primary-key lookup on a path that has already failed.
 app.post('/api/leads/:id/assign', ah(async (req, res) => {
   const lead = await assignLead(req.params.id, req.agent.id)
-  if (!lead) return res.status(409).json({ error: 'lead is not available to claim' })
+  if (!lead) {
+    const existing = await getLead(req.params.id)
+    // Still unassigned, yet the claim was refused: the only remaining reason is the
+    // team guard, and that lead is none of this caller's business.
+    if (!existing || existing.agent_id == null) return res.status(404).json({ error: 'not found' })
+    return res.status(409).json({
+      error: 'Another agent claimed this lead first.',
+      code: 'LEAD_ALREADY_CLAIMED',
+    })
+  }
   try {
     await addContact(req.agent.id, lead.wa_id, lead.name || lead.wa_id)
   } catch {
