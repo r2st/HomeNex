@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, usePoll, fmtAgo } from '../api.js'
 import { paiseToDisplay, lakhsToPaise, paiseToLakhs } from '../money.js'
-import { SlideOver, Sheet, Chip, Field, inputCls, useConfirm, InfoTip, DetailOverlay } from './ui.jsx'
+import { SlideOver, Sheet, Chip, Field, inputCls, useConfirm, InfoTip, DetailOverlay, ErrorBanner } from './ui.jsx'
 import { glossary } from '../lib/glossary.js'
 import { safeHref, isSafeHref } from '../lib/safeHref.js'
 
@@ -329,6 +329,7 @@ export function PropertyForm({ initial, onSave, onCancel, saving, error }) {
 // Pick one of your leads to send the property card to (via WhatsApp).
 function SendToChatSheet({ property, onClose }) {
   const [leads, setLeads] = useState(null)
+  const [loadErr, setLoadErr] = useState(null)
   const [q, setQ] = useState('')
   const [state, setState] = useState({}) // leadId -> 'sending' | 'sent' | error message
 
@@ -338,10 +339,19 @@ function SendToChatSheet({ property, onClose }) {
   useEffect(() => {
     let alive = true
     const id = setTimeout(() => {
+      setLoadErr(null)
       api
         .leads({ q, limit: 50 })
-        .then((page) => alive && setLeads(page.filter((l) => !l.unassigned)))
-        .catch(() => alive && setLeads([]))
+        .then((page) => {
+          if (!alive) return
+          setLeads(page.filter((l) => !l.unassigned))
+        })
+        // A failed search used to land in `[]`, which this sheet renders as "No leads
+        // to send this to yet." — on the one screen whose entire purpose is picking a
+        // lead to send to. An agent reading that stops looking for the buyer they know
+        // they have. Keep the failure a failure, and leave the last good list alone so
+        // a dropped keystroke doesn't empty a list that is already on screen.
+        .catch((e) => alive && setLoadErr(e))
     }, q ? 250 : 0) // debounce typing; the first load shouldn't wait
     return () => {
       alive = false
@@ -372,8 +382,13 @@ function SendToChatSheet({ property, onClose }) {
         className={inputCls}
       />
       <div className="mt-3 space-y-2 max-h-[50vh] overflow-y-auto no-scrollbar">
-        {!leads && <p className="text-[12.5px] text-ink-faint py-2">Loading your leads…</p>}
-        {leads && filtered.length === 0 && (
+        {loadErr && <ErrorBanner error={loadErr} className="my-2" />}
+        {!leads && !loadErr && (
+          <p className="text-[12.5px] text-ink-faint py-2" aria-busy="true">
+            Loading your leads…
+          </p>
+        )}
+        {leads && !loadErr && filtered.length === 0 && (
           <p className="text-[12.5px] text-ink-faint py-2">
             {q ? `No leads matching "${q}".` : 'No leads to send this to yet.'}
           </p>
@@ -403,15 +418,39 @@ function SendToChatSheet({ property, onClose }) {
   )
 }
 
+// Copy `text`, reporting whether it actually landed on the clipboard.
+//
+// Every "✓ Copied" in this file used to be unconditional: the write was awaited with
+// its rejection swallowed, and on a browser with no clipboard API the optional chain
+// short-circuited to undefined and never ran at all — and then the tick appeared
+// regardless. An agent who is told the link is copied pastes whatever was on their
+// clipboard BEFORE into a broker group, which is the one place this app's output is
+// most public and least retractable.
+async function copyToClipboard(text) {
+  try {
+    if (!navigator.clipboard?.writeText) return false
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch {
+    return false
+  }
+}
+
 // Public micro-page share card: link + view counter (the engagement signal).
 function MicroPageCard({ propertyId }) {
   const [page, setPage] = useState(null)
+  const [error, setError] = useState(null)
   const [copied, setCopied] = useState(false)
+  const [copyFailed, setCopyFailed] = useState(false)
 
   useEffect(() => {
-    api.microPage(propertyId).then(setPage).catch(() => {})
+    setError(null)
+    api.microPage(propertyId).then(setPage).catch(setError)
   }, [propertyId])
 
+  // A swallowed failure removed the whole card, so the public link an agent had
+  // already shared looked like a feature this property does not have.
+  if (error) return <ErrorBanner error={error} />
   if (!page) return null
 
   const share = async () => {
@@ -419,9 +458,13 @@ function MicroPageCard({ propertyId }) {
       await navigator.share({ url: page.url }).catch(() => {})
       return
     }
-    await navigator.clipboard?.writeText(page.url).catch(() => {})
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+    const ok = await copyToClipboard(page.url)
+    setCopied(ok)
+    setCopyFailed(!ok)
+    setTimeout(() => {
+      setCopied(false)
+      setCopyFailed(false)
+    }, 2000)
   }
 
   return (
@@ -440,7 +483,7 @@ function MicroPageCard({ propertyId }) {
         onClick={share}
         className="mt-3 w-full bg-brand-wash text-brand-deep font-bold text-[13px] rounded-full py-2.5 active:scale-[0.99] transition"
       >
-        {copied ? '✓ Link copied' : '🔗 Share micro-page'}
+        {copied ? '✓ Link copied' : copyFailed ? 'Copy failed — long-press the link above' : '🔗 Share micro-page'}
       </button>
       <p className="text-[10.5px] text-ink-faint mt-2">
         Anyone with the link can view — perfect for broker groups. Every time someone opens it is counted here.
@@ -453,9 +496,15 @@ function MicroPageCard({ propertyId }) {
 // looking — a lead re-opening the page is the strongest buying signal HomeNex has.
 function AnalyticsCard({ propertyId, onOpenLead }) {
   const [a, setA] = useState(null)
+  const [error, setError] = useState(null)
   useEffect(() => {
-    api.propertyAnalytics(propertyId).then(setA).catch(() => {})
+    setError(null)
+    api.propertyAnalytics(propertyId).then(setA).catch(setError)
   }, [propertyId])
+  // A failure and a genuine zero rendered identically — as nothing. "Nobody has
+  // opened this listing" is a real answer an agent acts on (re-share it, drop the
+  // price); a dropped request is not, and must not be mistaken for one.
+  if (error) return <ErrorBanner error={error} />
   if (!a || a.total === 0) return null
   const days = a.daily.slice(-14)
   const max = Math.max(1, ...days.map((d) => d.views))
@@ -504,24 +553,41 @@ const PORTAL_LABELS = { '99acres': '99acres', magicbricks: 'MagicBricks', housin
 // portal-formatted content for each portal, then copy it into the portal's listing form.
 function SyndicateCard({ property }) {
   const [data, setData] = useState(null)
+  const [error, setError] = useState(null)
   const [portal, setPortal] = useState('99acres')
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState('')
 
-  const load = () => api.propertySyndications(property.id).then(setData).catch(() => {})
+  const load = () => {
+    setError(null)
+    return api.propertySyndications(property.id).then(setData).catch(setError)
+  }
   useEffect(() => { load() }, [property.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  if (error && !data) return <ErrorBanner error={error} />
   if (!data) return null
 
   const preview = data.preview.find((p) => p.portal === portal)
   const exported = data.saved.find((s) => s.portal === portal)
 
+  // The export used to be `try { … } finally { setBusy(false) }` with no catch arm at
+  // all, on an onClick handler — so a failed export was an unhandled promise rejection
+  // that reached nothing, and the agent saw only the button stop spinning. They then
+  // go to the portal expecting content that was never exported.
   const doExport = async () => {
     setBusy(true)
-    try { await api.syndicate(property.id, portal); await load() } finally { setBusy(false) }
+    setError(null)
+    try {
+      await api.syndicate(property.id, portal)
+      await load()
+    } catch (e) {
+      setError(e)
+    } finally {
+      setBusy(false)
+    }
   }
   const copy = async (text, which) => {
-    await navigator.clipboard?.writeText(text).catch(() => {})
-    setCopied(which)
+    // Only claim it was copied if it was — see copyToClipboard.
+    setCopied((await copyToClipboard(text)) ? which : `${which}:failed`)
     setTimeout(() => setCopied(''), 1500)
   }
 
@@ -548,7 +614,7 @@ function SyndicateCard({ property }) {
             <p className="text-[10px] font-bold tracking-[0.14em] text-ink-soft mb-1">WHATSAPP TEXT</p>
             <p className="text-[12px] text-ink whitespace-pre-wrap leading-snug">{preview.whatsapp_text}</p>
             <button onClick={() => copy(preview.whatsapp_text, 'wa')} className="mt-1.5 text-[11px] font-bold text-brand-deep active:scale-95 transition">
-              {copied === 'wa' ? '✓ Copied' : 'Copy'}
+              {copied === 'wa' ? '✓ Copied' : copied === 'wa:failed' ? 'Copy failed' : 'Copy'}
             </button>
           </div>
 
@@ -556,7 +622,7 @@ function SyndicateCard({ property }) {
             <p className="text-[10px] font-bold tracking-[0.14em] text-ink-soft mb-1">PORTAL DESCRIPTION</p>
             <p className="text-[12px] text-ink leading-snug">{preview.description}</p>
             <button onClick={() => copy(preview.description, 'desc')} className="mt-1.5 text-[11px] font-bold text-brand-deep active:scale-95 transition">
-              {copied === 'desc' ? '✓ Copied' : 'Copy'}
+              {copied === 'desc' ? '✓ Copied' : copied === 'desc:failed' ? 'Copy failed' : 'Copy'}
             </button>
           </div>
 
@@ -567,6 +633,7 @@ function SyndicateCard({ property }) {
           >
             {busy ? 'Exporting…' : exported ? `✓ Exported to ${PORTAL_LABELS[portal]} · re-export` : `Export to ${PORTAL_LABELS[portal]}`}
           </button>
+          {error && <ErrorBanner error={error} />}
           {exported?.exported_at && (
             <p className="text-[10.5px] text-ink-faint text-center">Last exported {fmtAgo(exported.exported_at)}</p>
           )}
@@ -607,8 +674,17 @@ export default function PropertyDetail({ propertyId, onClose, onChanged, onOpenL
       title: `Delete "${property.title}"?`,
       message: 'This removes the property from your inventory. This cannot be undone.',
       confirmLabel: 'Delete property',
+      // useConfirm deliberately leaves the dialog open when onConfirm rejects, because
+      // "the calling screen surfaces the error". This one didn't, so a refused delete
+      // left the agent looking at a dialog that had simply stopped responding.
       onConfirm: async () => {
-        await api.deleteProperty(property.id)
+        setError(null)
+        try {
+          await api.deleteProperty(property.id)
+        } catch (err) {
+          setError(err.message)
+          throw err // keep the dialog open; the banner below it says why
+        }
         onChanged?.()
         onClose()
       },
@@ -710,6 +786,9 @@ export default function PropertyDetail({ propertyId, onClose, onChanged, onOpenL
             <button onClick={remove} className="w-full text-[12.5px] font-bold text-hot py-2 active:scale-[0.98] transition">
               Delete property
             </button>
+            {/* `error` only ever reached the edit form. A delete that the server
+                refuses happens outside it, and had nowhere to appear. */}
+            {error && <ErrorBanner error={error} />}
           </>
         )}
       </div>
