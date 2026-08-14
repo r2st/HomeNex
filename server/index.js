@@ -315,11 +315,29 @@ app.use(ensureBody)
 
 // Rate limits on the routes an anonymous caller can reach. Auth is tight (blunts
 // credential stuffing); the public ingest/webhook endpoints get a higher ceiling so
-// a legitimate portal/Meta burst isn't dropped. Disabled under test so the suite's
-// rapid signups aren't throttled. Kept as handles so shutdown can stop their sweeps.
+// a legitimate portal/Meta burst isn't dropped. Kept as handles so shutdown can stop
+// their sweeps.
+//
+// The suite signs hundreds of agents up in a few seconds, so a 20/minute ceiling
+// would throttle the tests rather than the attacker — hence off by default under
+// test. But "off under test" meant the WIRING had no coverage at all: the limiter
+// itself is well tested as a unit in hardening.test.js, while the part that can
+// actually regress silently — whether /api/auth is still the path it is mounted on —
+// was never executed. Renaming a route or reordering these lines would disarm the
+// login limiter and no test would notice.
+//
+// So the threshold is drivable from the environment, exactly as UPLOAD_RATE_LIMIT
+// already is for uploads: a test sets AUTH_RATE_LIMIT to something small and drives
+// the real mounted middleware. Unset, behaviour is unchanged in both directions —
+// 20/minute in production, off under test.
 const rateLimiters = []
-if (process.env.NODE_ENV !== 'test') {
-  const authLimiter = rateLimit({ windowMs: 60_000, max: 20, message: 'Too many attempts — please wait a minute and try again.' })
+const authRateLimit = Number(process.env.AUTH_RATE_LIMIT) > 0 ? Number(process.env.AUTH_RATE_LIMIT) : null
+if (process.env.NODE_ENV !== 'test' || authRateLimit) {
+  const authLimiter = rateLimit({
+    windowMs: 60_000,
+    max: authRateLimit ?? 20,
+    message: 'Too many attempts — please wait a minute and try again.',
+  })
   const ingestLimiter = rateLimit({ windowMs: 60_000, max: 240 })
   rateLimiters.push(authLimiter, ingestLimiter)
   app.use('/api/auth', authLimiter)

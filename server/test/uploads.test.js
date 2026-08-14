@@ -139,3 +139,56 @@ test('POST /api/uploads rejects a payload over the size limit', async () => {
   const body = await res.json()
   assert.match(body.error, /too large/i)
 })
+
+// The filename is attacker-chosen and travels two ways: it decides the stored
+// extension, and it is kept verbatim as the display name. Neither may become a path.
+test('POST /api/uploads cannot be talked into writing outside the uploads directory', async () => {
+  const res = await req('POST', '/api/uploads', {
+    data_base64: PNG_DATA_URL,
+    filename: '../../../../etc/cron.d/pwn.png',
+    mime: 'image/png',
+  })
+  assert.equal(res.status, 200)
+  const body = await res.json()
+  // The stored name is generated, not derived: the traversal never reaches the
+  // filesystem because none of the caller's string does.
+  assert.match(body.url, /^\/uploads\/[a-f0-9]{24}\.png$/)
+  assert.doesNotMatch(body.url, /\.\./)
+})
+
+test('a filename carrying a null byte still yields a clean generated name', async () => {
+  // The classic truncation trick: a name that passes an extension check reading the
+  // tail, then gets written under the truncated name by anything handing the string
+  // to C. Nothing here concatenates the caller's name into a path, and the extension
+  // is scrubbed to [a-z0-9] besides — this pins both.
+  const res = await req('POST', '/api/uploads', {
+    data_base64: PNG_DATA_URL,
+    filename: `shell.php${String.fromCharCode(0)}.png`,
+    mime: 'image/png',
+  })
+  assert.equal(res.status, 200)
+  const body = await res.json()
+  assert.match(body.url, /^\/uploads\/[a-f0-9]{24}\.png$/)
+  assert.doesNotMatch(body.url, /php/)
+})
+
+test('an uppercase extension is accepted and normalised, not treated as unknown', async () => {
+  // ALLOWED_UPLOAD_EXTENSIONS is lowercase, and a phone gallery hands over
+  // IMG_0421.JPG. Rejecting it would look like the uploader being broken.
+  const res = await req('POST', '/api/uploads', { data_base64: PNG_DATA_URL, filename: 'IMG_0421.JPG', mime: 'image/jpeg' })
+  assert.equal(res.status, 200)
+  assert.match((await res.json()).url, /\.jpg$/)
+})
+
+test('a double extension is judged on the one that decides the served type', async () => {
+  // express.static types the response from the FINAL extension, so that is the one
+  // the allowlist has to be reading. `.pdf.html` is served as HTML and must lose;
+  // `.html.pdf` is served as a PDF and is only a badly named document.
+  const html = Buffer.from('<script>alert(1)</script>').toString('base64')
+  const disguised = await req('POST', '/api/uploads', { data_base64: `data:text/html;base64,${html}`, filename: 'safe.pdf.html' })
+  assert.equal(disguised.status, 400, 'a .html file passed because an earlier extension looked safe')
+
+  const harmless = await req('POST', '/api/uploads', { data_base64: `data:application/pdf;base64,${html}`, filename: 'notes.html.pdf' })
+  assert.equal(harmless.status, 200)
+  assert.match((await harmless.json()).url, /\.pdf$/)
+})
