@@ -346,17 +346,30 @@ app.use(ensureBody)
 // 20/minute in production, off under test.
 const rateLimiters = []
 const authRateLimit = Number(process.env.AUTH_RATE_LIMIT) > 0 ? Number(process.env.AUTH_RATE_LIMIT) : null
-if (process.env.NODE_ENV !== 'test' || authRateLimit) {
+const pageRateLimit = Number(process.env.PAGE_RATE_LIMIT) > 0 ? Number(process.env.PAGE_RATE_LIMIT) : null
+if (process.env.NODE_ENV !== 'test' || authRateLimit || pageRateLimit) {
   const authLimiter = rateLimit({
     windowMs: 60_000,
     max: authRateLimit ?? 20,
     message: 'Too many attempts — please wait a minute and try again.',
   })
   const ingestLimiter = rateLimit({ windowMs: 60_000, max: 240 })
-  rateLimiters.push(authLimiter, ingestLimiter)
+  // /p/:slug is the third anonymous route that costs us something per request, and it
+  // was the one without a ceiling. It is not a read: every hit INSERTs a row into
+  // property_page_views and bumps properties.page_views, so anyone holding a slug —
+  // and slugs are meant to be pasted into broker WhatsApp groups — can both grow the
+  // table without bound and forge the engagement number the agent uses to decide which
+  // listing is working. "94 views this week" is a decision an agent acts on.
+  //
+  // Same ceiling and reasoning as ingest: generous enough that a link genuinely doing
+  // the rounds of a group is never throttled (real viewers arrive on their own mobile
+  // IPs; this is per-IP), low enough that one client cannot sit on it in a loop.
+  const pageLimiter = rateLimit({ windowMs: 60_000, max: pageRateLimit ?? 240 })
+  rateLimiters.push(authLimiter, ingestLimiter, pageLimiter)
   app.use('/api/auth', authLimiter)
   app.use('/webhook', ingestLimiter)
   app.use('/ingest', ingestLimiter)
+  app.use('/p', pageLimiter)
 }
 
 // Uploads are the one authenticated request that both costs real disk and accepts a
