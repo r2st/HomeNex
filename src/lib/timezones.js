@@ -2,7 +2,7 @@
 // NRI-facing) actually needs. IANA identifiers like "Asia/Kolkata" are technical;
 // show "India (IST)" instead. Pure — no React.
 
-export const TIMEZONE_LABELS = {
+const TIMEZONE_LABELS = {
   'Asia/Kolkata': 'India (IST)',
   'Asia/Dubai': 'Dubai (GST)',
   'Asia/Singapore': 'Singapore (SGT)',

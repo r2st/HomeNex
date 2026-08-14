@@ -2,7 +2,7 @@
 // is not counted as a "filter" — it stays inline and visible. Pure — no React —
 // so it can be unit-tested.
 
-export const FILTER_KEYS = ['type', 'band', 'bhk', 'status']
+const FILTER_KEYS = ['type', 'band', 'bhk', 'status']
 
 export function activeFilterCount(filters = {}) {
   return FILTER_KEYS.reduce((n, k) => n + (filters[k] ? 1 : 0), 0)

@@ -71,7 +71,7 @@ export function accessibleNameOf(fiber) {
 }
 
 /** Short "<button> ‹className›" description, for a failure message worth reading. */
-export function describeControl(fiber) {
+function describeControl(fiber) {
   const attrs = [
     fiber.props?.type && `type=${fiber.props.type}`,
     fiber.props?.placeholder && `placeholder=${JSON.stringify(fiber.props.placeholder)}`,

@@ -4,8 +4,8 @@
 
 const PAISE_PER_LAKH = 1e7
 
-export const DEFAULT_RATE_PCT = 8.5
-export const DEFAULT_TENURE_YEARS = 20
+const DEFAULT_RATE_PCT = 8.5
+const DEFAULT_TENURE_YEARS = 20
 
 // Does this message look like an EMI/loan-installment question?
 export function detectEmiQuery(text) {

@@ -2,7 +2,7 @@
 // "will be captured from conversations" state instead of a wall of "not set".
 // Pure — no React — so it can be unit-tested.
 
-export const BUYER_PROFILE_FIELDS = [
+const BUYER_PROFILE_FIELDS = [
   'budget_min',
   'budget_max',
   'bhk',

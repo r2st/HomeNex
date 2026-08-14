@@ -288,7 +288,7 @@ export async function generateInvoice(agentId, { periodStart, periodEnd, note } 
   return rows[0]
 }
 
-export async function listInvoices(agentId) {
+async function listInvoices(agentId) {
   return (await query('SELECT * FROM invoices WHERE agent_id = $1 ORDER BY issued_at DESC', [agentId])).rows
 }
 

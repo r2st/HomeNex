@@ -29,7 +29,7 @@ export const PIPELINE_LABEL = {
 export const pipelineLabel = (slug) => labelFrom(PIPELINE_LABEL, slug, 'Buy (Primary)')
 
 // Deal type badge on the Deals list.
-export const DEAL_TYPE_LABEL = {
+const DEAL_TYPE_LABEL = {
   primary: 'New booking',
   resale: 'Resale',
   rental: 'Rental',
@@ -37,7 +37,7 @@ export const DEAL_TYPE_LABEL = {
 export const dealTypeLabel = (slug) => labelFrom(DEAL_TYPE_LABEL, slug)
 
 // Deal lifecycle status.
-export const DEAL_STATUS_LABEL = {
+const DEAL_STATUS_LABEL = {
   open: 'In progress',
   won: 'Won',
   lost: 'Lost',
@@ -45,7 +45,7 @@ export const DEAL_STATUS_LABEL = {
 export const dealStatusLabel = (slug) => labelFrom(DEAL_STATUS_LABEL, slug)
 
 // Commission status — what stage the money is at.
-export const COMMISSION_STATUS_LABEL = {
+const COMMISSION_STATUS_LABEL = {
   expected: 'Expected',
   invoiced: 'Invoiced',
   overdue: 'Overdue',
@@ -54,7 +54,7 @@ export const COMMISSION_STATUS_LABEL = {
 export const commissionStatusLabel = (slug) => labelFrom(COMMISSION_STATUS_LABEL, slug)
 
 // GST invoice status.
-export const INVOICE_STATUS_LABEL = {
+const INVOICE_STATUS_LABEL = {
   issued: 'Awaiting payment',
   paid: 'Paid',
   cancelled: 'Cancelled',
@@ -63,7 +63,7 @@ export const invoiceStatusLabel = (slug) => labelFrom(INVOICE_STATUS_LABEL, slug
 
 // Who pays the brokerage. `payer_type` is often empty on a fresh commission — never
 // show the old "payer ?" debug placeholder; say it plainly instead.
-export const PAYER_LABEL = {
+const PAYER_LABEL = {
   builder: 'Paid by builder',
   buyer: 'Paid by buyer',
   seller: 'Paid by seller',
@@ -73,7 +73,7 @@ export const PAYER_LABEL = {
 export const payerLabel = (slug) => labelFrom(PAYER_LABEL, slug, 'Payer not set')
 
 // Site-visit status. We keep the full set for the picker but expose friendly words.
-export const VISIT_STATUS_LABEL = {
+const VISIT_STATUS_LABEL = {
   scheduled: 'Scheduled',
   confirmed: 'Confirmed',
   completed: 'Done',
@@ -83,7 +83,7 @@ export const VISIT_STATUS_LABEL = {
 export const visitStatusLabel = (slug) => labelFrom(VISIT_STATUS_LABEL, slug)
 
 // Support ticket category — friendlier than the raw enum in the picker/rows.
-export const TICKET_CATEGORY_LABEL = {
+const TICKET_CATEGORY_LABEL = {
   general: 'General',
   billing: 'Billing',
   whatsapp: 'WhatsApp number',
@@ -93,7 +93,7 @@ export const TICKET_CATEGORY_LABEL = {
 export const ticketCategoryLabel = (slug) => labelFrom(TICKET_CATEGORY_LABEL, slug)
 
 // Support ticket status.
-export const TICKET_STATUS_LABEL = {
+const TICKET_STATUS_LABEL = {
   open: 'Open',
   pending: 'Waiting on us',
   closed: 'Closed',
@@ -102,7 +102,7 @@ export const ticketStatusLabel = (slug) => labelFrom(TICKET_STATUS_LABEL, slug)
 
 // Buyer "temperature" (interest level). The emoji already carries the heat; this
 // gives the matching word so we can drop the raw n/100 score in list views.
-export const TEMP_LABEL = {
+const TEMP_LABEL = {
   Hot: { icon: '🔥', word: 'Hot' },
   Warm: { icon: '☀️', word: 'Warm' },
   Cold: { icon: '❄️', word: 'Cold' },

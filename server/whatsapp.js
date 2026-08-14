@@ -13,7 +13,7 @@ const WA_TIMEOUT_MS = Number(process.env.WA_TIMEOUT_MS) || 15_000
 // 5xx / network blips / timeouts, honouring Retry-After when Meta sends one. A token
 // error (Meta code 190) is never retried — refreshing WHATSAPP_ACCESS_TOKEN is the
 // only fix, so it fails fast instead of burning retries on a call that can't succeed.
-export const waQueue = new RequestQueue({
+const waQueue = new RequestQueue({
   concurrency: Number(process.env.WA_CONCURRENCY) || 4,
   maxRetries: Number(process.env.WA_MAX_RETRIES) || 3,
 })

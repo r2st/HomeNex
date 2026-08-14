@@ -50,7 +50,7 @@ export function worklistItem(type, { lead_id = null, entity_type = 'lead', entit
 // An overdue follow-up left untouched for a couple of days isn't "get to it
 // today" anymore — it's a buyer going cold while nobody's watching. Escalate it
 // to critical so it can't get lost under the day's other high-priority items.
-export const OVERDUE_FOLLOWUP_ESCALATE_HOURS = 48
+const OVERDUE_FOLLOWUP_ESCALATE_HOURS = 48
 
 export function followupPriority(dueAt, now = Date.now()) {
   const base = WORKLIST_TYPES.overdue_followup.priority
