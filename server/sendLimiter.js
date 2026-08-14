@@ -30,6 +30,11 @@ export function hourInTimezone(now, tz) {
       hour12: false,
     }).formatToParts(new Date(now))
     const h = Number(parts.find((p) => p.type === 'hour')?.value)
+    // A format asked for `hour` always emits an hour part, so h is never NaN. The
+    // real failure mode — a timezone Intl won't accept — throws out of
+    // formatToParts and is caught below; this arm only guards a future format
+    // change that stops requesting the hour.
+    /* node:coverage ignore next */
     return Number.isNaN(h) ? null : h % 24
   } catch {
     return null

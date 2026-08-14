@@ -354,6 +354,10 @@ if (process.env.NODE_ENV !== 'test' || authRateLimit) {
 const uploadLimiter = rateLimit({
   windowMs: 60_000,
   max: Number(process.env.UPLOAD_RATE_LIMIT) > 0 ? Number(process.env.UPLOAD_RATE_LIMIT) : 60,
+  // Both routes wearing this limiter sit under the `/api` requireAuth middleware,
+  // so req.agent is always populated by the time the key is computed. The IP arm is
+  // the correct key for an unauthenticated upload route, if one is ever added.
+  /* node:coverage ignore next */
   key: (req) => (req.agent ? `agent:${req.agent.id}` : `ip:${clientIp(req)}`),
   message: 'Too many uploads — please wait a minute before uploading more files.',
 })
@@ -525,6 +529,9 @@ async function resolveTeamLineAgent(lineOwner, waId) {
   const team = await getAgentTeam(lineOwner.id)
   if (!team || team.assignment_strategy !== 'round_robin') return lineOwner
   const existingOwnerId = await teamLeadOwnerForWaId(team.id, waId)
+  // The id came from a join through team_members, so the agent row exists; the
+  // `|| lineOwner` is the safe answer if it were deleted between the two queries.
+  /* node:coverage ignore next */
   if (existingOwnerId) return (await getAgent(existingOwnerId)) || lineOwner
   const pickedId = await pickRoundRobin(team.id)
   return pickedId && pickedId !== lineOwner.id ? (await getAgent(pickedId)) || lineOwner : lineOwner
@@ -1028,6 +1035,11 @@ app.get('/api/leads/:id/suggestions', ah(async (req, res) => {
   if (!last || last.role !== 'buyer') return res.json({ suggestions: [] })
   try {
     res.json({ suggestions: await suggestReplies(messages, lead, req.agent.name) })
+    // suggestReplies never rejects: ai.js's chat() catches the queue's final
+    // rejection and returns null, and everything after it is parsing that tolerates
+    // null. This catch is what keeps that a property of ai.js rather than of the
+    // lead detail page — an optional side panel must not 500 the whole route.
+    /* node:coverage ignore next 4 */
   } catch (err) {
     console.error('suggestions failed', err)
     res.json({ suggestions: [] })
@@ -1950,13 +1962,27 @@ async function sendToRecipients(agent, recipients, message, kind, { personalize 
   const skips = {}
   // One query for the whole audience instead of one per recipient (see
   // contactSendStatsBatch). Prefetching is only equivalent to querying inside the
-  // loop as long as sends made DURING this run are folded back in — two contact
-  // rows can share a phone number, and the second must still see the first's send
-  // and be blocked by the min-gap rule rather than messaged twice.
+  // loop as long as sends made DURING this run are folded back in, which is what
+  // sentNowByPhone does: a number already messaged by this run must be seen by a
+  // later recipient carrying the same number, not read as never-messaged.
+  //
+  // No route can currently build such an audience. Both callers draw recipients
+  // straight from `contacts`, whose phone column is UNIQUE across the whole table
+  // (001_initial_schema.sql) with every write path canonicalising through
+  // normalizePhone, and a static group cannot list one contact twice
+  // (contact_group_members is keyed on (group_id, contact_id)). The fold-back is
+  // kept because the invariant lives in the schema rather than here, and a future
+  // recipient source — a merged audience, an imported list, leads joined in beside
+  // contacts — would reintroduce duplicates silently. Its cost is one Map.
   const statsByKey = await contactSendStatsBatch(agent.id, recipients)
   const sentNowByPhone = new Map()
   for (const contact of recipients) {
+    // contactSendStatsBatch returns an entry for every key it was given, so the
+    // literal is a shape guard rather than a live default.
+    /* node:coverage ignore next */
     const stats = statsByKey.get(sendStatsKey(contact)) || { lastSentAt: null, monthCount: 0 }
+    // Unreachable while UNIQUE(contacts.phone) holds — see the note above.
+    /* node:coverage ignore next 5 */
     const justSentAt = sentNowByPhone.get(contact.phone) ?? null
     const verdict = evaluateSend({
       optInStatus: contact.opt_in_status,
@@ -1979,6 +2005,10 @@ async function sendToRecipients(agent, recipients, message, kind, { personalize 
     const body = personalize ? personalize(contact) : message
     try {
       await sendText(contact.phone.replace('+', ''), body, agent.wa_phone_number_id)
+      // Both recipient sources are rows straight out of `contacts`, so the id is
+      // always there; the `?? null` keeps the column nullable for an audience that
+      // is only a phone number (see sendStatsKey, which keys on the same choice).
+      /* node:coverage ignore next */
       await recordSend(agent.id, { contact_id: contact.id ?? null, phone: contact.phone, kind })
       sentNowByPhone.set(contact.phone, Date.now())
       sent++
@@ -2445,6 +2475,10 @@ export async function deliverDueFestiveSchedules() {
   for (const schedule of due) {
     try {
       const agent = agents.get(schedule.agent_id)
+      // festive_schedules.agent_id is a foreign key and the two queries run back to
+      // back, so the lookup always hits. Throwing rather than skipping means a
+      // schedule for a vanished agent is marked failed instead of retried forever.
+      /* node:coverage ignore next */
       if (!agent) throw new Error(`agent ${schedule.agent_id} no longer exists`)
       const fest = getFestival(schedule.festival_key)
       // A scheduled delivery is automated — enforce the quiet-hours/night window.
@@ -2460,6 +2494,14 @@ export async function deliverDueFestiveSchedules() {
 }
 
 // Start listening only when run directly (`node index.js`), not when imported by tests.
+//
+// Coverage is switched off for the whole block rather than left showing red. It is
+// not untested — serverProcess.test.js spawns a real `node` process with NODE_ENV
+// unset and drives the boot banner, the once-a-minute job tick and all four ways the
+// process can be asked to stop. That child is a separate process with no coverage
+// instrumentation, so none of what it exercises can be credited here, and the guard
+// on the next line is precisely what stops this running in the measured process.
+/* node:coverage disable */
 if (process.env.NODE_ENV !== 'test') {
   // A rejected promise or thrown error with no local handler must be logged, never
   // swallowed silently. We keep running on an unhandled rejection (usually one bad
@@ -2522,5 +2564,6 @@ if (process.env.NODE_ENV !== 'test') {
   process.on('SIGTERM', () => shutdown('SIGTERM'))
   process.on('SIGINT', () => shutdown('SIGINT'))
 }
+/* node:coverage enable */
 
 export { app }

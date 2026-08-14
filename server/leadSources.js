@@ -258,6 +258,11 @@ export async function ingestLead({
     const known = await getContactByPhone(digits)
     if (!known) {
       await addContact(agent.id, digits, name || normalizePhone(phone), message || null, {
+        // Every channel that reaches ingestLead is one of the six the
+        // lead_source_events CHECK allows, and all six are keys of CONTACT_SOURCE —
+        // so the fallback is what a newly-added channel would land on rather than a
+        // path taken today.
+        /* node:coverage ignore next */
         source: CONTACT_SOURCE[channel] || 'referral',
         sourceDetail: portal || channel,
       })

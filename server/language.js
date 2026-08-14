@@ -101,6 +101,9 @@ export function detectLanguage(text) {
   const tokens = tokenize(raw)
   let hits = 0
   for (const t of tokens) if (HINGLISH_MARKERS.has(t) || MARATHI_MARKERS.has(t)) hits++
+  // We only get here with deva === 0 and total > 0, i.e. at least one Latin letter,
+  // and tokenize keeps Latin letters — so tokens is never empty at this point.
+  /* node:coverage ignore next */
   const ratio = tokens.length ? hits / tokens.length : 0
 
   // A couple of markers, or a meaningful fraction, means the buyer is code-mixing.
@@ -132,6 +135,11 @@ export function detectConversationLanguage(messages = []) {
   })
   // Prefer the buyer's latest clear signal; break ties toward the most recent message.
   const winner = Object.entries(votes).sort((a, b) => b[1] - a[1])[0][0]
+  // 'unknown' can never win: its weight is (i + 1) * confidence and an unknown
+  // detection always has confidence 0, so its tally stays at 0 while the sort is
+  // stable and 'english' is declared first. The fallback survives as a guard on
+  // that arithmetic rather than as a live path.
+  /* node:coverage ignore next */
   const chosen = winner === 'unknown' ? last.language : winner
   return { ...detectLanguage(recent[recent.length - 1]), language: chosen }
 }

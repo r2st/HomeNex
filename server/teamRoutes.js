@@ -297,6 +297,11 @@ router.post('/leads/:id/claim', requireMember, ah(async (req, res) => {
     if (!lead) return res.status(409).json({ error: 'lead is not available to claim' })
     await logAudit(req.agent.id, 'lead', lead.id, 'team_claim', {})
     res.json(lead)
+    // claimTeamLead's only throw is NOT_MEMBER, and requireMember has already
+    // established that this agent holds a role on req.team — the very team id being
+    // passed in. So nothing reaches this handler; it is here so an unexpected
+    // failure still answers in the team error envelope rather than as a bare 500.
+    /* node:coverage ignore next 3 */
   } catch (err) {
     sendErr(res, err)
   }

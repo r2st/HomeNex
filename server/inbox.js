@@ -69,6 +69,10 @@ export function appendRera(text, agent) {
   const line = reraLine(agent)
   if (!line) return text
   const body = String(text ?? '')
+  // reraLine() returned a line, which it only does for a non-empty trimmed
+  // rera_id on a non-null agent — so neither guard here can fire. They are kept so
+  // the expression stays correct if it is ever read without the line check above.
+  /* node:coverage ignore next */
   const id = (agent?.rera_id || '').trim()
   if (id && body.includes(id)) return body
   return `${body}\n\n${line}`

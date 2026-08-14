@@ -418,7 +418,12 @@ const AUTOFILL_FIELDS = [
 // Value equality that survives the DB's type quirks: bigint columns (budget) arrive
 // as numeric strings, so "800000000" must equal the number 800000000. Arrays compare
 // structurally; everything else falls back to string compare.
+// Its only caller has already skipped every null `suggested`, so `b` is never
+// nullish here: the second half of the null/null test and the `b ?? ''` fallback
+// are unreachable from that path. Both stay because the helper reads as a general
+// comparator and would be wrong without them the moment it gains a second caller.
 const sameValue = (a, b) => {
+  /* node:coverage ignore next */
   if (a == null && b == null) return true
   if (Array.isArray(a) || Array.isArray(b)) return JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
   if (a != null && b != null && a !== '' && b !== '') {
@@ -426,6 +431,7 @@ const sameValue = (a, b) => {
     const nb = Number(b)
     if (Number.isFinite(na) && Number.isFinite(nb)) return na === nb
   }
+  /* node:coverage ignore next */
   return String(a ?? '') === String(b ?? '')
 }
 

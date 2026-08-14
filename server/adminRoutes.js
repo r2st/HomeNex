@@ -117,6 +117,10 @@ router.put('/agents/:id/admin', ah(async (req, res) => {
     })
     res.json(agent)
   } catch (err) {
+    // Every code these two raise (NOT_FOUND, SELF_DEMOTE, SELF_DEACTIVATE,
+    // LAST_ADMIN, AGENT_INACTIVE) is in the map, so the `?? 400` is only reached by
+    // an error that is not ours — a driver failure carrying a Postgres code, say.
+    /* node:coverage ignore next */
     res.status(TEAM_ERROR_STATUS[err.code] ?? 400).json({ error: err.message })
   }
 }))
@@ -132,6 +136,10 @@ router.put('/agents/:id/active', ah(async (req, res) => {
     })
     res.json(agent)
   } catch (err) {
+    // Every code these two raise (NOT_FOUND, SELF_DEMOTE, SELF_DEACTIVATE,
+    // LAST_ADMIN, AGENT_INACTIVE) is in the map, so the `?? 400` is only reached by
+    // an error that is not ours — a driver failure carrying a Postgres code, say.
+    /* node:coverage ignore next */
     res.status(TEAM_ERROR_STATUS[err.code] ?? 400).json({ error: err.message })
   }
 }))

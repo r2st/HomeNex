@@ -17,6 +17,10 @@ pg.types.setTypeParser(1700, (v) => (v === null ? null : parseFloat(v)))
 // string, not a JS Date at local midnight — avoids off-by-one timezone shifts.
 pg.types.setTypeParser(1082, (v) => v)
 
+// The literal is the local docker-compose default, for `node server/index.js` with
+// no env at all. Every test run sets DATABASE_URL (helpers.js builds a per-suite
+// database from it), so the fallback arm is never the one taken under coverage.
+/* node:coverage ignore next 2 */
 const connectionString =
   process.env.DATABASE_URL || 'postgres://homenex:homenex@localhost:5432/homenex'
 
@@ -1747,6 +1751,10 @@ async function recordStageEvent(lead, fromStage) {
      )))::bigint AS secs`,
     [lead.id],
   )
+  // An aggregate with no GROUP BY always returns exactly one row, so the `?.` guard
+  // never fires; `secs` itself is null for a lead with no prior stage event, which
+  // is what the `?? null` is actually for.
+  /* node:coverage ignore next */
   const secondsInFrom = dwellRows[0]?.secs ?? null
   await q(
     `INSERT INTO lead_stage_events
@@ -2828,6 +2836,10 @@ export async function listAuditLogs(agentId, limit = 100) {
 function toSignals(r = {}) {
   return {
     lastBuyerAt: r.last_buyer_at,
+    // Postgres ARRAY(subquery) yields an empty array, never NULL, so both columns
+    // always arrive as arrays. The `|| []` is what makes the `r = {}` default above
+    // produce a usable shape.
+    /* node:coverage ignore next 2 */
     pageViews: r.page_views || [],
     siteVisits: r.site_visits || [],
     // Extra signals the rules+LLM hybrid needs: how many times the buyer replied,
@@ -2856,6 +2868,9 @@ export async function leadEngagementSignals(leadId) {
 // Same sub-selects as the single-lead version, correlated against an unnested
 // array of ids instead of a scalar parameter.
 async function leadEngagementSignalsBatch(leadIds) {
+  // Its one caller has already returned on an empty lead set, so this guard is
+  // here to keep the function safe to call directly rather than to be taken.
+  /* node:coverage ignore next */
   if (!leadIds.length) return new Map()
   const { rows } = await q(
     `SELECT l.id AS lead_id, ${SIGNALS_SELECT('l.id')}
@@ -2946,6 +2961,10 @@ export async function recomputeScoresForAgents(agentIds, now = Date.now()) {
   const temps = []
   const factors = []
   for (const lead of leads) {
+    // leadEngagementSignalsBatch selects FROM unnest(the same ids), so it returns a
+    // row — and therefore a Map entry — for every lead in this loop. The empty
+    // toSignals() is the shape a missing lead would need, not a path taken here.
+    /* node:coverage ignore next */
     const s = scoreRow(lead, signalsById.get(lead.id) || toSignals(), now)
     ids.push(lead.id)
     engagement.push(s.decay.engagementScore)
@@ -3183,7 +3202,13 @@ export async function contactSendStatsBatch(agentId, recipients = []) {
     [agentId, keys, ids, phones],
   )
   for (const r of rows) out.set(r.key, { lastSentAt: r.last_sent_at || null, monthCount: r.month_count || 0 })
-  // Recipients with no send history at all still need an entry.
+  // Recipients with no send history at all still need an entry. The LEFT JOIN
+  // already guarantees one grouped row per key — including never-messaged ones,
+  // which come back with a null last_sent_at and a zero count — so this backfill
+  // never actually adds anything. It is what lets sendToRecipients treat a missing
+  // entry as a bug rather than as "no history", and it would start mattering the
+  // moment that LEFT JOIN became an INNER one.
+  /* node:coverage ignore next */
   for (const k of keys) if (!out.has(k)) out.set(k, { lastSentAt: null, monthCount: 0 })
   return out
 }

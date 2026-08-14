@@ -215,6 +215,12 @@ export async function agentUsage(agentId, { start, end } = {}) {
   const byCategory = Object.entries(counts).map(([category, count]) => ({
     category,
     count,
+    // `counts` starts as the four billable categories and only ever gains a key from
+    // message_sends.kind, which the schema constrains to marketing/utility/service/
+    // festive (and festive is folded into marketing above) — so every category here
+    // has a rate and the `?? 0` never fires. It guards a new kind being added to the
+    // CHECK without a rate being added here, which would otherwise be NaN money.
+    /* node:coverage ignore next 2 */
     rate_paise: META_RATE_PAISE[category] ?? 0,
     cost_paise: count * (META_RATE_PAISE[category] ?? 0),
   }))
