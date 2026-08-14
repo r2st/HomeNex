@@ -94,10 +94,10 @@ function SectionHeader({ children, badge }) {
 
 // The Home tab: everything the agent needs to act on right now.
 export default function DashboardTab({ agent, onGoTo, onOpenConversation, onOpenLead, onSignOut }) {
-  const { data: d, error, loading } = usePoll(api.dashboard, 6000)
+  const { data: d, error, loading, refresh: refreshDay } = usePoll(api.dashboard, 6000)
   const { data: stats } = usePoll(api.stats, 10000)
-  const { data: work } = usePoll(api.worklist, 15000)
-  const { data: notif } = usePoll(() => api.notifications(), 20000)
+  const { data: work, refresh: refreshWork } = usePoll(api.worklist, 15000)
+  const { data: notif, refresh: refreshNotif } = usePoll(() => api.notifications(), 20000)
   // Only the number is wanted here — the onboarding banner asks whether the agent has
   // added any inventory yet. This used to poll the property list itself and measure it,
   // which meant pulling every property row, JSONB photos and all, every 30 seconds to
@@ -132,8 +132,23 @@ export default function DashboardTab({ agent, onGoTo, onOpenConversation, onOpen
     })
   const steps = onboardingSteps({ hasWhatsApp, propertyCount: inventory?.total ?? 0 })
 
+  // "Mark done" is the most-tapped control on the screen agents open the app to, and
+  // it did neither of the two things a mutation has to do: no catch, so a refused
+  // request escaped an onClick as an unhandled rejection; and no refresh, so even a
+  // SUCCESSFUL one left the follow-up sitting in the list for up to six seconds. The
+  // agent taps the tick, nothing moves, and they tap it again.
+  const [actionError, setActionError] = useState(null)
   const complete = async (id) => {
-    await api.updateFollowup(id, { completed: true })
+    setActionError(null)
+    try {
+      await api.updateFollowup(id, { completed: true })
+    } catch (err) {
+      setActionError(err)
+      return
+    }
+    // The follow-up appears in both the day view and the worklist roll-up.
+    refreshDay()
+    refreshWork()
   }
 
   const openWorklistItem = (item) => {
@@ -141,8 +156,18 @@ export default function DashboardTab({ agent, onGoTo, onOpenConversation, onOpen
     else onOpenLead(item.lead_id)
   }
 
+  // Same shape as complete(): dismissing swallowed its failure and never refreshed,
+  // so the × removed nothing for up to twenty seconds on success and for ever on
+  // failure. An alert that will not go away reads as a stuck app.
   const dismissNotification = async (id) => {
-    await api.markNotificationRead(id).catch(() => {})
+    setActionError(null)
+    try {
+      await api.markNotificationRead(id)
+    } catch (err) {
+      setActionError(err)
+      return
+    }
+    refreshNotif()
   }
 
   const kpis = d && [
@@ -194,6 +219,10 @@ export default function DashboardTab({ agent, onGoTo, onOpenConversation, onOpen
       </header>
 
       <ErrorBanner error={error} className="mt-6" />
+      {/* An action that was refused says so, separately from the polled load — the
+          poll is still succeeding, so `error` above stays null and had nowhere to
+          report that the tick the agent just pressed did nothing. */}
+      <ErrorBanner error={actionError} className="mt-4" />
 
       {/* Every section below is `{data && …}`, so before the first response Home was
           a greeting over empty space with nothing to say it was still working. This
