@@ -27,6 +27,13 @@ function PhoneForm({ phone, onSaved }) {
 
   const setCountryCode = (v) => setCc('+' + v.replace(/\D/g, '').slice(0, 4))
 
+  // An agent who selects the prefix and hits backspace leaves '+' behind, because
+  // setCountryCode always re-adds it. '+' is empty in intent but truthy as a string,
+  // so the `cc || '+91'` fallback below never fired and the number went up as
+  // '+9812345678' — a login they can never type again, changed by the one form that
+  // is meant to keep them able to sign in. Ask for a digit, not for truthiness.
+  const dialCode = /\d/.test(cc) ? cc : '+91'
+
   const submit = async (e) => {
     e.preventDefault()
     if (busy || !ready) return
@@ -34,7 +41,7 @@ function PhoneForm({ phone, onSaved }) {
     setError(null)
     setMsg(null)
     try {
-      const updated = await api.changePhone({ phone: (cc || '+91') + newPhone, password })
+      const updated = await api.changePhone({ phone: dialCode + newPhone, password })
       onSaved(updated)
       setMsg(`Your WhatsApp number is now ${updated.phone}. Use it to log in next time.`)
       close()
