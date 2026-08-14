@@ -16,7 +16,7 @@
 // without touching Meta; requests to the local test server pass straight through.
 import { test, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { createTestDb, dropTestDb } from './helpers.js'
+import { createTestDb, dropTestDb, pinVisitToToday } from './helpers.js'
 
 process.env.NODE_ENV = 'test'
 delete process.env.OPENROUTER_API_KEY
@@ -350,6 +350,9 @@ test('FLOW a site visit is booked, rescheduled and completed, and the list keeps
 test('FLOW a visit the buyer does not turn up to keeps the lead and stays on the day', async () => {
   const lead = (await json('POST', '/api/leads/quick-add', { phone: '+919611200006', name: 'Arjun Pillai' })).lead
   const visit = await json('POST', '/api/site-visits', { lead_id: lead.id, scheduled_at: iso(2 * HOUR) })
+  // The day-view assertion below is about the date filter, so the visit has to be on
+  // the agent's today — which iso(2 * HOUR) is not, late enough in their evening.
+  await pinVisitToToday(query, visit.id, agentId)
 
   // 'no_show' rather than 'cancelled': the schema's statuses are scheduled /
   // confirmed / completed / no_show / rescheduled, and there is deliberately no

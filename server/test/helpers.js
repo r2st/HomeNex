@@ -92,3 +92,26 @@ export async function createTestDb(name) {
 export async function dropTestDb(dbName) {
   await withAdmin((admin) => admin.query(`DROP DATABASE IF EXISTS ${dbName} WITH (FORCE)`))
 }
+
+// "Today" in this app is the agent's calendar day in the agent's own timezone, not a
+// rolling window from now — listSiteVisits({ today }) and the dashboard's day widget
+// both compare ::date in that zone. So a visit booked at now+2h is only "today" if the
+// suite happens to run before ~22:00 IST; after that it lands on tomorrow and every
+// today-assertion about it fails. That is a real two-hours-a-day flake, and it is not
+// something a test should be discovering by accident.
+//
+// Pin the row to noon on the agent's day instead, which is unambiguously today at
+// whatever hour the suite runs. Test-only: the product never rewrites scheduled_at.
+export async function pinVisitToToday(query, visitId, agentId) {
+  const { rows } = await query(
+    'SELECT COALESCE(timezone, $2) AS tz FROM agents WHERE id = $1',
+    [agentId, 'Asia/Kolkata'],
+  )
+  const tz = rows[0]?.tz || 'Asia/Kolkata'
+  await query(
+    `UPDATE site_visits
+        SET scheduled_at = (date_trunc('day', now() AT TIME ZONE $2) + interval '12 hours') AT TIME ZONE $2
+      WHERE id = $1`,
+    [visitId, tz],
+  )
+}

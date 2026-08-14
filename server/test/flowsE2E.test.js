@@ -15,7 +15,7 @@
 import { test, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import crypto from 'node:crypto'
-import { createTestDb, dropTestDb } from './helpers.js'
+import { createTestDb, dropTestDb, pinVisitToToday } from './helpers.js'
 
 process.env.NODE_ENV = 'test'
 delete process.env.OPENROUTER_API_KEY
@@ -387,12 +387,7 @@ test('FLOW booking a site visit surfaces it in the visit list, dashboard and wor
     lead_id: leadId,
     scheduled_at: new Date(Date.now() + 3600_000).toISOString(),
   })
-  const { timezone } = (await query('SELECT COALESCE(timezone, $2) AS timezone FROM agents WHERE id = $1', [agentId, 'Asia/Kolkata'])).rows[0]
-  await query(
-    `UPDATE site_visits SET scheduled_at = (date_trunc('day', now() AT TIME ZONE $2) + interval '12 hours') AT TIME ZONE $2
-     WHERE id = $1`,
-    [todayVisit.id, timezone],
-  )
+  await pinVisitToToday(query, todayVisit.id, agentId)
 
   const dash = await json('GET', '/api/dashboard')
   assert.ok(

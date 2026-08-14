@@ -5,7 +5,7 @@
 // value, so each case below asserts on which rows come back, not just on a 200.
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { createTestDb, dropTestDb } from './helpers.js'
+import { createTestDb, dropTestDb, pinVisitToToday } from './helpers.js'
 
 process.env.NODE_ENV = 'test'
 delete process.env.OPENROUTER_API_KEY
@@ -61,6 +61,8 @@ test('site visits filter by lead, by status and by "today"', async () => {
   const visitA = await createSiteVisit(agentId, { lead_id: leadA.id, scheduled_at: soon })
   const visitB = await createSiteVisit(agentId, { lead_id: leadB.id, scheduled_at: later })
   await query(`UPDATE site_visits SET status = 'completed' WHERE id = $1`, [visitB.id])
+  // now+2h is tomorrow if the suite runs late enough in the agent's evening.
+  await pinVisitToToday(query, visitA.id, agentId)
 
   assert.equal((await listSiteVisits(agentId, {})).length, 2)
   assert.deepEqual((await listSiteVisits(agentId, { leadId: leadA.id })).map((v) => v.id), [visitA.id])
