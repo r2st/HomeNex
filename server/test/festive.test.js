@@ -267,3 +267,52 @@ test('a scheduled delivery that fails is marked failed, and the next one still r
   // And nothing is left claimable, so the tick a minute later does not retry for ever.
   assert.equal(await deliverDueFestiveSchedules(), 0)
 })
+
+test('a delivery that fails, and then fails to record that it failed, still lets the tick finish', async () => {
+  // The last unguarded step in the loop is the bookkeeping itself. If the send throws
+  // and the UPDATE that marks the row 'failed' throws too — a dropped connection mid
+  // sweep, say — an unswallowed rejection would escape the catch and abandon every
+  // schedule after this one. The `.catch(() => {})` on the mark-failed is what keeps
+  // the tick going; without it this test rejects instead of returning a count.
+  const who = await (
+    await req('POST', '/api/auth/signup', { name: 'Bookkeeping Agent', phone: '+919800000056', password: 'secret123' })
+  ).json()
+  await req('PUT', '/api/agent/preferences', { timezone: middayTimezone() }, who.token)
+  // A contact means a real send is attempted, and with WhatsApp unconfigured it throws.
+  await addContact(who.agent.id, '+919777700056', 'Doomed Again')
+  await createFestiveSchedule(who.agent.id, {
+    festival_key: 'onam',
+    message: 'Happy Onam, {name}!',
+    send_at: new Date(Date.now() - 60_000).toISOString(),
+  })
+
+  let markFailedAttempts = 0
+  const original = pool.query.bind(pool)
+  pool.query = (...args) => {
+    const sql = typeof args[0] === 'string' ? args[0] : args[0]?.text || ''
+    if (/UPDATE festive_schedules SET sent_count/.test(sql)) {
+      markFailedAttempts++
+      return Promise.reject(new Error('connection terminated unexpectedly'))
+    }
+    return original(...args)
+  }
+  let delivered
+  try {
+    delivered = await deliverDueFestiveSchedules()
+  } finally {
+    pool.query = original
+  }
+
+  assert.equal(markFailedAttempts, 1, 'the loop never tried to record the failure')
+  assert.equal(delivered, 1, 'a failed mark-failed took the whole tick down with it')
+
+  // The claim already flipped the row to 'sent' up front, so a swallowed mark-failed
+  // leaves it exactly there — wrong, but claimed, which is the deliberate trade: the
+  // row is not retried for ever and the remaining schedules still got their turn.
+  const row = (await (await req('GET', '/api/templates/festive', undefined, who.token)).json()).scheduled[0]
+  assert.equal(row.status, 'sent')
+  assert.equal(row.sent_count, 0)
+
+  // And the pool is fine afterwards — nothing was left half-written by the stub.
+  assert.equal(await deliverDueFestiveSchedules(), 0)
+})
