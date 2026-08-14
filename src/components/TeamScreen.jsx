@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { api, fmtAgo } from '../api.js'
-import { Chip, Field, inputCls, Avatar, useConfirm } from './ui.jsx'
+import { Chip, ErrorBanner, Field, inputCls, Avatar, useConfirm } from './ui.jsx'
 
 const STRATEGIES = [
   { id: 'manual', label: 'Manual', sub: 'A manager assigns every lead' },
@@ -447,14 +447,47 @@ function Settings({ ctx, reload }) {
 
 export default function TeamScreen() {
   const [ctx, setCtx] = useState(undefined)
+  const [loadErr, setLoadErr] = useState(null)
   const [view, setView] = useState('members')
-  const reload = useCallback(() => api.team().then(setCtx).catch(() => setCtx(null)), [])
+  // A failed load must NOT come back as `null`. `null` is this screen's word for "you
+  // are not in a team", so catching into it told an agent whose request merely timed
+  // out that their team was gone — and then offered them a button to create a new
+  // one. Keep the failure as a failure: say what happened, and offer a retry.
+  const reload = useCallback(
+    () =>
+      api
+        .team()
+        .then((next) => {
+          setLoadErr(null)
+          setCtx(next)
+        })
+        .catch((e) => setLoadErr(e)),
+    [],
+  )
   useEffect(() => {
     reload()
   }, [reload])
 
-  if (ctx === undefined) return <p className="mt-6 text-[13px] text-ink-faint">Loading…</p>
-  if (!ctx || !ctx.team) return <NoTeam ctx={ctx || { incoming_invites: [] }} reload={reload} />
+  // Only the FIRST load is blocking. A dropped poll after the team is on screen
+  // leaves the roster where it is and shows the banner above it.
+  if (ctx === undefined) {
+    return loadErr ? (
+      <div className="mt-6">
+        <ErrorBanner error={loadErr} />
+        <button
+          onClick={reload}
+          className="mt-3 text-[12.5px] font-bold text-brand-deep bg-brand-wash rounded-full px-4 py-2 active:scale-95 transition"
+        >
+          Try again
+        </button>
+      </div>
+    ) : (
+      <p className="mt-6 text-[13px] text-ink-faint" aria-busy="true">
+        Loading…
+      </p>
+    )
+  }
+  if (!ctx.team) return <NoTeam ctx={ctx} reload={reload} />
 
   const canManage = ctx.role === 'owner' || ctx.role === 'manager'
   const isOwner = ctx.role === 'owner'

@@ -1,6 +1,29 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api.js'
-import { Chip, Field, inputCls, useConfirm } from './ui.jsx'
+import { Chip, ErrorBanner, Field, inputCls, useConfirm } from './ui.jsx'
+
+// All four lists on this screen load the same way, and all four used to catch a
+// failed request into an empty array — `.catch(() => setAssets([]))`. That turns "we
+// could not reach the server" into "you have nothing", which is the one reading an
+// agent must never be given: on the Templates tab it means someone whose approved
+// templates appear to have vanished will write them again and put them back through
+// Meta review. Keep the failure a failure, and let the caller show it.
+function useList(fetcher) {
+  const [items, setItems] = useState(null)
+  const [loadErr, setLoadErr] = useState(null)
+  const load = () =>
+    fetcher()
+      .then((next) => {
+        setLoadErr(null)
+        setItems(next)
+      })
+      .catch(setLoadErr)
+  useEffect(() => {
+    load()
+  }, [])
+  // `loading` is not `!items`: a first request that failed leaves items null for ever.
+  return { items, loadErr, load, loading: items === null && !loadErr }
+}
 
 const KIND_ICON = { brochure: '📄', floor_plan: '📐', photo: '🖼️', video: '🎬', document: '📎' }
 
@@ -32,18 +55,13 @@ function VarChips({ onInsert }) {
 
 // --- Media library ---------------------------------------------------------
 function MediaManager() {
-  const [assets, setAssets] = useState(null)
+  const { items: assets, loadErr, load } = useList(() => api.media())
   const [title, setTitle] = useState('')
   const [kind, setKind] = useState('brochure')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
   const fileRef = useRef(null)
   const confirm = useConfirm()
-
-  const load = () => api.media().then(setAssets).catch(() => setAssets([]))
-  useEffect(() => {
-    load()
-  }, [])
 
   const uploadFile = async (file) => {
     if (!file) return
@@ -113,6 +131,8 @@ function MediaManager() {
         <p className="text-[11px] text-ink-faint mt-2">Upload once, then attach to any chat in two taps.</p>
       </div>
 
+      <ErrorBanner error={loadErr} className="mt-4" />
+
       <div className="space-y-2 mt-4">
         {assets?.length === 0 && <p className="text-[12.5px] text-ink-faint px-1">Nothing in the library yet.</p>}
         {(assets || []).map((a) => (
@@ -137,18 +157,13 @@ function MediaManager() {
 
 // --- Templates -------------------------------------------------------------
 function TemplatesManager() {
-  const [templates, setTemplates] = useState(null)
+  const { items: templates, loadErr, load } = useList(() => api.templates())
   const [name, setName] = useState('')
   const [category, setCategory] = useState('utility')
   const [body, setBody] = useState('')
   const [rera, setRera] = useState(false)
   const [err, setErr] = useState(null)
   const confirm = useConfirm()
-
-  const load = () => api.templates().then(setTemplates).catch(() => setTemplates([]))
-  useEffect(() => {
-    load()
-  }, [])
 
   const create = async () => {
     setErr(null)
@@ -217,7 +232,12 @@ function TemplatesManager() {
         </button>
       </div>
 
+      <ErrorBanner error={loadErr} className="mt-4" />
+
       <div className="space-y-2 mt-4">
+        {templates?.length === 0 && (
+          <p className="text-[12.5px] text-ink-faint px-1">No templates yet.</p>
+        )}
         {(templates || []).map((t) => {
           const locked = t.is_locked || t.meta_status === 'approved'
           return (
@@ -248,14 +268,9 @@ function TemplatesManager() {
 
 // --- Quick replies ---------------------------------------------------------
 function QuickRepliesManager() {
-  const [replies, setReplies] = useState(null)
+  const { items: replies, loadErr, load } = useList(() => api.quickReplies())
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
-
-  const load = () => api.quickReplies().then(setReplies).catch(() => setReplies([]))
-  useEffect(() => {
-    load()
-  }, [])
 
   const create = async () => {
     await api.createQuickReply({ title: title.trim(), body })
@@ -287,7 +302,12 @@ function QuickRepliesManager() {
           Add quick reply
         </button>
       </div>
+      <ErrorBanner error={loadErr} className="mt-4" />
+
       <div className="space-y-2 mt-4">
+        {replies?.length === 0 && (
+          <p className="text-[12.5px] text-ink-faint px-1">No quick replies yet.</p>
+        )}
         {(replies || []).map((r) => (
           <div key={r.id} className="bg-card rounded-2xl border border-line shadow-card px-4 py-3">
             <div className="flex items-center gap-2">
@@ -307,14 +327,9 @@ function QuickRepliesManager() {
 
 // --- Labels ----------------------------------------------------------------
 function LabelsManager() {
-  const [labels, setLabels] = useState(null)
+  const { items: labels, loadErr, load } = useList(() => api.labels())
   const [name, setName] = useState('')
   const [color, setColor] = useState('#64748b')
-
-  const load = () => api.labels().then(setLabels).catch(() => setLabels([]))
-  useEffect(() => {
-    load()
-  }, [])
 
   const create = async () => {
     await api.createLabel({ name: name.trim(), color })
@@ -354,7 +369,10 @@ function LabelsManager() {
           Add label
         </button>
       </div>
+      <ErrorBanner error={loadErr} className="mt-4" />
+
       <div className="flex flex-wrap gap-2 mt-4">
+        {labels?.length === 0 && <p className="text-[12.5px] text-ink-faint px-1">No labels yet.</p>}
         {(labels || []).map((l) => (
           <span
             key={l.id}

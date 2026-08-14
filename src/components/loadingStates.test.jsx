@@ -15,6 +15,9 @@ import CommissionsScreen from './CommissionsScreen.jsx'
 import DashboardTab from './DashboardTab.jsx'
 import InsightsTab from './InsightsTab.jsx'
 import LeadSourcesScreen from './LeadSourcesScreen.jsx'
+import TeamScreen from './TeamScreen.jsx'
+import FestiveTab from './FestiveTab.jsx'
+import SnippetsMediaScreen from './SnippetsMediaScreen.jsx'
 import MoreTab from './MoreTab.jsx'
 import SupportScreen from './SupportScreen.jsx'
 
@@ -424,4 +427,262 @@ test('an empty capture feed is only called empty once it has loaded', async (t) 
   assert.match(ui.text(), /No captured leads yet/)
   assert.equal(busy(ui), false)
   assert.doesNotMatch(ui.text(), /Can't load your captured leads/)
+})
+
+// --- Team ------------------------------------------------------------------------
+//
+// The most consequential of this family. `null` is TeamScreen's word for "you are
+// not in a team", so catching a failed GET into it told an agent whose request
+// merely timed out that their team was gone — and then offered them a button to
+// create a new one. An agent who takes that offer ends up owning a second, empty
+// team while their real one still exists, and the members of the real team are not
+// in it.
+
+const OWNER_CTX = {
+  team: { name: 'Sharma Realty', assignment_strategy: 'manual' },
+  role: 'owner',
+  members: [{ agent_id: 1, name: 'Ravi Sharma', role: 'owner', lead_count: 4, accepts_leads: 1 }],
+  invites: [],
+  incoming_invites: [],
+}
+
+// A roster with someone the owner can act on — an owner's own row carries no
+// buttons, so OWNER_CTX alone gives nothing to click.
+const TWO_MEMBER_CTX = {
+  ...OWNER_CTX,
+  members: [
+    ...OWNER_CTX.members,
+    { agent_id: 2, name: 'Priya Nair', role: 'agent', lead_count: 2, accepts_leads: 1 },
+  ],
+}
+
+test('a team that fails to load never offers to create a new one', async (t) => {
+  setup(t, { 'GET /api/team': { status: 500, body: {} } })
+  const ui = await render(<TeamScreen />)
+
+  // The bug, stated as an assertion: a dropped request must not be read back to the
+  // agent as "you have no team".
+  assert.doesNotMatch(ui.text(), /Create team/, 'a failed load offered to create a second team')
+  assert.doesNotMatch(ui.text(), /Start a team/)
+  assert.match(ui.byRole('alert').props.children, /wrong on our side/)
+  assert.equal(busy(ui), false, 'still claiming to load after the request failed')
+})
+
+test('a team still in flight is neither an error nor an invitation to start one', async (t) => {
+  setup(t, { 'GET /api/team': pending() })
+  const ui = await render(<TeamScreen />)
+
+  assert.match(ui.text(), /Loading…/)
+  assert.equal(busy(ui), true)
+  assert.doesNotMatch(ui.text(), /Create team/)
+  assert.equal(ui.queryByRole('alert'), null, 'a request still in flight is not a failure')
+})
+
+test('the team error offers a retry that actually refetches', async (t) => {
+  let calls = 0
+  const ctx = setup(t, {
+    'GET /api/team': () => (++calls === 1 ? { status: 500, body: {} } : OWNER_CTX),
+  })
+  const ui = await render(<TeamScreen />)
+  assert.match(ui.text(), /wrong on our side/)
+
+  await click(ui.byText('Try again'))
+
+  assert.equal(ctx.net.to('/api/team', 'GET').length, 2)
+  assert.match(ui.text(), /Sharma Realty/, 'the retry succeeded but the roster never appeared')
+  assert.equal(ui.queryByRole('alert'), null, 'the banner outlived the failure it described')
+})
+
+test('an agent genuinely without a team is still offered one', async (t) => {
+  // The other half of the fix: keeping failures out of `null` must not stop a real
+  // "you are not in a team" answer from reaching NoTeam.
+  setup(t, { 'GET /api/team': { team: null, incoming_invites: [] } })
+  const ui = await render(<TeamScreen />)
+
+  assert.match(ui.text(), /Start a team/)
+  assert.notEqual(ui.queryByText('Create team'), null)
+  assert.equal(ui.queryByRole('alert'), null)
+})
+
+test('a reload that fails after the roster is on screen keeps the roster', async (t) => {
+  let calls = 0
+  const ctx = setup(t, {
+    // Every action on this screen ends in reload(). Only the FIRST load is allowed
+    // to be blocking, so a dropped one later must leave the members where they are
+    // rather than throwing the agent back to "Start a team".
+    'GET /api/team': () => (++calls === 1 ? TWO_MEMBER_CTX : { status: 500, body: {} }),
+    'PUT /api/team/members/2': { ok: true },
+  })
+  const ui = await render(<TeamScreen />)
+  assert.match(ui.text(), /Priya Nair/)
+
+  await click(ui.byText('pause', { exact: true }))
+  assert.equal(ctx.net.to('/api/team', 'GET').length, 2, 'the action never triggered a reload')
+
+  assert.match(ui.text(), /Priya Nair/, 'a later failure blanked a roster that had already loaded')
+  assert.match(ui.text(), /Ravi Sharma/)
+  assert.doesNotMatch(ui.text(), /Create team/, 'a dropped reload offered to create a second team')
+})
+
+// --- Festive greetings -------------------------------------------------------------
+//
+// `.catch(() => {})` left `data` null for ever: the festival grid rendered as an
+// empty <div> with no festivals, no error and nothing spinning. Diwali and Holi are
+// the two days of the year this screen exists for, and it looked like a feature
+// that had been removed.
+
+const FESTIVE = {
+  festivals: [
+    { key: 'diwali', name: 'Diwali', date: '2026-11-08', emoji: '🪔', message: 'Happy Diwali!' },
+    { key: 'holi', name: 'Holi', date: '2027-03-13', emoji: '🎨', message: 'Happy Holi!' },
+  ],
+  scheduled: [],
+}
+
+test('a festive grid that fails to load says so instead of rendering nothing', async (t) => {
+  setup(t, { 'GET /api/templates/festive': { status: 500, body: {} } })
+  const ui = await render(<FestiveTab />)
+
+  assert.match(ui.byRole('alert').props.children, /wrong on our side/)
+  assert.equal(busy(ui), false, 'a skeleton under the banner promises data that is not coming')
+})
+
+test('festivals in flight say so rather than showing an empty grid', async (t) => {
+  setup(t, { 'GET /api/templates/festive': pending() })
+  const ui = await render(<FestiveTab />)
+
+  assert.match(ui.text(), /Loading festivals…/)
+  assert.equal(busy(ui), true)
+  assert.equal(ui.queryByRole('alert'), null)
+})
+
+test('loaded festivals render and drop both the loading line and the banner', async (t) => {
+  setup(t, { 'GET /api/templates/festive': FESTIVE })
+  const ui = await render(<FestiveTab />)
+
+  assert.match(ui.text(), /Diwali/)
+  assert.match(ui.text(), /Holi/)
+  assert.doesNotMatch(ui.text(), /Loading festivals…/)
+  assert.equal(ui.queryByRole('alert'), null)
+  assert.equal(busy(ui), false)
+})
+
+test('a festive reload that recovers clears the banner', async (t) => {
+  let calls = 0
+  setup(t, {
+    'GET /api/templates/festive': () => (++calls === 1 ? { status: 500, body: {} } : FESTIVE),
+  })
+  const ui = await render(<FestiveTab />)
+  assert.notEqual(ui.queryByRole('alert'), null)
+
+  // FestiveTab has no retry button of its own — cancelling or sending triggers the
+  // reload. Re-mounting is the same code path and keeps the test honest about what
+  // clears the banner: a successful load, not the passage of time.
+  const recovered = await render(<FestiveTab />)
+  assert.equal(recovered.queryByRole('alert'), null)
+  assert.match(recovered.text(), /Diwali/)
+})
+
+// --- Snippets, media, templates, labels ---------------------------------------------
+//
+// All four lists on this screen caught a failed request into an EMPTY ARRAY, which
+// turns "we could not reach the server" into "you have nothing". On the Templates
+// tab that is the most expensive misreading in the app: an agent whose approved
+// templates appear to have vanished will write them again and put them back through
+// Meta review, which takes days and which they cannot undo.
+
+const SNIPPET_ROUTES = {
+  'GET /api/media': [],
+  'GET /api/templates': [],
+  'GET /api/quick-replies': [],
+  'GET /api/labels': [],
+}
+
+const openTab = (ui, label) => click(ui.byText(label, { exact: true }))
+
+test('a media library that fails to load is not reported as an empty library', async (t) => {
+  setup(t, { ...SNIPPET_ROUTES, 'GET /api/media': { status: 500, body: {} } })
+  const ui = await render(<SnippetsMediaScreen />)
+
+  assert.match(ui.byRole('alert').props.children, /wrong on our side/)
+  assert.doesNotMatch(ui.text(), /Nothing in the library yet/, 'a failed load was reported as an empty library')
+})
+
+test('an empty media library is only called empty once it has loaded', async (t) => {
+  setup(t, SNIPPET_ROUTES)
+  const ui = await render(<SnippetsMediaScreen />)
+
+  assert.match(ui.text(), /Nothing in the library yet/)
+  assert.equal(ui.queryByRole('alert'), null)
+})
+
+test('templates that fail to load never read as "you have no templates"', async (t) => {
+  setup(t, { ...SNIPPET_ROUTES, 'GET /api/templates': { status: 500, body: {} } })
+  const ui = await render(<SnippetsMediaScreen />)
+  await openTab(ui, 'Templates')
+
+  assert.match(ui.byRole('alert').props.children, /wrong on our side/)
+  // The expensive one: this sentence sends an agent back to Meta review.
+  assert.doesNotMatch(ui.text(), /No templates yet/, 'a failed load told the agent their templates were gone')
+})
+
+test('an agent with no templates is told so only after the list has loaded', async (t) => {
+  setup(t, SNIPPET_ROUTES)
+  const ui = await render(<SnippetsMediaScreen />)
+  await openTab(ui, 'Templates')
+
+  assert.match(ui.text(), /No templates yet/)
+  assert.equal(ui.queryByRole('alert'), null)
+})
+
+test('an approved template survives a later failure on the same screen', async (t) => {
+  let calls = 0
+  setup(t, {
+    ...SNIPPET_ROUTES,
+    'GET /api/templates': () =>
+      ++calls === 1
+        ? [{ id: 3, name: 'site_visit_followup', category: 'utility', body: 'Hi', meta_status: 'approved' }]
+        : { status: 500, body: {} },
+  })
+  const ui = await render(<SnippetsMediaScreen />)
+  await openTab(ui, 'Templates')
+
+  assert.match(ui.text(), /site_visit_followup/)
+  assert.doesNotMatch(ui.text(), /No templates yet/)
+})
+
+test('quick replies that fail to load are not reported as none saved', async (t) => {
+  setup(t, { ...SNIPPET_ROUTES, 'GET /api/quick-replies': { status: 500, body: {} } })
+  const ui = await render(<SnippetsMediaScreen />)
+  await openTab(ui, 'Quick replies')
+
+  assert.match(ui.byRole('alert').props.children, /wrong on our side/)
+  assert.doesNotMatch(ui.text(), /No quick replies yet/)
+})
+
+test('an empty quick-reply list is only called empty once it has loaded', async (t) => {
+  setup(t, SNIPPET_ROUTES)
+  const ui = await render(<SnippetsMediaScreen />)
+  await openTab(ui, 'Quick replies')
+
+  assert.match(ui.text(), /No quick replies yet/)
+  assert.equal(ui.queryByRole('alert'), null)
+})
+
+test('labels that fail to load are not reported as no labels', async (t) => {
+  setup(t, { ...SNIPPET_ROUTES, 'GET /api/labels': { status: 500, body: {} } })
+  const ui = await render(<SnippetsMediaScreen />)
+  await openTab(ui, 'Labels')
+
+  assert.match(ui.byRole('alert').props.children, /wrong on our side/)
+  assert.doesNotMatch(ui.text(), /No labels yet/)
+})
+
+test('an empty label set is only called empty once it has loaded', async (t) => {
+  setup(t, SNIPPET_ROUTES)
+  const ui = await render(<SnippetsMediaScreen />)
+  await openTab(ui, 'Labels')
+
+  assert.match(ui.text(), /No labels yet/)
+  assert.equal(ui.queryByRole('alert'), null)
 })

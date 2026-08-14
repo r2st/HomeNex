@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, fmtTime } from '../api.js'
-import { Sheet, Field, inputCls } from './ui.jsx'
+import { Sheet, ErrorBanner, Field, inputCls } from './ui.jsx'
 
 // Customize-and-send sheet for one festival greeting.
 function SendSheet({ festival, onClose, onDone }) {
@@ -89,7 +89,19 @@ export default function FestiveTab() {
   const [picked, setPicked] = useState(null)
   const [toast, setToast] = useState(null)
 
-  const load = () => api.festive().then(setData).catch(() => {})
+  const [loadErr, setLoadErr] = useState(null)
+
+  // Swallowing this left `data` null for ever: the festival grid rendered as an empty
+  // <div>, with no festivals, no error and nothing spinning. The screen simply looked
+  // like a feature that had been removed.
+  const load = () =>
+    api
+      .festive()
+      .then((next) => {
+        setLoadErr(null)
+        setData(next)
+      })
+      .catch(setLoadErr)
   useEffect(() => {
     load()
   }, [])
@@ -111,6 +123,17 @@ export default function FestiveTab() {
     <div>
       {toast && (
         <p className="mt-4 text-[12.5px] font-bold text-brand-deep bg-brand-wash rounded-xl px-4 py-3">{toast}</p>
+      )}
+
+      <ErrorBanner error={loadErr} className="mt-4" />
+
+      {/* `!data && !loadErr`, not `!data`: a first request that failed leaves data
+          null for ever, and a skeleton under the error banner reads as "still on
+          its way" when nothing more is coming. */}
+      {!data && !loadErr && (
+        <p className="mt-4 text-[12.5px] text-ink-faint" aria-busy="true">
+          Loading festivals…
+        </p>
       )}
 
       <div className="grid grid-cols-2 gap-2.5 mt-4">
