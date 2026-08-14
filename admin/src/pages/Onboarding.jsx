@@ -16,12 +16,23 @@ async function impersonate(id) {
 export default function Onboarding() {
   const [queue, setQueue] = useState(null)
   const [health, setHealth] = useState(null)
+  const [healthError, setHealthError] = useState(null)
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(null)
 
   const load = () => {
     api.onboarding().then(setQueue).catch((e) => setError(e.message))
-    api.wabaHealth().then(setHealth).catch(() => {})
+    // Kept off the page-level error on purpose: the health board is a second, lower
+    // section, and failing it should not replace the onboarding queue with an error
+    // screen. But it must not be swallowed either — an empty board with no
+    // explanation reads as "every number is fine".
+    api
+      .wabaHealth()
+      .then((h) => {
+        setHealth(h)
+        setHealthError(null)
+      })
+      .catch((e) => setHealthError(e.message))
   }
   useEffect(load, [])
 
@@ -95,6 +106,7 @@ export default function Onboarding() {
       </div>
 
       <div className="section-title">WABA health board</div>
+      {healthError && <div className="error-box">{healthError}</div>}
       <div className="table-wrap">
         <table>
           <thead>
@@ -116,6 +128,9 @@ export default function Onboarding() {
                 <td className="sub">{h.last_active ? fmtAgo(h.last_active) : '—'}</td>
               </tr>
             ))}
+            {health && health.length === 0 && (
+              <tr><td colSpan={5} className="empty">No WhatsApp numbers are registered yet.</td></tr>
+            )}
           </tbody>
         </table>
       </div>

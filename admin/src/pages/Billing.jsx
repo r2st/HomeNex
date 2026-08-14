@@ -14,19 +14,29 @@ export default function Billing() {
 
   useEffect(() => {
     api.plans().then(setPlans).catch((e) => setError(e.message))
-    api.agents({ pageSize: 100 }).then((r) => setAgents(r.agents || r)).catch(() => {})
+    // Not swallowed: a dropped roster leaves the picker below with nothing but
+    // "Select an agent…" and no way to tell an empty platform from a failed request.
+    api
+      .agents({ pageSize: 100 })
+      .then((r) => setAgents(r.agents || r))
+      .catch((e) => setError(e.message))
   }, [])
 
   const loadBilling = (id) => {
     setSel(id)
     setBilling(null)
+    setError(null)
     if (id) api.agentBilling(id).then(setBilling).catch((e) => setError(e.message))
   }
 
+  // The refresh after an action carried no catch, so assigning a plan or issuing an
+  // invoice against a server that then failed to re-read left the old figures on
+  // screen — the one place where stale numbers read as "the action did nothing".
   const act = async (fn) => {
+    setError(null)
     try {
       await fn()
-      if (sel) api.agentBilling(sel).then(setBilling)
+      if (sel) setBilling(await api.agentBilling(sel))
     } catch (e) {
       setError(e.message)
     }

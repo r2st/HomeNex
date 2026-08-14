@@ -9,8 +9,23 @@ function Detail({ id, onChange }) {
   const [reply, setReply] = useState('')
   const [error, setError] = useState(null)
 
-  const load = () => api.ticket(id).then(setTicket).catch((e) => setError(e.message))
-  useEffect(() => { load() }, [id]) // eslint-disable-line react-hooks/exhaustive-deps
+  const load = () =>
+    api
+      .ticket(id)
+      .then((t) => {
+        setTicket(t)
+        setError(null)
+      })
+      .catch((e) => setError(e.message))
+  // Selecting a different ticket must blank the panel first: without this the
+  // previous agent's conversation stays on screen under the new ticket's heading
+  // while the fetch is in flight, and a stale error outlives the ticket it was about.
+  useEffect(() => {
+    setTicket(null)
+    setError(null)
+    setReply('')
+    load()
+  }, [id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const send = async () => {
     if (!reply.trim()) return
@@ -24,12 +39,23 @@ function Detail({ id, onChange }) {
     }
   }
 
+  // A refused status change must not be followed by a reload that clears the reason
+  // it was refused — the two used to run regardless, so the error flashed and went.
   const setStatus = async (status) => {
-    await api.updateTicket(id, { status }).catch((e) => setError(e.message))
+    try {
+      await api.updateTicket(id, { status })
+    } catch (e) {
+      setError(e.message)
+      return
+    }
     load()
     onChange()
   }
 
+  // The error box below sits inside the loaded view, so a ticket that fails to load
+  // never reached it: `ticket` stayed null and the panel said "Loading…" forever while
+  // the reason sat in state, unrendered. A ticket that cannot be opened has to say so.
+  if (error && !ticket) return <div className="card error-box">{error}</div>
   if (!ticket) return <div className="card">Loading…</div>
   return (
     <div className="card">

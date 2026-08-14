@@ -28,7 +28,8 @@ export default function Analytics() {
   }, [])
 
   if (error) return <div className="error-box">{error}</div>
-  if (!data) return null
+  // Rendering nothing at all made a slow query indistinguishable from a broken page.
+  if (!data) return <p className="page-sub">Loading analytics…</p>
   const maxCity = Math.max(1, ...data.cities.map((c) => c.agents))
 
   return (

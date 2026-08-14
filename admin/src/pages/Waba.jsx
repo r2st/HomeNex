@@ -68,13 +68,22 @@ function RegisterRow({ agent, onDone }) {
 // poll Meta's quality/health API).
 function NumberRow({ agent, onChanged }) {
   const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
   const isActive = agent.waba_status === 'active'
 
+  // This pair of buttons is what turns an agent's WhatsApp line on and off. The
+  // failure used to be silent — no catch at all, so a rejected call was an unhandled
+  // rejection, the button un-busied, and the row went on showing the old status with
+  // no hint anything had gone wrong. Staff read that as "already live" and moved on,
+  // leaving an agent's number dark.
   const setStatus = async (status) => {
     setBusy(true)
+    setError(null)
     try {
       await api.updateWaba(agent.id, { status })
       onChanged()
+    } catch (err) {
+      setError(err.message)
     } finally {
       setBusy(false)
     }
@@ -104,6 +113,7 @@ function NumberRow({ agent, onChanged }) {
             Activate
           </button>
         )}
+        {error && <div className="error-box" style={{ margin: '6px 0 0' }}>{error}</div>}
       </td>
     </tr>
   )
