@@ -644,6 +644,29 @@ export async function getMessages(leadId, limit = 200) {
   return (await q('SELECT * FROM messages WHERE lead_id = $1 ORDER BY id LIMIT $2', [leadId, limit])).rows
 }
 
+// getMessages for several leads at once, as a Map(lead_id -> rows). The LATERAL keeps
+// the per-lead LIMIT that getMessages applies — a plain `lead_id = ANY(...)` with one
+// LIMIT would truncate the whole result set instead of each conversation, and hand back
+// nothing at all for the leads that sorted last.
+//
+// The scheduler's site-visit reminders are the caller: they read every due visit in one
+// statement and then fetched each lead's transcript separately to pick the language to
+// write in, which is a round trip per reminder.
+export async function getMessagesForLeads(leadIds, limit = 200) {
+  const byLead = new Map(leadIds.map((id) => [id, []]))
+  if (!leadIds.length) return byLead
+  const { rows } = await q(
+    `SELECT m.* FROM unnest($1::int[]) AS t(lead_id)
+     JOIN LATERAL (
+       SELECT * FROM messages WHERE lead_id = t.lead_id ORDER BY id LIMIT $2
+     ) m ON true
+     ORDER BY m.lead_id, m.id`,
+    [[...byLead.keys()], limit],
+  )
+  for (const m of rows) byLead.get(m.lead_id)?.push(m)
+  return byLead
+}
+
 export async function recordFirstResponse(leadId) {
   const lead = await getLead(leadId)
   if (!lead || lead.first_response_s != null) return
@@ -2204,18 +2227,22 @@ export async function createFollowup(agentId, f) {
 // Same reason as createNotifications: the stale-followup job reads its candidates in
 // one SELECT (capped at 20) and then wrote them back one INSERT at a time, per agent,
 // across every active agent.
-export async function createFollowups(agentId, items = []) {
+// Across agents, for the same reason as createNotificationsFor: the stale-followup job
+// now reads its candidates for every active agent in one statement, so it files them in
+// one statement too.
+export async function createFollowupsFor(items = []) {
   if (!items.length) return 0
   for (const f of items) {
     if (!f.lead_id || !f.due_at) throw new Error('lead_id and due_at are required')
   }
   const { rowCount } = await q(
     `INSERT INTO followups (lead_id, agent_id, due_at, type, note)
-     SELECT t.lead_id, $1, t.due_at, t.type, t.note
-     FROM unnest($2::int[], $3::timestamptz[], $4::text[], $5::text[]) AS t(lead_id, due_at, type, note)`,
+     SELECT t.lead_id, t.agent_id, t.due_at, t.type, t.note
+     FROM unnest($1::int[], $2::int[], $3::timestamptz[], $4::text[], $5::text[])
+       AS t(lead_id, agent_id, due_at, type, note)`,
     [
-      agentId,
       items.map((f) => f.lead_id),
+      items.map((f) => f.agent_id),
       items.map((f) => f.due_at),
       items.map((f) => f.type || 'manual'),
       items.map((f) => f.note ?? null),
@@ -2223,6 +2250,9 @@ export async function createFollowups(agentId, items = []) {
   )
   return rowCount
 }
+
+export const createFollowups = (agentId, items = []) =>
+  createFollowupsFor(items.map((f) => ({ ...f, agent_id: agentId })))
 
 export async function listFollowups(
   agentId,
@@ -2880,10 +2910,21 @@ export async function recomputeLeadScore(leadId, now = Date.now()) {
 // update). An agent with a few hundred live leads paid for hundreds of sequential
 // round trips before the page could render. Now it is three queries total,
 // regardless of lead count.
-export async function recomputeAgentScores(agentId, now = Date.now()) {
+export const recomputeAgentScores = (agentId, now = Date.now()) => recomputeScoresForAgents([agentId], now)
+
+// The same recompute for a whole list of agents in one pass: one SELECT for the live
+// leads, one batched signals query, one UPDATE. The scheduler ran this per agent every
+// 12 hours, so the round trips grew with the customer base; the rows touched are the
+// same either way.
+//
+// Callers hand this a bounded slice of the agent list (see scheduler.recomputeScores):
+// every live lead in the slice is materialised in Node to be scored, and that working
+// set is the one thing here that is not bounded by the number of statements.
+export async function recomputeScoresForAgents(agentIds, now = Date.now()) {
+  if (!agentIds.length) return 0
   const { rows: leads } = await q(
-    'SELECT * FROM leads WHERE agent_id = $1 AND closed_at IS NULL',
-    [agentId],
+    'SELECT * FROM leads WHERE agent_id = ANY($1::int[]) AND closed_at IS NULL',
+    [agentIds],
   )
   if (!leads.length) return 0
 
@@ -2991,23 +3032,32 @@ export async function createNotification(agentId, { type, title, body = null, en
 // DO NOTHING resolves duplicates within one statement, but the RETURNING count is what
 // each job reports as its work done, and two identical keys in one batch would be
 // counted once by the index and twice by a caller that trusted the input length.
-export async function createNotifications(agentId, items = []) {
+// The same batch, but ACROSS agents: every item carries its own agent_id, so one
+// statement can write a whole scheduler tick's notifications for the entire customer
+// base. Batching the write per agent removed the round trip per candidate row; this
+// removes the one that was left, per agent, per job, per tick.
+//
+// Dedupe is keyed on (agent_id, dedupe_key) — the same pair the unique index uses.
+// Collapsing on the key alone would be wrong here: two agents watching the same lead
+// pool legitimately produce the same key, and those are two different rows.
+export async function createNotificationsFor(items = []) {
   const seen = new Set()
   const rows = []
   for (const n of items) {
     if (n.dedupe_key != null) {
-      if (seen.has(n.dedupe_key)) continue
-      seen.add(n.dedupe_key)
+      const key = `${n.agent_id} ${n.dedupe_key}`
+      if (seen.has(key)) continue
+      seen.add(key)
     }
     rows.push(n)
   }
   if (!rows.length) return 0
   const { rowCount } = await q(
     `INSERT INTO notifications (agent_id, type, title, body, entity_type, entity_id, dedupe_key)
-     SELECT $1, * FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::int[], $7::text[])
+     SELECT * FROM unnest($1::int[], $2::text[], $3::text[], $4::text[], $5::text[], $6::int[], $7::text[])
      ON CONFLICT (agent_id, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING`,
     [
-      agentId,
+      rows.map((n) => n.agent_id),
       rows.map((n) => n.type),
       rows.map((n) => n.title),
       rows.map((n) => n.body ?? null),
@@ -3018,6 +3068,10 @@ export async function createNotifications(agentId, items = []) {
   )
   return rowCount
 }
+
+// Single-tenant convenience: stamp one agent onto every row and hand it to the batch.
+export const createNotifications = (agentId, items = []) =>
+  createNotificationsFor(items.map((n) => ({ ...n, agent_id: agentId })))
 
 export async function listNotifications(agentId, { unreadOnly = false, limit = 50 } = {}) {
   const where = ['agent_id = $1']

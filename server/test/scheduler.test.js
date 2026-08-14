@@ -194,21 +194,17 @@ test('detectHotLeads stays quiet once the agent has answered the hot lead', asyn
   assert.equal(rows[0].n, 0, 'the last message is the agent’s — nothing is waiting')
 })
 
-test('runJobForAllAgents isolates a failing agent so the rest of the tick still runs', async () => {
+// A job is now handed the WHOLE active agent list and does its work for all of them in
+// a fixed number of statements, so what the tick has to survive is a failing JOB, not a
+// failing agent: one job blowing up must not stop the seven behind it in runDueJobs.
+test('runJobForAllAgents swallows a failing job so the rest of the tick still runs', async () => {
   const { runJobForAllAgents } = await import('../scheduler.js')
-  const seen = []
   const errs = []
   const realError = console.error
   console.error = (...a) => errs.push(a.join(' '))
   try {
-    const total = await runJobForAllAgents(async (id) => {
-      seen.push(id)
-      if (id === agentId) throw new Error('boom')
-      return 2
-    })
-    assert.ok(seen.includes(agentId))
-    assert.equal(total, 2 * (seen.length - 1), 'every other agent still contributed')
-    assert.ok(errs.some((e) => /scheduler job failed for agent/.test(e) && /boom/.test(e)))
+    assert.equal(await runJobForAllAgents(async () => { throw new Error('boom') }), 0)
+    assert.ok(errs.some((e) => /scheduler job failed/.test(e) && /boom/.test(e)))
   } finally {
     console.error = realError
   }
@@ -220,14 +216,30 @@ test('runJobForAllAgents treats a job returning nothing as zero actions', async 
   assert.equal(await runJobForAllAgents(async () => null), 0)
 })
 
-test('runJobForAllAgents skips deactivated agents', async () => {
+test('runJobForAllAgents hands the job every active agent at once, and no deactivated one', async () => {
   const { runJobForAllAgents } = await import('../scheduler.js')
   const { createAgent } = await import('../db.js')
   const { hashPassword } = await import('../auth.js')
   const gone = await createAgent('Gone Girish', '+919800000079', null, hashPassword('secret123'))
   await query('UPDATE agents SET is_active = 0, deactivated_at = now() WHERE id = $1', [gone.id])
 
+  const calls = []
+  await runJobForAllAgents(async (ids) => { calls.push(ids); return 0 })
+  assert.equal(calls.length, 1, 'one call for the whole customer base, not one per agent')
+  assert.ok(calls[0].includes(agentId))
+  assert.ok(!calls[0].includes(gone.id), 'a deactivated workspace gets no background work')
+})
+
+test('runJobForAllAgents does not even read the agent list twice when the caller has it', async () => {
+  const { runJobForAllAgents } = await import('../scheduler.js')
   const seen = []
-  await runJobForAllAgents(async (id) => { seen.push(id); return 0 })
-  assert.ok(!seen.includes(gone.id), 'a deactivated workspace gets no background work')
+  await runJobForAllAgents(async (ids, now) => { seen.push([ids, now]); return 3 }, [agentId], 12345)
+  assert.deepEqual(seen, [[[agentId], 12345]])
+})
+
+test('a tick with no active agents at all does no work rather than querying for none', async () => {
+  const { runJobForAllAgents } = await import('../scheduler.js')
+  let ran = false
+  assert.equal(await runJobForAllAgents(async () => { ran = true; return 9 }, []), 0)
+  assert.equal(ran, false)
 })
