@@ -196,7 +196,7 @@ import { fetchLeadgenData } from './whatsapp.js'
 import { dbPing, closePool } from './db.js'
 import {
   securityHeaders, cors, requestLogger, rateLimit, clientIp, errorCodes, validateIdParams,
-  boundedText, TEXT, boundedNumber, NUM,
+  ensureBody, boundedText, TEXT, boundedNumber, NUM,
 } from './middleware.js'
 import { validateEnv } from './env.js'
 import { verifyWebhookSignature } from './webhookSignature.js'
@@ -309,6 +309,9 @@ app.use(
     },
   }),
 )
+// Immediately after the parser, so every handler below can read req.body as an
+// object without saying so itself. See ensureBody for why it is not simply assumed.
+app.use(ensureBody)
 
 // Rate limits on the routes an anonymous caller can reach. Auth is tight (blunts
 // credential stuffing); the public ingest/webhook endpoints get a higher ceiling so
@@ -574,7 +577,7 @@ app.post('/webhook', (req, res) => {
   res.sendStatus(200) // ack fast; Meta retries on timeout
 
   ;(async () => {
-    for (const entry of req.body?.entry ?? []) {
+    for (const entry of req.body.entry ?? []) {
       for (const change of entry.changes ?? []) {
         const value = change.value
         // Meta Lead Ads: a leadgen webhook carries only a leadgen_id — fetch the answers
@@ -676,7 +679,7 @@ app.post('/webhook', (req, res) => {
 app.post('/ingest/email/:token', ah(async (req, res) => {
   const agent = await findAgentByIngestToken(req.params.token)
   if (!agent) return res.status(404).json({ error: 'unknown ingest address' })
-  const { from = '', subject = '', text = '', html = '' } = req.body || {}
+  const { from = '', subject = '', text = '', html = '' } = req.body
   const parsed = parsePortalEmail({ from, subject, text, html })
   if (!parsed || !parsed.phone) {
     await createLeadSourceEvent({
@@ -709,7 +712,7 @@ app.post('/ingest/portal/:token/:portal', boundedText({
   if (!agent) return res.status(404).json({ error: 'unknown ingest token' })
   const portal = req.params.portal
   if (!SYNDICATION_PORTALS.includes(portal)) return res.status(400).json({ error: 'unknown portal' })
-  const b = req.body || {}
+  const b = req.body
   if (!b.phone) return res.status(400).json({ error: 'phone required' })
   const result = await ingestLead({
     agent, channel: 'portal_api', portal, external_id: b.external_id || b.lead_id || null,
@@ -727,7 +730,7 @@ app.post('/ingest/portal/:token/:portal', boundedText({
 // --- Auth: one-screen signup (name, phone, email, password) and login ---
 app.post('/api/auth/signup', ah(async (req, res) => {
   try {
-    res.json(await signup(req.body ?? {}))
+    res.json(await signup(req.body))
   } catch (err) {
     res.status(400).json({ error: err.message })
   }
@@ -735,7 +738,7 @@ app.post('/api/auth/signup', ah(async (req, res) => {
 
 app.post('/api/auth/login', ah(async (req, res) => {
   try {
-    res.json(await login(req.body ?? {}))
+    res.json(await login(req.body))
   } catch (err) {
     // 403, not 401: the credentials were right, the account is suspended.
     res.status(err.code === 'DEACTIVATED' ? 403 : 401).json({ error: err.message })
@@ -753,7 +756,7 @@ app.use('/api', (req, res, next) => {
 // Agent changes their own WhatsApp (login) number. Requires the current password.
 const PHONE_ERROR_STATUS = { BAD_PASSWORD: 403, PHONE_TAKEN: 409, NOT_FOUND: 404 }
 app.put('/api/agent/phone', ah(async (req, res) => {
-  const { phone, password } = req.body ?? {}
+  const { phone, password } = req.body
   const previous = req.agent.phone
   try {
     const agent = await changePhone(req.agent.id, { phone, password })
@@ -769,7 +772,7 @@ app.put('/api/agent/phone', ah(async (req, res) => {
 // Agent changes their own password. Requires the current password.
 const PASSWORD_ERROR_STATUS = { BAD_PASSWORD: 403, WEAK_PASSWORD: 400, SAME_PASSWORD: 400, NOT_FOUND: 404 }
 app.put('/api/agent/password', ah(async (req, res) => {
-  const { current_password, new_password } = req.body ?? {}
+  const { current_password, new_password } = req.body
   try {
     // The change signs every other device out, so the caller gets a token signed
     // with the new version back — without it this device would 401 on its next
@@ -789,7 +792,7 @@ const PROFILE_ERROR_STATUS = { EMAIL_TAKEN: 409, NOT_FOUND: 404 }
 // does it better — its limits are per-field (name 80, bio 500, RERA id 64) and its
 // message names the field the way the form labels it.
 app.put('/api/agent/profile', ah(async (req, res) => {
-  const fields = pick(req.body ?? {}, PROFILE_FIELDS)
+  const fields = pick(req.body, PROFILE_FIELDS)
   try {
     const agent = await updateAgentProfileSelf(req.agent.id, fields)
     // The photo is a data: URI — log which fields moved, never their contents.
@@ -811,7 +814,7 @@ const PREFERENCE_FIELDS = [
   'quiet_hours_end',
 ]
 app.put('/api/agent/preferences', boundedText({ timezone: TEXT.LINE, language: TEXT.LINE }), ah(async (req, res) => {
-  const fields = pick(req.body ?? {}, PREFERENCE_FIELDS)
+  const fields = pick(req.body, PREFERENCE_FIELDS)
   try {
     const agent = await updateAgentPreferences(req.agent.id, fields)
     await logAudit(agent.id, 'agent', agent.id, 'preferences_updated', fields)
@@ -831,7 +834,7 @@ app.get('/api/agent/phone-config', ah(async (req, res) => {
 }))
 
 app.put('/api/agent/phone-config', ah(async (req, res) => {
-  const { wa_phone_number, wa_phone_number_id } = req.body ?? {}
+  const { wa_phone_number, wa_phone_number_id } = req.body
   try {
     const agent = await updateAgentPhoneConfig(req.agent.id, wa_phone_number || null, wa_phone_number_id || null)
     res.json(agent)
@@ -842,7 +845,7 @@ app.put('/api/agent/phone-config', ah(async (req, res) => {
 
 // Agent sets/updates their WA Business phone number (for WABA registration).
 app.put('/api/agent/wa-phone', ah(async (req, res) => {
-  const { wa_phone_number } = req.body ?? {}
+  const { wa_phone_number } = req.body
   if (!wa_phone_number) return res.status(400).json({ error: 'wa_phone_number is required' })
   // normalizePhone is total, and the only remaining failure is the UPDATE itself —
   // an infrastructure fault, which ah() turns into a 500 rather than blaming the client.
@@ -921,7 +924,7 @@ app.post('/api/leads/:id/read', ah(async (req, res) => {
 // inbox of any agent on the platform. A thread may only move to yourself or to a
 // member of your own team.
 app.post('/api/leads/:id/assign-to', ah(async (req, res) => {
-  const raw = req.body?.assignee_id ?? null
+  const raw = req.body.assignee_id ?? null
   let assigneeId = null
   if (raw !== null) {
     assigneeId = Number(raw)
@@ -959,7 +962,7 @@ app.post('/api/leads/:id/notes', boundedText({ body: TEXT.PROSE }), ah(async (re
   const lead = await getAssignableLead(req.params.id, req.agent.id)
   if (!lead) return res.status(404).json({ error: 'not found' })
   try {
-    res.json(await addLeadNote(lead.id, req.agent.id, req.body?.body))
+    res.json(await addLeadNote(lead.id, req.agent.id, req.body.body))
   } catch (err) {
     if (!/note body is required/.test(err.message)) throw err
     res.status(400).json({ error: err.message })
@@ -975,7 +978,7 @@ app.delete('/api/leads/:id/notes/:noteId', ah(async (req, res) => {
 app.put('/api/leads/:id/labels/:labelId', ah(async (req, res) => {
   const lead = await getAssignableLead(req.params.id, req.agent.id)
   if (!lead) return res.status(404).json({ error: 'not found' })
-  const on = req.body?.on !== false // default to adding
+  const on = req.body.on !== false // default to adding
   const labels = await setLeadLabel(lead.id, Number(req.params.labelId), req.agent.id, on)
   if (labels === null) return res.status(404).json({ error: 'label not found' })
   res.json(labels)
@@ -1031,7 +1034,7 @@ app.get('/api/leads/:id/autofill', ah(async (req, res) => {
 
 // Apply the agent-accepted subset of auto-fill suggestions. Body: { accepted: {field: value} }.
 app.post('/api/leads/:id/autofill/apply', ah(async (req, res) => {
-  const accepted = req.body?.accepted
+  const accepted = req.body.accepted
   if (!accepted || typeof accepted !== 'object') return res.status(400).json({ error: 'accepted map is required' })
   try {
     const lead = await applyAutofill(req.params.id, req.agent.id, accepted)
@@ -1051,7 +1054,7 @@ app.put('/api/leads/:id', boundedText({
 // A budget is paise, and it is the number the matcher compares every listing against.
 // A negative one silently matched nothing; a fractional one is not a paise.
 }), boundedNumber({ budget_min: NUM.PAISE, budget_max: NUM.PAISE }), ah(async (req, res) => {
-  const fields = pick(req.body ?? {}, [
+  const fields = pick(req.body, [
     'name', 'pipeline_type', 'budget_min', 'budget_max', 'bhk', 'property_type',
     'preferred_localities', 'timeline', 'financing', 'notes',
   ])
@@ -1074,7 +1077,7 @@ app.put('/api/leads/:id', boundedText({
 
 // Move a lead between pipeline stages. Moving to Lost requires a lost_reason.
 app.put('/api/leads/:id/stage', boundedText({ stage: TEXT.LINE, lost_reason: TEXT.BLURB }), ah(async (req, res) => {
-  const { stage, lost_reason } = req.body ?? {}
+  const { stage, lost_reason } = req.body
   if (!stage) return res.status(400).json({ error: 'stage is required' })
   try {
     const lead = await setLeadStage(req.params.id, req.agent.id, { stage, lost_reason })
@@ -1134,12 +1137,12 @@ app.post('/api/leads/:id/assign', ah(async (req, res) => {
 app.post('/api/leads/:id/ai', ah(async (req, res) => {
   const lead = await getLeadForAgent(req.params.id, req.agent.id)
   if (!lead) return res.status(404).json({ error: 'not found' })
-  await setAiEnabled(lead.id, Boolean(req.body?.enabled))
+  await setAiEnabled(lead.id, Boolean(req.body.enabled))
   await logActivity(
     req.agent.id,
     lead.id,
     'agent',
-    req.body?.enabled
+    req.body.enabled
       ? `AI re-enabled for ${lead.name || lead.wa_id}`
       : `${req.agent.name} took over the chat with ${lead.name || lead.wa_id}`,
   )
@@ -1153,20 +1156,20 @@ app.post('/api/leads/:id/reply', boundedText({ text: TEXT.WHATSAPP }), ah(async 
   const lead = await getLeadForAgent(req.params.id, req.agent.id)
   if (!lead) return res.status(404).json({ error: 'not found' })
 
-  const templateId = req.body?.template_id
+  const templateId = req.body.template_id
   let text
   if (templateId) {
     const tpl = await getMessageTemplate(Number(templateId), req.agent.id)
     if (!tpl) return res.status(404).json({ error: 'template not found' })
     // Agents fill variables; the approved body is never edited here. Marketing
     // templates get the RERA number appended automatically.
-    const { text: rendered, missing } = renderTemplate(tpl, req.body?.variables || {}, req.agent)
+    const { text: rendered, missing } = renderTemplate(tpl, req.body.variables || {}, req.agent)
     if (missing.length) {
       return res.status(400).json({ error: `Fill in: ${missing.join(', ')}`, code: 'TEMPLATE_VARS_MISSING', missing })
     }
     text = rendered
   } else {
-    text = (req.body?.text || '').trim()
+    text = (req.body.text || '').trim()
     if (!text) return res.status(400).json({ error: 'text required' })
     const win = serviceWindow(lead)
     // Only enforce when we know the window state (legacy leads have no anchor).
@@ -1201,7 +1204,7 @@ app.post('/api/emi', boundedText({ text: TEXT.BLURB }), boundedNumber({
   rate_pct: NUM.PERCENT,
   years: { min: 0, max: 50 },
 }), ah(async (req, res) => {
-  const { text, principal_l, rate_pct, years } = req.body ?? {}
+  const { text, principal_l, rate_pct, years } = req.body
   const parsed = text
     ? parseEmiQuery(text)
     : principal_l != null
@@ -1257,7 +1260,7 @@ app.put('/api/contacts/:id', boundedText({ name: TEXT.LINE, notes: TEXT.PROSE, o
     const contact = await updateContact(
       req.params.id,
       req.agent.id,
-      pick(req.body ?? {}, ['name', 'notes', 'opt_in_status', 'labels']),
+      pick(req.body, ['name', 'notes', 'opt_in_status', 'labels']),
     )
     if (!contact) return res.status(404).json({ error: 'not found' })
     res.json(contact)
@@ -1284,7 +1287,7 @@ app.get('/api/network', ah(async (req, res) =>
 // columns are unbounded (a multi-megabyte post would be broadcast to everyone).
 const NETWORK_TEXT_LIMITS = { broker: 120, firm: 120, text: 2000, config: 60, locality: 120 }
 app.post('/api/network', ah(async (req, res) => {
-  const p = req.body ?? {}
+  const p = req.body
   const str = (v) => (typeof v === 'string' ? v.trim() : v == null ? '' : String(v).trim())
   const post = { type: str(p.type) }
   if (!['INVENTORY', 'REQUIREMENT'].includes(post.type)) {
@@ -1375,7 +1378,7 @@ app.get('/api/properties/:id', ah(async (req, res) => {
 
 app.post('/api/properties', boundedText(PROPERTY_TEXT_LIMITS), boundedNumber(PROPERTY_NUMBER_LIMITS), ah(async (req, res) => {
   try {
-    const property = await createProperty(req.agent.id, pick(req.body ?? {}, PROPERTY_BODY_FIELDS))
+    const property = await createProperty(req.agent.id, pick(req.body, PROPERTY_BODY_FIELDS))
     await logAudit(req.agent.id, 'property', property.id, 'create', { title: property.title })
     res.json(property)
   } catch (err) {
@@ -1386,7 +1389,7 @@ app.post('/api/properties', boundedText(PROPERTY_TEXT_LIMITS), boundedNumber(PRO
 
 app.put('/api/properties/:id', boundedText(PROPERTY_TEXT_LIMITS), boundedNumber(PROPERTY_NUMBER_LIMITS), ah(async (req, res) => {
   try {
-    const property = await updateProperty(req.params.id, req.agent.id, pick(req.body ?? {}, PROPERTY_BODY_FIELDS))
+    const property = await updateProperty(req.params.id, req.agent.id, pick(req.body, PROPERTY_BODY_FIELDS))
     if (!property) return res.status(404).json({ error: 'not found' })
     res.json(property)
   } catch (err) {
@@ -1434,7 +1437,7 @@ export function formatPropertyMessage(p) {
 
 // "Send to chat": push a formatted property card into a lead's WhatsApp conversation.
 app.post('/api/properties/:id/send-to-chat', ah(async (req, res) => {
-  const { lead_id } = req.body ?? {}
+  const { lead_id } = req.body
   if (!lead_id) return res.status(400).json({ error: 'lead_id is required' })
   const property = await getProperty(req.params.id, req.agent.id)
   if (!property) return res.status(404).json({ error: 'property not found' })
@@ -1472,7 +1475,7 @@ app.get('/api/followups', boundedNumber({ lead_id: NUM.ID }, { from: 'query' }),
 ))
 
 app.post('/api/followups', boundedText({ note: TEXT.PROSE, type: TEXT.LINE }), ah(async (req, res) => {
-  const { lead_id, due_at, note, type } = req.body ?? {}
+  const { lead_id, due_at, note, type } = req.body
   if (!lead_id || !due_at) return res.status(400).json({ error: 'lead_id and due_at are required' })
   const lead = await getLeadForAgent(lead_id, req.agent.id)
   if (!lead) return res.status(404).json({ error: 'lead not found' })
@@ -1489,7 +1492,7 @@ app.put('/api/followups/:id', boundedText({ note: TEXT.PROSE, type: TEXT.LINE })
     const followup = await updateFollowup(
       req.params.id,
       req.agent.id,
-      pick(req.body ?? {}, ['completed', 'due_at', 'note', 'type']),
+      pick(req.body, ['completed', 'due_at', 'note', 'type']),
     )
     if (!followup) return res.status(404).json({ error: 'not found' })
     res.json(followup)
@@ -1509,7 +1512,7 @@ app.get('/api/site-visits', boundedNumber({ lead_id: NUM.ID }, { from: 'query' }
 ))
 
 app.post('/api/site-visits', boundedText({ pickup_location: TEXT.BLURB }), ah(async (req, res) => {
-  const { lead_id, property_id, scheduled_at, pickup_required, pickup_location, builder_preregistered } = req.body ?? {}
+  const { lead_id, property_id, scheduled_at, pickup_required, pickup_location, builder_preregistered } = req.body
   if (!lead_id || !scheduled_at) return res.status(400).json({ error: 'lead_id and scheduled_at are required' })
   const lead = await getLeadForAgent(lead_id, req.agent.id)
   if (!lead) return res.status(404).json({ error: 'lead not found' })
@@ -1558,7 +1561,7 @@ app.put('/api/site-visits/:id', boundedText({ pickup_location: TEXT.BLURB, statu
     const visit = await updateSiteVisit(
       req.params.id,
       req.agent.id,
-      pick(req.body ?? {}, [
+      pick(req.body, [
         'scheduled_at', 'pickup_required', 'pickup_location', 'status', 'outcome_notes',
         'builder_preregistered', 'property_id',
       ]),
@@ -1603,7 +1606,7 @@ app.get('/api/deals', ah(async (req, res) =>
 ))
 
 app.post('/api/deals', boundedText(DEAL_TEXT_LIMITS), boundedNumber(DEAL_NUMBER_LIMITS), ah(async (req, res) => {
-  const body = req.body ?? {}
+  const body = req.body
   if (!body.lead_id) return res.status(400).json({ error: 'lead_id is required' })
   const lead = await getLeadForAgent(body.lead_id, req.agent.id)
   if (!lead) return res.status(404).json({ error: 'lead not found' })
@@ -1626,7 +1629,7 @@ app.get('/api/deals/:id', ah(async (req, res) => {
 
 app.put('/api/deals/:id', boundedText(DEAL_TEXT_LIMITS), boundedNumber(DEAL_NUMBER_LIMITS), ah(async (req, res) => {
   try {
-    const deal = await updateDeal(req.params.id, req.agent.id, pick(req.body ?? {}, [
+    const deal = await updateDeal(req.params.id, req.agent.id, pick(req.body, [
       'property_id', 'deal_type', 'builder_name', 'deal_value_paise', 'monthly_rent_paise', 'status', 'notes',
     ]))
     if (!deal) return res.status(404).json({ error: 'not found' })
@@ -1647,7 +1650,7 @@ app.get('/api/commissions/receivables', ah(async (req, res) =>
 ))
 
 app.post('/api/commissions', boundedText(COMMISSION_TEXT_LIMITS), boundedNumber(COMMISSION_NUMBER_LIMITS), ah(async (req, res) => {
-  const body = req.body ?? {}
+  const body = req.body
   if (!body.lead_id) return res.status(400).json({ error: 'lead_id is required' })
   const lead = await getLeadForAgent(body.lead_id, req.agent.id)
   if (!lead) return res.status(404).json({ error: 'lead not found' })
@@ -1664,7 +1667,7 @@ app.post('/api/commissions', boundedText(COMMISSION_TEXT_LIMITS), boundedNumber(
 
 app.put('/api/commissions/:id', boundedText(COMMISSION_TEXT_LIMITS), boundedNumber(COMMISSION_NUMBER_LIMITS), ah(async (req, res) => {
   try {
-    const commission = await updateCommission(req.params.id, req.agent.id, pick(req.body ?? {}, [
+    const commission = await updateCommission(req.params.id, req.agent.id, pick(req.body, [
       'deal_id', 'deal_value_paise', 'commission_pct', 'commission_flat_paise', 'payer_type',
       'builder_name', 'expected_payout_date', 'actual_payout_date', 'status', 'notes',
     ]))
@@ -1683,7 +1686,7 @@ app.put('/api/commissions/:id', boundedText(COMMISSION_TEXT_LIMITS), boundedNumb
 // only shadow.
 app.post('/api/commissions/:id/invoice', boundedText({ invoice_number: TEXT.LINE, notes: TEXT.PROSE }), ah(async (req, res) => {
   try {
-    const invoice = await createCommissionInvoice(req.agent.id, req.params.id, pick(req.body ?? {}, ['gst_rate', 'invoice_number', 'notes']))
+    const invoice = await createCommissionInvoice(req.agent.id, req.params.id, pick(req.body, ['gst_rate', 'invoice_number', 'notes']))
     if (!invoice) return res.status(404).json({ error: 'commission not found' })
     res.json(invoice)
   } catch (err) {
@@ -1703,7 +1706,7 @@ app.get('/api/commission-invoices', boundedNumber({ commission_id: NUM.ID }, { f
 
 app.put('/api/commission-invoices/:id', boundedText({ status: TEXT.LINE, notes: TEXT.PROSE }), ah(async (req, res) => {
   try {
-    const invoice = await updateCommissionInvoice(req.params.id, req.agent.id, pick(req.body ?? {}, ['status', 'notes']))
+    const invoice = await updateCommissionInvoice(req.params.id, req.agent.id, pick(req.body, ['status', 'notes']))
     if (!invoice) return res.status(404).json({ error: 'not found' })
     res.json(invoice)
   } catch (err) {
@@ -1722,7 +1725,7 @@ app.get('/api/templates', ah(async (req, res) => res.json(await listMessageTempl
 
 app.post('/api/templates', boundedText(TEMPLATE_TEXT_LIMITS), ah(async (req, res) => {
   try {
-    res.json(await createMessageTemplate(req.agent.id, pick(req.body ?? {}, ['name', 'category', 'body', 'variables', 'rera_auto_append'])))
+    res.json(await createMessageTemplate(req.agent.id, pick(req.body, ['name', 'category', 'body', 'variables', 'rera_auto_append'])))
   } catch (err) {
     if (!pgBadRequest(err) && !/name and body are required/.test(err.message) && err.code !== '23505') throw err
     res.status(400).json({ error: err.message })
@@ -1734,7 +1737,7 @@ app.post('/api/templates', boundedText(TEMPLATE_TEXT_LIMITS), ah(async (req, res
 app.put('/api/templates/:id', boundedText(TEMPLATE_TEXT_LIMITS), ah(async (req, res) => {
   const tpl = await getMessageTemplate(Number(req.params.id), req.agent.id)
   if (!tpl) return res.status(404).json({ error: 'not found' })
-  const fields = pick(req.body ?? {}, ['name', 'category', 'body', 'variables', 'rera_auto_append', 'meta_status'])
+  const fields = pick(req.body, ['name', 'category', 'body', 'variables', 'rera_auto_append', 'meta_status'])
   const editsBody = ['name', 'category', 'body'].some((k) => k in fields)
   if ((tpl.is_locked || tpl.meta_status === 'approved') && editsBody) {
     return res.status(403).json({
@@ -1766,7 +1769,7 @@ app.get('/api/quick-replies', ah(async (req, res) => res.json(await listQuickRep
 
 app.post('/api/quick-replies', boundedText({ title: TEXT.LINE, body: TEXT.PROSE }), ah(async (req, res) => {
   try {
-    res.json(await createQuickReply(req.agent.id, pick(req.body ?? {}, ['title', 'body'])))
+    res.json(await createQuickReply(req.agent.id, pick(req.body, ['title', 'body'])))
   } catch (err) {
     if (!pgBadRequest(err) && !/title and body are required/.test(err.message) && err.code !== '23505') throw err
     res.status(400).json({ error: err.message })
@@ -1774,7 +1777,7 @@ app.post('/api/quick-replies', boundedText({ title: TEXT.LINE, body: TEXT.PROSE 
 }))
 
 app.put('/api/quick-replies/:id', boundedText({ title: TEXT.LINE, body: TEXT.PROSE }), ah(async (req, res) => {
-  const updated = await updateQuickReply(Number(req.params.id), req.agent.id, pick(req.body ?? {}, ['title', 'body']))
+  const updated = await updateQuickReply(Number(req.params.id), req.agent.id, pick(req.body, ['title', 'body']))
   if (!updated) return res.status(404).json({ error: 'not found' })
   res.json(updated)
 }))
@@ -1789,7 +1792,7 @@ app.get('/api/labels', ah(async (req, res) => res.json(await listLabels(req.agen
 
 app.post('/api/labels', boundedText({ name: TEXT.LINE, color: TEXT.LINE }), ah(async (req, res) => {
   try {
-    res.json(await createLabel(req.agent.id, pick(req.body ?? {}, ['name', 'color'])))
+    res.json(await createLabel(req.agent.id, pick(req.body, ['name', 'color'])))
   } catch (err) {
     if (!pgBadRequest(err) && !/label name is required/.test(err.message) && err.code !== '23505') throw err
     res.status(400).json({ error: err.message })
@@ -1820,7 +1823,7 @@ app.get('/api/media', ah(async (req, res) => res.json(await listMediaAssets(req.
 // Register an asset. Two modes: { storage:'url', url } for an already-hosted file,
 // or { storage:'local', data_base64, filename } to upload a file we host at /uploads.
 app.post('/api/media', uploadLimiter, boundedText(MEDIA_TEXT_LIMITS), ah(async (req, res) => {
-  const b = req.body ?? {}
+  const b = req.body
   try {
     let asset = pick(b, ['title', 'kind', 'caption'])
     if (b.data_base64) {
@@ -1847,7 +1850,7 @@ app.delete('/api/media/:id', ah(async (req, res) => {
 // picker) turn a phone-gallery file into a URL we store, without creating a media
 // library record. Returns { url, filename, mime, size }.
 app.post('/api/uploads', uploadLimiter, boundedText({ filename: TEXT.LINE, mime: TEXT.LINE }), ah(async (req, res) => {
-  const b = req.body ?? {}
+  const b = req.body
   if (!b.data_base64) return res.status(400).json({ error: 'data_base64 is required' })
   try {
     res.json(saveUpload(b.data_base64, b.filename, b.mime))
@@ -1860,7 +1863,7 @@ app.post('/api/uploads', uploadLimiter, boundedText({ filename: TEXT.LINE, mime:
 // Free-text-window rules don't apply to media the same way, but Meta still requires
 // an open session for non-template media, so we enforce the 24h window here too.
 app.post('/api/media/:id/send', boundedText({ caption: TEXT.BLURB }), ah(async (req, res) => {
-  const lead = await getLeadForAgent(req.body?.lead_id, req.agent.id)
+  const lead = await getLeadForAgent(req.body.lead_id, req.agent.id)
   if (!lead) return res.status(404).json({ error: 'lead not found' })
   const asset = await getMediaAsset(Number(req.params.id), req.agent.id)
   if (!asset) return res.status(404).json({ error: 'media not found' })
@@ -1871,7 +1874,7 @@ app.post('/api/media/:id/send', boundedText({ caption: TEXT.BLURB }), ah(async (
       code: 'WINDOW_EXPIRED', service_window: win,
     })
   }
-  const caption = (req.body?.caption ?? asset.caption) || asset.title
+  const caption = (req.body.caption ?? asset.caption) || asset.title
   try {
     const waMsgId = await sendMedia(
       lead.wa_id,
@@ -1959,7 +1962,7 @@ async function deliverFestiveGreeting(agent, message, { enforceWindow = false } 
 
 // Send now, or schedule for later (send_at in the future).
 app.post('/api/templates/festive/send', boundedText({ festival: TEXT.LINE, message: TEXT.WHATSAPP }), ah(async (req, res) => {
-  const { festival, message, send_at } = req.body ?? {}
+  const { festival, message, send_at } = req.body
   const fest = getFestival(festival)
   if (!fest) return res.status(400).json({ error: 'Unknown festival' })
   const body = (message || '').trim() || fest.default_message
@@ -2036,7 +2039,7 @@ app.get('/api/groups', ah(async (req, res) => res.json(await listGroups(req.agen
 
 app.post('/api/groups', boundedText({ name: TEXT.LINE, color: TEXT.LINE, kind: TEXT.LINE }), ah(async (req, res) => {
   try {
-    const group = await createGroup(req.agent.id, pick(req.body ?? {}, ['name', 'color', 'kind', 'criteria']))
+    const group = await createGroup(req.agent.id, pick(req.body, ['name', 'color', 'kind', 'criteria']))
     res.json(group)
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: 'a group with that name exists' })
@@ -2051,7 +2054,7 @@ app.get('/api/groups/:id/members', ah(async (req, res) => {
 }))
 
 app.put('/api/groups/:id', boundedText({ name: TEXT.LINE, color: TEXT.LINE }), ah(async (req, res) => {
-  const group = await updateGroup(req.params.id, req.agent.id, pick(req.body ?? {}, ['name', 'color', 'criteria']))
+  const group = await updateGroup(req.params.id, req.agent.id, pick(req.body, ['name', 'color', 'criteria']))
   if (!group) return res.status(404).json({ error: 'not found' })
   res.json(group)
 }))
@@ -2062,7 +2065,7 @@ app.delete('/api/groups/:id', ah(async (req, res) => {
 }))
 
 app.post('/api/groups/:id/members', ah(async (req, res) => {
-  const ids = Array.isArray(req.body?.contact_ids) ? req.body.contact_ids : []
+  const ids = Array.isArray(req.body.contact_ids) ? req.body.contact_ids : []
   const added = await addGroupMembers(req.params.id, req.agent.id, ids)
   if (added === null) return res.status(400).json({ error: 'not found or not a static group' })
   res.json({ added })
@@ -2077,7 +2080,7 @@ app.delete('/api/groups/:id/members/:contactId', ah(async (req, res) => {
 // One-click auto-grouping by locality / intent / temperature.
 app.post('/api/groups/auto', ah(async (req, res) => {
   try {
-    res.json(await autoGroupContacts(req.agent.id, req.body?.by))
+    res.json(await autoGroupContacts(req.agent.id, req.body.by))
   } catch (err) {
     res.status(400).json({ error: err.message })
   }
@@ -2085,13 +2088,13 @@ app.post('/api/groups/auto', ah(async (req, res) => {
 
 // Preview a dynamic segment without saving it.
 app.post('/api/segments/preview', ah(async (req, res) =>
-  res.json(await resolveSegment(req.agent.id, req.body?.criteria || {})),
+  res.json(await resolveSegment(req.agent.id, req.body.criteria || {})),
 ))
 
 // Targeted bulk send to a group, every recipient gated by the send limiter — one
 // relevant template instead of a blast, which is what keeps the quality rating green.
 app.post('/api/groups/:id/send', boundedText({ message: TEXT.WHATSAPP }), ah(async (req, res) => {
-  const message = (req.body?.message || '').trim()
+  const message = (req.body.message || '').trim()
   if (!message) return res.status(400).json({ error: 'message is required' })
   const recipients = await groupMembers(req.params.id, req.agent.id)
   if (recipients === null) return res.status(404).json({ error: 'group not found' })
@@ -2115,7 +2118,7 @@ app.post('/api/leads/quick-add', boundedText({
   phone: TEXT.LINE, name: TEXT.LINE, channel: TEXT.LINE,
   message: TEXT.WHATSAPP, open_message: TEXT.WHATSAPP,
 }), ah(async (req, res) => {
-  const { phone, name, tags, channel = 'walk_in', message, open_message } = req.body ?? {}
+  const { phone, name, tags, channel = 'walk_in', message, open_message } = req.body
   if (!phone) return res.status(400).json({ error: 'phone required' })
   if (!['walk_in', 'phone'].includes(channel)) return res.status(400).json({ error: 'invalid channel' })
   const tagList = Array.isArray(tags) ? tags.filter((t) => typeof t === 'string').slice(0, 12) : []
@@ -2162,7 +2165,7 @@ app.post('/api/lead-sources/regenerate', ah(async (req, res) => {
 // another workspace's form id at themselves and quietly receive that workspace's
 // Meta Lead Ads leads. Re-claiming a form you already own stays idempotent.
 app.post('/api/lead-sources/leadgen-form', ah(async (req, res) => {
-  const formId = String(req.body?.form_id || '').trim()
+  const formId = String(req.body.form_id || '').trim()
   if (!formId) return res.status(400).json({ error: 'form_id required' })
   if (formId.length > 100 || !/^[\w.:-]+$/.test(formId)) {
     return res.status(400).json({ error: 'form_id must be a plain Meta form identifier' })
@@ -2185,7 +2188,7 @@ app.get('/api/portal-integrations', ah(async (req, res) =>
 
 app.put('/api/portal-integrations/:portal', boundedText({ api_key: TEXT.LINE, api_secret: TEXT.LINE }), ah(async (req, res) => {
   if (!SYNDICATION_PORTALS.includes(req.params.portal)) return res.status(400).json({ error: 'unknown portal' })
-  const fields = pick(req.body ?? {}, ['enabled', 'api_key', 'api_secret', 'config'])
+  const fields = pick(req.body, ['enabled', 'api_key', 'api_secret', 'config'])
   const row = await upsertPortalIntegration(req.agent.id, req.params.portal, fields)
   res.json(row)
 }))
@@ -2203,7 +2206,7 @@ app.get('/api/properties/:id/syndications', ah(async (req, res) => {
 app.post('/api/properties/:id/syndicate', ah(async (req, res) => {
   const property = await getProperty(req.params.id, req.agent.id)
   if (!property) return res.status(404).json({ error: 'not found' })
-  const portal = req.body?.portal
+  const portal = req.body.portal
   if (!SYNDICATION_PORTALS.includes(portal)) return res.status(400).json({ error: 'unknown portal' })
   const row = await syndicateProperty(req.agent, property, portal)
   await logActivity(req.agent.id, null, 'agent', `Exported "${property.title}" to ${portal}`)
@@ -2220,7 +2223,7 @@ app.post('/api/support/tickets', boundedText({
   subject: TEXT.LINE, body: TEXT.PROSE, category: TEXT.LINE, priority: TEXT.LINE,
 }), ah(async (req, res) => {
   try {
-    const ticket = await createTicket(req.agent.id, pick(req.body ?? {}, ['subject', 'body', 'category', 'priority']))
+    const ticket = await createTicket(req.agent.id, pick(req.body, ['subject', 'body', 'category', 'priority']))
     res.json(ticket)
   } catch (err) {
     // createTicket reports both missing-field validation and bad column values the
@@ -2239,7 +2242,7 @@ app.post('/api/support/tickets/:id/reply', boundedText({ body: TEXT.PROSE }), ah
   try {
     const msg = await addTicketMessage(
       Number(req.params.id),
-      { authorAgentId: req.agent.id, isStaff: false, body: req.body?.body },
+      { authorAgentId: req.agent.id, isStaff: false, body: req.body.body },
       { agentId: req.agent.id },
     )
     res.json(msg)
@@ -2285,7 +2288,7 @@ validateIdParams(adminRouter)
 app.post('/api/simulate', boundedText({
   from: TEXT.LINE, name: TEXT.LINE, source: TEXT.LINE, text: TEXT.WHATSAPP,
 }), ah(async (req, res) => {
-  const { from = 'test-' + Date.now(), name = 'Test Buyer', text, source = 'Test', wa_message_id = null } = req.body ?? {}
+  const { from = 'test-' + Date.now(), name = 'Test Buyer', text, source = 'Test', wa_message_id = null } = req.body
   if (!text) return res.status(400).json({ error: 'text required' })
   const result = await handleInbound({
     agentId: req.agent.id,

@@ -96,7 +96,7 @@ router.get('/', ah(async (req, res) => {
 // POST /api/team — create a team; the caller becomes owner.
 router.post('/', ah(async (req, res) => {
   try {
-    const team = await createTeam(req.agent.id, req.body?.name)
+    const team = await createTeam(req.agent.id, req.body.name)
     await logAudit(req.agent.id, 'team', team.id, 'team_created', { name: team.name })
     res.json(team)
   } catch (err) {
@@ -106,7 +106,7 @@ router.post('/', ah(async (req, res) => {
 
 // PUT /api/team — owner edits name / assignment strategy / shared line.
 router.put('/', requireOwner, boundedText({ assignment_strategy: TEXT.LINE, shared_wa_phone_number_id: TEXT.LINE }), ah(async (req, res) => {
-  const { name, assignment_strategy, shared_wa_phone_number_id } = req.body ?? {}
+  const { name, assignment_strategy, shared_wa_phone_number_id } = req.body
   const fields = {}
   if (name !== undefined) fields.name = name
   if (assignment_strategy !== undefined) {
@@ -139,7 +139,7 @@ router.get('/members', requireMember, ah(async (req, res) => res.json(await list
 // PUT /api/team/members/:agentId/role — owner changes a member's role.
 router.put('/members/:agentId/role', requireOwner, boundedText({ role: TEXT.LINE }), ah(async (req, res) => {
   try {
-    const member = await setMemberRole(req.team.id, Number(req.params.agentId), req.body?.role)
+    const member = await setMemberRole(req.team.id, Number(req.params.agentId), req.body.role)
     await logAudit(req.agent.id, 'team', req.team.id, 'member_role_changed', {
       agent_id: Number(req.params.agentId),
       role: member.role,
@@ -154,8 +154,8 @@ router.put('/members/:agentId/role', requireOwner, boundedText({ role: TEXT.LINE
 // whether they receive auto-assigned leads.
 router.put('/members/:agentId', requireManager, ah(async (req, res) => {
   const fields = {}
-  if (req.body?.localities !== undefined) fields.localities = req.body.localities
-  if (req.body?.accepts_leads !== undefined) fields.accepts_leads = req.body.accepts_leads
+  if (req.body.localities !== undefined) fields.localities = req.body.localities
+  if (req.body.accepts_leads !== undefined) fields.accepts_leads = req.body.accepts_leads
   try {
     res.json(await updateMember(req.team.id, Number(req.params.agentId), fields))
   } catch (err) {
@@ -185,8 +185,8 @@ router.delete('/members/:agentId', requireMember, ah(async (req, res) => {
 router.post('/invites', requireManager, boundedText({ phone: TEXT.LINE, role: TEXT.LINE }), ah(async (req, res) => {
   try {
     const invite = await inviteToTeam(req.team.id, req.agent.id, {
-      phone: req.body?.phone,
-      role: req.body?.role || 'agent',
+      phone: req.body.phone,
+      role: req.body.role || 'agent',
     })
     await logAudit(req.agent.id, 'team', req.team.id, 'member_invited', { phone: invite.phone, role: invite.role })
     res.json(invite)
@@ -256,7 +256,7 @@ router.get('/stale', requireManager, ah(async (req, res) =>
 
 // Manual assign / reassign a team lead to a member.
 router.post('/leads/:id/assign', requireManager, ah(async (req, res) => {
-  const targetId = Number(req.body?.agent_id)
+  const targetId = Number(req.body.agent_id)
   if (!targetId) return res.status(400).json({ error: 'agent_id is required' })
   try {
     const lead = await assignTeamLead(req.team.id, Number(req.params.id), targetId)

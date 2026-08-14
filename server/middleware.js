@@ -186,6 +186,32 @@ export function validateIdParams(target, names = ID_PARAMS) {
   return target
 }
 
+// --- Request body ----------------------------------------------------------
+// One guarantee, made once: past this point req.body is a plain object.
+//
+// Ninety route handlers were each making that guarantee for themselves, as
+// `req.body ?? {}` or `req.body?.field`, and none of them were ever exercised.
+// body-parser 1.x assigns `req.body = req.body || {}` before it decides whether
+// there is anything to parse, so under Express 4 a bodiless POST already arrives as
+// `{}` — the fallbacks were reassurance, not defence, and reassurance repeated
+// ninety times reads like a hazard that is actually there.
+//
+// It is worth keeping as a real middleware rather than deleting outright, because
+// the guarantee is body-parser's and not ours. Express 5 ships body-parser 2, which
+// drops that line and leaves req.body undefined; the version that made ninety
+// fallbacks unnecessary is the version an upgrade would take away. Stating it here
+// means the upgrade changes one line instead of reintroducing ninety.
+//
+// It also closes the case the fallbacks never covered. `express.json()` in strict
+// mode accepts a top-level array, so `[1,2,3]` reaches a handler as an array, and
+// `req.body ?? {}` passes it straight through — every field then reads as undefined
+// and the route answers some incidental complaint. An array is not a body: it
+// becomes an empty one, and the route's own required-field check says so plainly.
+export function ensureBody(req, _res, next) {
+  if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) req.body = {}
+  next()
+}
+
 // --- Bounded text fields ---------------------------------------------------
 // Nearly every text column in the schema is an unbounded Postgres TEXT, which is
 // the right choice for storage and no answer at all for input. Until this, the only

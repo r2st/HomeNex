@@ -94,7 +94,7 @@ router.get('/agents/:id', ah(async (req, res) => {
 // An is_admin change goes through setAgentAdmin() so this route can't be used to
 // bypass the self-demote / last-admin guards enforced on /agents/:id/admin.
 router.put('/agents/:id', boundedText({ name: TEXT.LINE, email: TEXT.LINE, phone: TEXT.LINE }), ah(async (req, res) => {
-  const { name, email, phone, is_admin } = req.body ?? {}
+  const { name, email, phone, is_admin } = req.body
   const id = Number(req.params.id)
   try {
     if (is_admin !== undefined) await setAgentAdmin(req.agent.id, id, Boolean(is_admin))
@@ -108,7 +108,7 @@ router.put('/agents/:id', boundedText({ name: TEXT.LINE, email: TEXT.LINE, phone
 
 // PUT /api/admin/agents/:id/admin — grant or revoke admin access.
 router.put('/agents/:id/admin', ah(async (req, res) => {
-  const { is_admin } = req.body ?? {}
+  const { is_admin } = req.body
   if (typeof is_admin !== 'boolean') return res.status(400).json({ error: 'is_admin must be true or false' })
   try {
     const agent = await setAgentAdmin(req.agent.id, Number(req.params.id), is_admin)
@@ -123,7 +123,7 @@ router.put('/agents/:id/admin', ah(async (req, res) => {
 
 // PUT /api/admin/agents/:id/active — suspend or restore an agent's access.
 router.put('/agents/:id/active', ah(async (req, res) => {
-  const { is_active } = req.body ?? {}
+  const { is_active } = req.body
   if (typeof is_active !== 'boolean') return res.status(400).json({ error: 'is_active must be true or false' })
   try {
     const agent = await setAgentActive(req.agent.id, Number(req.params.id), is_active)
@@ -140,7 +140,7 @@ router.put('/agents/:id/active', ah(async (req, res) => {
 router.put('/agents/:id/waba', boundedText({
   status: TEXT.LINE, meta_waba_id: TEXT.LINE, wa_phone_number_id: TEXT.LINE, wa_phone_number: TEXT.LINE,
 }), ah(async (req, res) => {
-  const { status, meta_waba_id, wa_phone_number_id, wa_phone_number } = req.body ?? {}
+  const { status, meta_waba_id, wa_phone_number_id, wa_phone_number } = req.body
   if (!status) return res.status(400).json({ error: 'status is required' })
   if (!(await getAgent(Number(req.params.id)))) return res.status(404).json({ error: 'Agent not found' })
   try {
@@ -171,8 +171,8 @@ router.get('/onboarding', ah(async (_req, res) => res.json(await onboardingQueue
 router.put('/agents/:id/kyc', boundedText({ status: TEXT.LINE, note: TEXT.PROSE }), ah(async (req, res) => {
   try {
     const result = await setAgentKyc(req.agent.id, Number(req.params.id), {
-      status: req.body?.status,
-      note: req.body?.note,
+      status: req.body.status,
+      note: req.body.note,
     })
     await logAudit(req.agent.id, 'agent', Number(req.params.id), 'kyc_reviewed', { status: result.kyc_status })
     res.json(result)
@@ -183,7 +183,7 @@ router.put('/agents/:id/kyc', boundedText({ status: TEXT.LINE, note: TEXT.PROSE 
 
 router.put('/agents/:id/rera-verify', ah(async (req, res) => {
   try {
-    const result = await setAgentReraVerified(Number(req.params.id), Boolean(req.body?.verified))
+    const result = await setAgentReraVerified(Number(req.params.id), Boolean(req.body.verified))
     await logAudit(req.agent.id, 'agent', Number(req.params.id), 'rera_verified', { verified: result.rera_verified })
     res.json(result)
   } catch (err) {
@@ -212,8 +212,8 @@ router.get('/templates/pending', ah(async (_req, res) => res.json(await pendingR
 router.put('/templates/:id/review', boundedText({ action: TEXT.LINE, note: TEXT.PROSE }), ah(async (req, res) => {
   try {
     const tpl = await reviewTemplate(req.agent.id, Number(req.params.id), {
-      action: req.body?.action,
-      note: req.body?.note,
+      action: req.body.action,
+      note: req.body.note,
     })
     await logAudit(req.agent.id, 'template', tpl.id, `template_${tpl.review_status}`, { name: tpl.name })
     res.json(tpl)
@@ -230,14 +230,14 @@ router.get('/plans', ah(async (_req, res) => res.json(await listPlans())))
 
 router.post('/plans', ah(async (req, res) => {
   try {
-    res.json(await createPlan(req.body ?? {}))
+    res.json(await createPlan(req.body))
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: 'A plan with that code exists' })
     portalErr(res, err)
   }
 }))
 
-router.put('/plans/:id', ah(async (req, res) => res.json(await updatePlan(Number(req.params.id), req.body ?? {}))))
+router.put('/plans/:id', ah(async (req, res) => res.json(await updatePlan(Number(req.params.id), req.body))))
 
 router.get('/agents/:id/billing', ah(async (req, res) => {
   if (!(await getAgent(Number(req.params.id)))) return res.status(404).json({ error: 'Agent not found' })
@@ -246,7 +246,7 @@ router.get('/agents/:id/billing', ah(async (req, res) => {
 
 router.put('/agents/:id/subscription', ah(async (req, res) => {
   try {
-    const sub = await setSubscription(Number(req.params.id), Number(req.body?.plan_id), req.body?.status || 'active')
+    const sub = await setSubscription(Number(req.params.id), Number(req.body.plan_id), req.body.status || 'active')
     await logAudit(req.agent.id, 'agent', Number(req.params.id), 'subscription_set', { plan_id: sub.plan_id })
     res.json(sub)
   } catch (err) {
@@ -258,9 +258,9 @@ router.post('/agents/:id/invoices', boundedText({ note: TEXT.PROSE }), ah(async 
   if (!(await getAgent(Number(req.params.id)))) return res.status(404).json({ error: 'Agent not found' })
   try {
     const invoice = await generateInvoice(Number(req.params.id), {
-      periodStart: req.body?.period_start,
-      periodEnd: req.body?.period_end,
-      note: req.body?.note,
+      periodStart: req.body.period_start,
+      periodEnd: req.body.period_end,
+      note: req.body.note,
     })
     await logAudit(req.agent.id, 'invoice', invoice.id, 'invoice_generated', { number: invoice.number })
     res.json(invoice)
@@ -277,7 +277,7 @@ router.get('/invoices/:id', ah(async (req, res) => {
 
 router.put('/invoices/:id/status', boundedText({ status: TEXT.LINE }), ah(async (req, res) => {
   try {
-    const invoice = await setInvoiceStatus(Number(req.params.id), req.body?.status)
+    const invoice = await setInvoiceStatus(Number(req.params.id), req.body.status)
     await logAudit(req.agent.id, 'invoice', invoice.id, 'invoice_status', { status: invoice.status })
     res.json(invoice)
   } catch (err) {
@@ -304,7 +304,7 @@ router.post('/tickets/:id/reply', boundedText({ body: TEXT.PROSE }), ah(async (r
     const msg = await addTicketMessage(Number(req.params.id), {
       authorAgentId: req.agent.id,
       isStaff: true,
-      body: req.body?.body,
+      body: req.body.body,
     })
     res.json(msg)
   } catch (err) {
@@ -315,9 +315,9 @@ router.post('/tickets/:id/reply', boundedText({ body: TEXT.PROSE }), ah(async (r
 router.put('/tickets/:id', ah(async (req, res) => {
   try {
     const ticket = await updateTicket(Number(req.params.id), {
-      status: req.body?.status,
-      priority: req.body?.priority,
-      assigned_to: req.body?.assigned_to,
+      status: req.body.status,
+      priority: req.body.priority,
+      assigned_to: req.body.assigned_to,
     })
     res.json(ticket)
   } catch (err) {

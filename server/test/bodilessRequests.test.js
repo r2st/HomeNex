@@ -1,11 +1,13 @@
-// Every write route reads its payload as `req.body ?? {}`. That fallback only runs
-// when body-parser left req.body undefined, which is what a request with no JSON
-// content-type produces — a stripped proxy, a hand-rolled curl, a fetch() that forgot
-// its headers. The route must answer with a 4xx it chose, never a 500 from
-// destructuring undefined.
+// Every write route reads its payload straight off req.body, on the strength of one
+// middleware: ensureBody guarantees an object is there. The requests that test that
+// guarantee are the ones nobody sends on purpose — a stripped proxy, a hand-rolled
+// curl, a fetch() that forgot its content-type, a client that posted a bare JSON
+// array. Each must draw a 4xx the route chose, never a 500 from reading a field off
+// something that isn't an object.
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { createTestDb, dropTestDb } from './helpers.js'
+import { ensureBody } from '../middleware.js'
 
 process.env.NODE_ENV = 'test'
 delete process.env.OPENROUTER_API_KEY
@@ -21,6 +23,15 @@ let server, base, token, agent
 // A request carrying an auth header and nothing else — no content-type, no body.
 const bare = (method, url, tok = token) =>
   fetch(base + url, { method, headers: tok ? { authorization: `Bearer ${tok}` } : {} })
+
+// Well-formed JSON that is not an object: the shape express.json() accepts in strict
+// mode and no handler expects.
+const sendJson = (method, url, payload, tok = token) =>
+  fetch(base + url, {
+    method,
+    headers: { 'content-type': 'application/json', ...(tok ? { authorization: `Bearer ${tok}` } : {}) },
+    body: JSON.stringify(payload),
+  })
 
 before(async () => {
   await new Promise((resolve) => {
@@ -137,4 +148,48 @@ test('a bodiless write from an anonymous caller is still a 401', async () => {
     const res = await bare(method, url, null)
     assert.equal(res.status, 401, `${method} ${url}`)
   }
+})
+
+// --- ensureBody, the one place the guarantee is made -------------------------
+
+test('ensureBody hands the handler an object whatever the parser left behind', () => {
+  const run = (body) => {
+    const req = { body }
+    let called = false
+    ensureBody(req, null, () => {
+      called = true
+    })
+    assert.ok(called, 'the middleware has to call next() on every path')
+    return req.body
+  }
+
+  // The absent body, which is what Express 5's parser will start producing.
+  assert.deepEqual(run(undefined), {})
+  assert.deepEqual(run(null), {})
+  // Well-formed JSON that isn't an object. An array is the only one express.json()
+  // accepts in strict mode; the scalars arrive from a parser configured otherwise.
+  assert.deepEqual(run([1, 2, 3]), {})
+  assert.deepEqual(run('a string'), {})
+  assert.deepEqual(run(7), {})
+
+  // A real body is passed through untouched — the same object, not a copy, so
+  // nothing that already ran against req.body is looking at a stale one.
+  const real = { name: 'Meera', nested: { keep: true } }
+  assert.equal(run(real), real)
+  // Including the empty object the parser supplies for a bodiless request.
+  const empty = {}
+  assert.equal(run(empty), empty)
+})
+
+test('a bare JSON array is treated as an empty body, not as fields', async () => {
+  // Before ensureBody this reached the handler as an array: every field read as
+  // undefined and the route answered whichever complaint happened to come first.
+  // Now it is an empty body, and the route says what it actually wanted.
+  const res = await sendJson('POST', '/api/followups', [{ lead_id: 1 }])
+  assert.equal(res.status, 400)
+  assert.match((await res.json()).error, /lead_id/)
+
+  // And it does not become a way to skip a required field on the way in.
+  const property = await sendJson('POST', '/api/properties', ['Sea View Towers'])
+  assert.ok(property.status >= 400 && property.status < 500, `expected a 4xx, got ${property.status}`)
 })
