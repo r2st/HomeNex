@@ -34,6 +34,29 @@ test('longer Hinglish with several markers is hinglish, not english', () => {
   assert.equal(d.language, 'hinglish')
 })
 
+test('a two-word message with one marker is hinglish on the ratio alone', () => {
+  // The short-message case is decided by the ratio arm, not by a separate rule for
+  // short messages: one marker in two words is a ratio of 0.5, well over the bar.
+  // There used to be a `hits === 1 && tokens.length <= 5` arm below it carrying this
+  // exact example, which no message could ever reach — escaping the ratio bar with a
+  // single marker takes MORE than five words, so the two conditions excluded each
+  // other. Its confidence (0.55) was lower than what the ratio arm gives, so if it
+  // had ever run it would have quietly under-rated the clearest signal we get.
+  const d = detectLanguage('2bhk chahiye')
+  assert.equal(d.language, 'hinglish')
+  assert.equal(d.markerHits, 1)
+  assert.equal(d.confidence, 1, 'one marker in two words is as confident as this gets')
+})
+
+test('one borrowed word in an English sentence stays english', () => {
+  // The other side of that bar. A single marker diluted across a longer English
+  // sentence is someone writing English, and replying to them in Hinglish because of
+  // one word would be worse than not detecting it at all.
+  const d = detectLanguage('I want a flat near the park chahiye by December please')
+  assert.equal(d.language, 'english')
+  assert.equal(d.markerHits, 1)
+})
+
 test('bhai/yaar flips the register to informal', () => {
   const d = detectLanguage('arre bhai jaldi options bhejo na')
   assert.equal(d.language, 'hinglish')

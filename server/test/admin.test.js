@@ -256,6 +256,60 @@ test('admin can grant and revoke admin rights', async () => {
   assert.equal((await req('GET', '/api/admin/dashboard', undefined, userToken)).status, 403)
 })
 
+test('the profile-edit route cannot be used to slip past the admin guards', async () => {
+  // is_admin is split off to setAgentAdmin instead of being written with the rest of
+  // the profile, so that the two invariants apply on this route as well as on
+  // /agents/:id/admin. They are what stop an install locking itself out of its own
+  // admin screens — recovering from that needs a hand-written UPDATE against
+  // production.
+  //
+  // updateAgentProfile used to accept an is_admin field of its own and write it with
+  // a bare UPDATE past both guards. Nothing passed it, so nothing was broken; it was
+  // a loaded gun left where the next caller would reach for it. This is the assertion
+  // that keeps it unloaded.
+  const before = await (await req('GET', `/api/admin/agents/${adminAgent.id}`)).json()
+  assert.equal(before.is_admin, 1)
+
+  // Self-demotion, refused — and refused even when smuggled in beside a legitimate
+  // profile change, which is the shape that would actually get written by accident.
+  const selfDemote = await req('PUT', `/api/admin/agents/${adminAgent.id}`, {
+    name: 'Renamed Admin',
+    is_admin: false,
+  })
+  assert.equal(selfDemote.status, 409, 'a refused demotion is a conflict, not a malformed request')
+  assert.match((await selfDemote.json()).error, /cannot remove your own admin access/i)
+
+  const after = await (await req('GET', `/api/admin/agents/${adminAgent.id}`)).json()
+  assert.equal(after.is_admin, 1, 'the admin demoted themselves through the profile route')
+  // The rejection is atomic: the name change rode along with the refused demotion and
+  // must not have landed either.
+  assert.notEqual(after.name, 'Renamed Admin', 'a refused edit half-applied')
+})
+
+test('demoting a DIFFERENT admin through the profile route is allowed, and leaves one standing', async () => {
+  // The other side of the guard, and the reason self-demotion is the rule that does
+  // the work here: the caller of this route is always an active admin, so they are
+  // always one of the admins being counted. "Demote someone else" therefore always
+  // leaves at least this caller, and "demote yourself" is the only move that could
+  // empty the set — which is exactly the one refused above. The last-admin count in
+  // setAgentAdmin backstops callers that aren't this route.
+  await req('PUT', `/api/admin/agents/${plainAgent.id}`, { is_admin: true })
+
+  const demoteOther = await req('PUT', `/api/admin/agents/${adminAgent.id}`, { is_admin: false }, userToken)
+  assert.equal(demoteOther.status, 200, 'an admin must be able to demote a colleague')
+  assert.equal((await demoteOther.json()).is_admin, 0)
+
+  // The install still has a way in — the agent who did the demoting.
+  assert.equal((await req('GET', '/api/admin/dashboard', undefined, userToken)).status, 200)
+  // And the demoted one is genuinely locked out now.
+  assert.equal((await req('GET', '/api/admin/dashboard', undefined, adminToken)).status, 403)
+
+  // Put the fixtures back the way the rest of the file expects them.
+  await setAdmin(adminAgent.id, true)
+  await setAdmin(plainAgent.id, false)
+  assert.equal((await req('GET', '/api/admin/dashboard')).status, 200)
+})
+
 // === PUT /api/admin/agents/:id/waba ===
 
 test('WABA workflow: pending -> registered with Meta IDs -> active', async () => {

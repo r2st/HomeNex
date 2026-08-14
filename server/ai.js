@@ -313,6 +313,20 @@ export async function extractLead(messages) {
       : null
     if (x.preferred_localities && !x.preferred_localities.length) x.preferred_localities = null
   }
+  // The budgets are the only extracted numbers that reach a column unscaled, and they
+  // reach two: the legacy lakhs pair and, multiplied by 1e7, the paise pair. So a
+  // model that reads "80 lakhs" as 80000000000 writes a number past BIGINT and the
+  // UPDATE fails — not just for the budget, but for the whole extraction, because it
+  // is one statement. The buyer's name, temperature, locality and score all go with
+  // it, and the lead card stays blank with nothing on screen to say why.
+  //
+  // A crore is 100 lakhs, so the cap is ₹1 lakh crore: past any deal an Indian broker
+  // will book, and far enough inside BIGINT that the paise conversion cannot overflow.
+  for (const field of ['budget_min_l', 'budget_max_l']) {
+    if (x[field] == null) continue
+    const n = Number(x[field])
+    x[field] = Number.isFinite(n) && n >= 0 && n <= 1e6 ? n : null
+  }
   return x
 }
 

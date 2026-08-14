@@ -176,6 +176,49 @@ test('extractLead clamps and rejects values the columns would refuse', async () 
   assert.deepEqual(x.preferred_localities, ['Wakad', 'Baner'])
 })
 
+test('extractLead drops a budget too large for the column instead of losing the whole extraction', async () => {
+  // The budgets are the only extracted numbers that land in a column unscaled — and
+  // they land in two, because budget_max_l is also multiplied by 1e7 into paise. A
+  // model that renders "80 lakhs" as 80000000000 therefore writes past BIGINT, and
+  // applyExtraction is a single UPDATE: the name, the temperature, the locality and
+  // the score are all discarded along with the bad number, leaving the agent a blank
+  // lead card and no clue why.
+  mockFetch([reply(JSON.stringify({
+    name: 'Bhavesh', temp: 'Hot', locality: 'Wakad', score: 88, budget_max_l: 1e12,
+  }))])
+  const x = await extractLead(thread)
+  assert.equal(x.budget_max_l, null, 'an impossible budget must be dropped, not passed through')
+  // Everything the model got RIGHT still survives — that is the point.
+  assert.equal(x.name, 'Bhavesh')
+  assert.equal(x.temp, 'Hot')
+  assert.equal(x.locality, 'Wakad')
+  assert.equal(x.score, 88)
+})
+
+test('extractLead keeps budgets a broker could actually book, and rejects nonsense', async () => {
+  mockFetch([reply(JSON.stringify({ budget_min_l: 60, budget_max_l: 80 }))])
+  const ok = await extractLead(thread)
+  assert.equal(ok.budget_min_l, 60)
+  assert.equal(ok.budget_max_l, 80)
+
+  // ₹1 lakh crore is the cap: past any real deal, and inside what the paise column
+  // can hold once multiplied out. The boundary itself is accepted.
+  mockFetch([reply(JSON.stringify({ budget_max_l: 1e6 }))])
+  assert.equal((await extractLead(thread)).budget_max_l, 1e6)
+  mockFetch([reply(JSON.stringify({ budget_max_l: 1e6 + 1 }))])
+  assert.equal((await extractLead(thread)).budget_max_l, null)
+
+  // A negative budget, a string, and a non-number all read as "the model didn't know".
+  mockFetch([reply(JSON.stringify({ budget_min_l: -5 }))])
+  assert.equal((await extractLead(thread)).budget_min_l, null)
+  mockFetch([reply(JSON.stringify({ budget_max_l: 'eighty lakhs' }))])
+  assert.equal((await extractLead(thread)).budget_max_l, null)
+
+  // A numeric string is still a number the model meant — keep it.
+  mockFetch([reply(JSON.stringify({ budget_max_l: '80' }))])
+  assert.equal((await extractLead(thread)).budget_max_l, 80)
+})
+
 test('extractLead floors a negative score rather than storing it', async () => {
   mockFetch([reply(JSON.stringify({ score: -20 }))])
   assert.equal((await extractLead(thread)).score, 0)

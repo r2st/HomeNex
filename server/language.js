@@ -104,12 +104,12 @@ export function detectLanguage(text) {
   const ratio = tokens.length ? hits / tokens.length : 0
 
   // A couple of markers, or a meaningful fraction, means the buyer is code-mixing.
+  // The ratio arm is what catches the short ones: "2bhk chahiye" is one marker in two
+  // words, so it is already 0.5 here. A single marker that does NOT clear the ratio
+  // bar is, by arithmetic, a marker in more than five words — an English sentence
+  // with one borrowed word in it, which is English.
   if (hits >= 2 || ratio >= 0.2) {
     return { language: 'hinglish', script: 'latin', register, confidence: Math.min(1, 0.5 + ratio), markerHits: hits }
-  }
-  if (hits === 1 && tokens.length <= 5) {
-    // Short message with one strong marker ("2bhk chahiye") — still Hinglish.
-    return { language: 'hinglish', script: 'latin', register, confidence: 0.55, markerHits: hits }
   }
   return { language: 'english', script: 'latin', register, confidence: Math.min(1, 0.6 + (1 - ratio) / 3), markerHits: hits }
 }

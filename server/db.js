@@ -1021,7 +1021,16 @@ export async function getAgentDetail(id) {
 }
 
 // Admin edit of an agent's profile. Only provided fields are changed.
-export async function updateAgentProfile(agentId, { name, email, phone, is_admin } = {}) {
+//
+// Deliberately cannot touch is_admin. Granting and revoking admin is setAgentAdmin's
+// job, because that is where the two invariants live: nobody may demote themselves,
+// and the last active admin may never be demoted — either one locks the install out
+// of its own admin screens with no way back in. This function used to accept an
+// is_admin field and write it with a bare UPDATE, past both guards. Nothing ever
+// passed it (PUT /api/admin/agents/:id splits the field off to setAgentAdmin for
+// exactly this reason), so it was a trap rather than a bug: the next caller to pass
+// the field the signature advertised would have silently bypassed both.
+export async function updateAgentProfile(agentId, { name, email, phone } = {}) {
   const agent = await getAgent(agentId)
   if (!agent) {
     const err = new Error('Agent not found')
@@ -1061,10 +1070,6 @@ export async function updateAgentProfile(agentId, { name, email, phone, is_admin
     }
     params.push(pn)
     updates.push(`phone = $${params.length}`)
-  }
-  if (is_admin !== undefined) {
-    params.push(is_admin ? 1 : 0)
-    updates.push(`is_admin = $${params.length}`)
   }
   if (!updates.length) return agent
   params.push(agentId)
