@@ -66,6 +66,31 @@ npm run build && npm run server
 Missing credentials fail loudly: the dashboard shows a setup banner, sends return errors,
 and AI replies are skipped. Nothing is faked.
 
+#### Production settings
+
+`SESSION_SECRET` is **fatal** under `NODE_ENV=production` — the server refuses to start
+without it, because the fallback is regenerated on every restart and would log every agent
+out on each deploy. The rest have working defaults; `server/.env.example` carries the full
+commentary on each.
+
+| Var | Purpose |
+| --- | --- |
+| `SESSION_SECRET` | Signs session tokens. ≥16 chars — `openssl rand -hex 32`. **Required in production.** |
+| `PUBLIC_BASE_URL` | Public origin, used to build absolute media links (WhatsApp fetches those URLs itself) |
+| `CORS_ORIGIN` | Comma-separated allowlist, or `*`. Off by default — the dashboard is served same-origin |
+| `HSTS_MAX_AGE` | HSTS lifetime in seconds, sent only over TLS. Defaults to `31536000`; `0` disables |
+| `PG_POOL_SIZE` | Postgres pool size. This box shares its PostgreSQL with the other services on it |
+| `AUTH_RATE_LIMIT` / `UPLOAD_RATE_LIMIT` | Per-minute ceilings (default 20 per IP, 60 per agent) |
+| `LOG_REQUESTS` | `0` silences the access log |
+| `STATS_CACHE_MS` | `/api/stats` counter cache; `0` disables |
+
+`GET /healthz` is the load-balancer probe: no auth, no outbound calls, `200` while it can
+reach PostgreSQL and `503` when it cannot, so an orchestrator can pull the node out of
+rotation rather than keep sending it traffic. (Richer WhatsApp/AI status lives behind auth
+on `/api/health`.) `SIGTERM`/`SIGINT` shut the process down gracefully — background jobs
+stopped, listener closed, pool drained — with a 10-second force-exit backstop so a hung
+connection can never block a deploy.
+
 ### Go live with Meta
 
 1. Host the server on a public HTTPS URL (VPS + reverse proxy, or a tunnel while testing:

@@ -3,6 +3,7 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import express from 'express'
+import { readFileSync } from 'node:fs'
 import { createTestDb, dropTestDb } from './helpers.js'
 import { validateEnv } from '../env.js'
 import { securityHeaders, cors, rateLimit, clientIp } from '../middleware.js'
@@ -78,6 +79,32 @@ test('validateEnv: rejects the local dev DB fallback and a too-short secret in p
 test('validateEnv: PG_POOL_SIZE must be a positive number', () => {
   assert.equal(validateEnv({ NODE_ENV: 'development', PG_POOL_SIZE: 'abc' }).ok, false)
   assert.equal(validateEnv({ NODE_ENV: 'development', PG_POOL_SIZE: '5' }).ok, true)
+})
+
+test('every setting that is fatal in production is written down in .env.example', () => {
+  // The failure this prevents is a first deploy, not a regression: SESSION_SECRET was
+  // fatal in production for as long as validateEnv has existed and appeared in no
+  // example file, so the documented way to configure this server — copy .env.example
+  // and fill it in — produced a server that refused to boot, with the reason visible
+  // only in the crash. Any future fatal setting has the same trap waiting for it.
+  const example = readFileSync(new URL('../.env.example', import.meta.url), 'utf8')
+  const documented = new Set(
+    example
+      .split('\n')
+      .map((l) => /^#?\s*([A-Z_0-9]+)\s*=/.exec(l.trim())?.[1])
+      .filter(Boolean),
+  )
+
+  // Drive validateEnv with an otherwise-empty production environment and read the
+  // required names back out of its own complaints, rather than restating a list here
+  // that would drift from the one that actually stops the process.
+  const { errors } = validateEnv({ NODE_ENV: 'production' })
+  const fatal = [...new Set(errors.flatMap((e) => [...e.matchAll(/\b([A-Z][A-Z_0-9]{3,})\b/g)].map((m) => m[1])))]
+
+  assert.ok(fatal.length, 'validateEnv named nothing fatal — this test would pass vacuously')
+  for (const name of fatal) {
+    assert.ok(documented.has(name), `${name} stops production from starting but is not in server/.env.example`)
+  }
 })
 
 // --- rate limiter (unit, on a throwaway app since it's disabled in the real app under test) ---

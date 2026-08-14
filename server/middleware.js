@@ -7,11 +7,31 @@
 // Sensible defaults for an app served over HTTPS behind a reverse proxy. No CSP
 // here (the SPA is inlined by Vite and would need per-build nonces); the cheap,
 // always-safe headers are set on every response.
-export function securityHeaders(_req, res, next) {
+//
+// HSTS is the one that cannot be unconditional. It is a promise with a memory: a
+// browser that sees it refuses plain HTTP to this host for max-age seconds, and
+// nothing the server later sends can shorten that — only waiting it out can. So it
+// is sent only on a request that actually arrived over TLS. Express resolves
+// req.secure from X-Forwarded-Proto once `trust proxy` is set (index.js sets it),
+// which is how a request through the box's Caddy container is recognised; a plain
+// HTTP request in dev is not, and gets nothing.
+//
+// Caddy does not add this itself (v2 dropped v1's automatic HSTS), so without this
+// line homenex.aiknol.com ships no HSTS at all.
+//
+// No `preload`. That flag is a submission to a list baked into browser binaries,
+// it is effectively irreversible on a release timescale, and it would commit every
+// sibling on aiknol.com — a decision for the estate, not for this service.
+const HSTS_MAX_AGE = Number(process.env.HSTS_MAX_AGE) >= 0 ? Number(process.env.HSTS_MAX_AGE) : 31_536_000
+
+export function securityHeaders(req, res, next) {
   res.setHeader('X-Content-Type-Options', 'nosniff')
   res.setHeader('X-Frame-Options', 'SAMEORIGIN')
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin')
   res.setHeader('X-DNS-Prefetch-Control', 'off')
+  if (HSTS_MAX_AGE > 0 && req?.secure) {
+    res.setHeader('Strict-Transport-Security', `max-age=${HSTS_MAX_AGE}; includeSubDomains`)
+  }
   next()
 }
 
