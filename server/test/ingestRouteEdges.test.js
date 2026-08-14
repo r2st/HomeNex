@@ -123,6 +123,50 @@ test('an unknown ingest address is a 404 rather than a lead for nobody', async (
   assert.equal(res.status, 404)
 })
 
+test('an oversized email body is refused before it reaches the parser', async () => {
+  // parsePortalEmail runs ten chained regex passes over the body and then builds a
+  // fresh RegExp per label, all on the event loop, at a cost that grows faster than
+  // the input: 1MB of HTML measured at 41ms, 25MB at 1.85 SECONDS. Until this bound
+  // the express.json limit was the only ceiling, and that is 25MB because the media
+  // library posts base64 photos on an authenticated route — so anyone holding an
+  // ingest token could spend 1.85s of the single-threaded server per request, 240
+  // times a minute, and /healthz would stop answering along with everything else.
+  //
+  // Assert the refusal is cheap as well as correct. A 400 that still cost a second
+  // to produce would be no defence at all.
+  const started = Date.now()
+  const res = await req('POST', `/ingest/email/${ingestToken}`, {
+    from: 'noreply@99acres.com',
+    subject: 'Lead',
+    html: '<div>Mobile: 9876500013</div>'.repeat(200_000), // ~5.8MB
+  })
+  assert.equal(res.status, 400)
+  const body = await res.json()
+  assert.equal(body.code, 'FIELD_TOO_LONG')
+  assert.equal(body.field, 'html')
+  assert.ok(Date.now() - started < 1000, `the rejection itself took ${Date.now() - started}ms`)
+
+  // And the phone number inside it did not become a lead.
+  const { rows } = await query('SELECT COUNT(*)::int AS n FROM leads WHERE wa_id LIKE $1', ['%9876500013'])
+  assert.equal(rows[0].n, 0)
+})
+
+test('a portal email at the edge of the bound is still parsed normally', async () => {
+  // The ceiling has to clear a real notification email — an inlined logo and a long
+  // quoted thread — or the guard drops leads instead of protecting the box.
+  const padding = '<span>Regards, the 99acres team</span>'.repeat(12_000) // ~440KB
+  const res = await req('POST', `/ingest/email/${ingestToken}`, {
+    from: 'noreply@99acres.com',
+    subject: 'New response for your property',
+    html: `<p>Name: Padded Priya</p><p>Mobile: 9876500014</p>${padding}`,
+  })
+  assert.equal(res.status, 200)
+  const body = await res.json()
+  assert.equal(body.ok, true)
+  const { rows } = await query('SELECT name FROM leads WHERE id = $1', [body.lead_id])
+  assert.equal(rows[0].name, 'Padded Priya')
+})
+
 // --- Direct portal push, minimal body ----------------------------------------
 
 test('a portal push carrying only a phone number still becomes a lead', async () => {

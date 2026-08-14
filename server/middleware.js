@@ -284,6 +284,21 @@ export const TEXT = {
   WHATSAPP: 4096,
   // A link. Well past any real URL, well short of a payload.
   URL: 2000,
+  // One side of an email posted by an inbound-parse webhook (Mailgun / SendGrid /
+  // Cloudflare Email Worker) — the text part or the HTML part, bounded separately.
+  //
+  // Unlike every other bound here this one is not about what gets stored, it is about
+  // what gets *scanned*. parsePortalEmail runs ten chained regex passes over the body
+  // and then builds a fresh RegExp per label; the cost is worse than linear, and it is
+  // all on the event loop. Measured: 1MB of HTML blocks for 41ms, 25MB for 1.85s. The
+  // route is public, so the 25MB express.json allowance — which exists for the media
+  // library's base64 uploads on an authenticated route — was reachable by anyone who
+  // knew an ingest token, at 240 requests a minute.
+  //
+  // Portal notification emails are a few KB of text and tens of KB of HTML. Half a
+  // megabyte still admits an inlined logo and a long quoted thread, and holds the
+  // worst case to about 15ms.
+  EMAIL_PART: 512_000,
 }
 
 // --- Link fields -----------------------------------------------------------

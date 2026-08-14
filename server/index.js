@@ -715,7 +715,13 @@ app.post('/webhook', (req, res) => {
 // contact email on 99acres/MagicBricks/Housing. An email provider's inbound-parse
 // webhook (Mailgun / SendGrid / Cloudflare Email Worker) POSTs the message here as JSON:
 //   { from, to, subject, text, html }
-app.post('/ingest/email/:token', ah(async (req, res) => {
+//
+// Bounded like every other body-accepting route, and the only public one that wasn't:
+// this is the endpoint that hands an unauthenticated caller's text to the regex chain
+// in parsePortalEmail. See TEXT.EMAIL_PART for what that costs unbounded.
+app.post('/ingest/email/:token', boundedText({
+  from: TEXT.BLURB, subject: TEXT.BLURB, text: TEXT.EMAIL_PART, html: TEXT.EMAIL_PART,
+}), ah(async (req, res) => {
   const agent = await findAgentByIngestToken(req.params.token)
   if (!agent) return res.status(404).json({ error: 'unknown ingest address' })
   const { from = '', subject = '', text = '', html = '' } = req.body
