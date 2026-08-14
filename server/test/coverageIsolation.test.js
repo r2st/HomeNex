@@ -160,3 +160,30 @@ test('the guard above would notice a spawn that skipped childEnv', () => {
   assert.ok(!bad.slice(bad.match(CALL).index, 600).includes('childEnv'))
   assert.ok(good.slice(good.match(CALL).index, 600).includes('childEnv'))
 })
+
+test('test:coverage gates on the two metrics that hold still, and not on the third', () => {
+  // Which metrics a threshold can be built on is a property of the tool, not a taste
+  // question, and it is worth writing down where the next person will look.
+  //
+  // Lines and functions come out of the same numbers on every run. Branches do not:
+  // V8 leaves out a nested range whose hit count matches its parent's, so the count of
+  // branches *found* moves with how often code ran, not with what the code is. Under
+  // --test-concurrency=4 that varies by itself. scheduler.js is the plain case —
+  // between two runs of identical code its tally went 104/106 to 102/104: the same two
+  // uncovered arms, two fewer branches in the denominator, because one range's count
+  // came out equal to its parent's the second time and V8 stopped reporting it.
+  //
+  // So a branch threshold set anywhere near the real figure fails runs at random, and
+  // one set low enough to be safe would not catch anything. Lines and functions do the
+  // gating; branches stay a number to read.
+  const pkg = JSON.parse(readFileSync(path.join(TEST_DIR, '../../package.json'), 'utf8'))
+  const script = pkg.scripts['test:coverage']
+
+  assert.match(script, /--test-coverage-lines=100\b/, 'lines are stable and complete — hold them there')
+  assert.match(script, /--test-coverage-functions=99\b/)
+  assert.doesNotMatch(
+    script,
+    /--test-coverage-branches=/,
+    'a branch threshold cannot hold: read the comment above before adding one back',
+  )
+})

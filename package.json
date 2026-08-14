@@ -15,7 +15,7 @@
     "pretest:server": "npm run test:db:clean",
     "test:server": "node --test --test-concurrency=4 'server/test/*.test.js'",
     "pretest:coverage": "npm run test:db:clean",
-    "test:coverage": "node --test --experimental-test-coverage --test-concurrency=4 'server/test/*.test.js'",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-lines=100 --test-coverage-functions=99 --test-concurrency=4 'server/test/*.test.js'",
     "dev:admin": "vite --config admin/vite.config.js --port ${ADMIN_PORT:-5174}",
     "build:admin": "vite build --config admin/vite.config.js"
   },
