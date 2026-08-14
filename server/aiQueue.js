@@ -107,9 +107,6 @@ export class RequestQueue {
         this.stats.retries++
         await this.sleep(this.backoffMs(attempt, err.retryAfterMs))
       }
-      // The loop has no exit condition — every path out of the body returns — so the
-      // "fell off the end" edge on the closing brace is unreachable by construction.
-      /* node:coverage ignore next */
     }
   }
 }

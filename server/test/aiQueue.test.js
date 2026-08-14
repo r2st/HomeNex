@@ -138,3 +138,16 @@ test('stats track attempts and retries', async () => {
   assert.equal(q.stats.retries, 1)
   assert.equal(q.stats.attempts, 2)
 })
+
+test('a task that rejects with a non-object fails immediately instead of crashing', async () => {
+  // callOpenRouter always throws an Error, but the queue takes any thunk, and a
+  // task that rejects with undefined must not make the retry classifier itself
+  // throw — that would reject the job with a TypeError and hide the real failure.
+  const { q } = testQueue()
+  await assert.rejects(
+    q.enqueue(() => Promise.reject(undefined)),
+    (e) => e === undefined,
+  )
+  assert.equal(q.stats.retries, 0, 'a non-retryable rejection was retried')
+  assert.equal(q.stats.failures, 1)
+})
