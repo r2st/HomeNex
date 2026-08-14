@@ -99,13 +99,20 @@ export default function PropertiesTab({ onOpenLead }) {
 
       <ErrorBanner error={error} className="mt-6" />
 
+      {/* The placeholder is short enough to fit the box it sits in. At 375px — the
+          phone this is built for — the field shares its row with the Filters button
+          and gets 208px of inner width; "Search title, locality, builder…" measured
+          212px and clipped mid-word to "…locality, builde", which reads as a broken
+          control rather than a hint. The leading "Search" is the part worth losing:
+          the input is type="search" and already names itself "Search properties" to
+          a screen reader, so dropping it keeps every searchable field listed. */}
       <div className="flex items-center gap-2 mt-4">
         <input
           type="search"
           aria-label="Search properties"
           value={filters.q}
           onChange={(e) => setFilters((s) => ({ ...s, q: e.target.value }))}
-          placeholder="Search title, locality, builder…"
+          placeholder="Title, locality or builder…"
           className={`${inputCls} flex-1`}
         />
         <button
