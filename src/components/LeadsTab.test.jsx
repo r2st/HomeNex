@@ -448,3 +448,149 @@ test('a fully loaded column shows a plain count', async (t) => {
   assert.doesNotMatch(ui.text(), /3 \/ 3/)
   assert.match(ui.text(), /New3/)
 })
+
+// --- Drop-target feedback ------------------------------------------------------
+//
+// The drop itself is covered above, but the feedback that tells the agent WHERE the
+// card is about to land had never been fired. It is the whole affordance: the board
+// scrolls sideways on a phone, columns are 240px, and a stage move is destructive
+// enough that "Lost" sits one column away from "Negotiation". An agent who cannot
+// see which column is armed is guessing, and dragging is the only way to move a
+// stage from this view.
+//
+// None of this is reachable by clicking, so nothing else in the suite touches it.
+
+test('a column arms itself while a card is held over it, and disarms when the card leaves', async (t) => {
+  setup(t, { leads: [lead({ id: 42, stage: 'New' })] })
+  const ui = await render(<LeadsTab onOpenConversation={() => {}} />)
+  await click(ui.byText('▦ Board'))
+
+  // "Site Visit" is empty, so its placeholder is what the armed state replaces —
+  // an assertion about what the agent sees rather than about a class name.
+  assert.match(ui.text(column(ui, 'Site Visit')), /Drag leads here as they reach Site Visit/)
+  assert.equal(ui.queryByText('Drop here'), null, 'nothing is armed before a drag starts')
+
+  await fire(ui.byText('Priya Sharma'), 'onDragStart')
+  await fire(column(ui, 'Site Visit'), 'onDragOver')
+  assert.match(ui.text(column(ui, 'Site Visit')), /Drop here/, 'the column under the card says so')
+
+  await fire(column(ui, 'Site Visit'), 'onDragLeave')
+  assert.equal(ui.queryByText('Drop here'), null, 'dragging away disarms it again')
+})
+
+test('only one column is armed at a time as the card crosses the board', async (t) => {
+  // onDragLeave clears the target only if it is still its own — the events arrive
+  // interleaved (enter the next column before leaving the last), so a leave that
+  // cleared unconditionally would blank the highlight the new column just set.
+  setup(t, { leads: [lead({ id: 42, stage: 'New' })] })
+  const ui = await render(<LeadsTab onOpenConversation={() => {}} />)
+  await click(ui.byText('▦ Board'))
+
+  await fire(ui.byText('Priya Sharma'), 'onDragStart')
+  await fire(column(ui, 'Site Visit'), 'onDragOver')
+  await fire(column(ui, 'Negotiation'), 'onDragOver')
+  await fire(column(ui, 'Site Visit'), 'onDragLeave') // the late leave from the column we already left
+
+  assert.equal(ui.allByText('Drop here').length, 1, 'exactly one column is armed')
+  assert.match(ui.text(column(ui, 'Negotiation')), /Drop here/, 'and it is the one the card is over')
+})
+
+test('hovering over a column with nothing in hand arms nothing', async (t) => {
+  // The board is a horizontal scroller: a plain drag to scroll it, or a stray file
+  // dragged in from the desktop, must not light a column up as a drop target.
+  setup(t, { leads: [lead({ id: 42, stage: 'New' })] })
+  const ui = await render(<LeadsTab onOpenConversation={() => {}} />)
+  await click(ui.byText('▦ Board'))
+
+  await fire(column(ui, 'Site Visit'), 'onDragOver')
+  assert.equal(ui.queryByText('Drop here'), null)
+})
+
+test('a drag abandoned away from the board leaves the highlight behind', async (t) => {
+  // Releasing outside any column fires onDragEnd and no onDrop. Without the reset
+  // there the ring stays lit on a column nothing is being dragged to, and `drag`
+  // stays set — so the NEXT onDragOver anywhere would arm a column for a card the
+  // agent already let go of.
+  const ctx = setup(t, { leads: [lead({ id: 42, stage: 'New' })] })
+  const ui = await render(<LeadsTab onOpenConversation={() => {}} />)
+  await click(ui.byText('▦ Board'))
+
+  await fire(ui.byText('Priya Sharma'), 'onDragStart')
+  await fire(column(ui, 'Site Visit'), 'onDragOver')
+  await fire(ui.byText('Priya Sharma'), 'onDragEnd')
+
+  assert.equal(ui.queryByText('Drop here'), null, 'the abandoned drag took the highlight with it')
+  assert.equal(ctx.net.to('/api/leads/42/stage').length, 0, 'and moved nothing')
+
+  // The released card no longer arms anything.
+  await fire(column(ui, 'Negotiation'), 'onDragOver')
+  assert.equal(ui.queryByText('Drop here'), null)
+})
+
+// --- Opening a lead from the board --------------------------------------------
+
+test('tapping a card on the board opens that lead, and closing returns to the board', async (t) => {
+  // Both views render the same LeadCard, and the list view's copy is wired to open
+  // the detail while its drag props are deliberately inert. The board's copy carries
+  // both, so a card there has to stay tappable — the gesture that opens a lead and
+  // the gesture that moves it are on the same element.
+  setup(t, {
+    leads: [lead({ id: 42, stage: 'New' })],
+    routes: {
+      'GET /api/leads/42': {
+        id: 42, agent_id: 1, name: 'Priya Sharma', wa_id: '919876543210',
+        stage: 'New', pipeline_type: 'buy_primary', score: 72,
+        updated_at: new Date().toISOString(), messages: [], followups: [], site_visits: [],
+      },
+      'GET /api/leads/42/autofill': { suggestions: [] },
+      'GET /api/leads/42/briefing': { talking_points: [] },
+      'GET /api/leads/42/property-matches': [],
+    },
+  })
+  const ui = await render(<LeadsTab onOpenConversation={() => {}} />)
+  await click(ui.byText('▦ Board'))
+
+  await click(ui.byText('Priya Sharma'))
+  const close = ui.byLabel('Close lead details')
+  assert.ok(close, 'the detail panel is open over the board')
+
+  await click(close)
+  assert.equal(ui.queryByLabel('Close lead details'), null, 'and the board is back')
+  assert.match(ui.text(), /Priya Sharma/, 'with the card still on it')
+})
+
+test('the same tap opens a lead from the list view', async (t) => {
+  setup(t, {
+    leads: [lead({ id: 42, stage: 'New' })],
+    routes: {
+      'GET /api/leads/42': {
+        id: 42, agent_id: 1, name: 'Priya Sharma', wa_id: '919876543210',
+        stage: 'New', pipeline_type: 'buy_primary', score: 72,
+        updated_at: new Date().toISOString(), messages: [], followups: [], site_visits: [],
+      },
+      'GET /api/leads/42/autofill': { suggestions: [] },
+      'GET /api/leads/42/briefing': { talking_points: [] },
+      'GET /api/leads/42/property-matches': [],
+    },
+  })
+  const ui = await render(<LeadsTab onOpenConversation={() => {}} />)
+
+  await click(ui.byText('Priya Sharma'))
+  assert.ok(ui.byLabel('Close lead details'))
+})
+
+test('a card in the list view cannot be dragged into a stage move', async (t) => {
+  // The list card's drag props are no-ops on purpose: there are no columns here, so
+  // a drag has nowhere to land and must not half-start one that a later board visit
+  // would inherit.
+  const ctx = setup(t, { leads: [lead({ id: 42, stage: 'New' })] })
+  const ui = await render(<LeadsTab onOpenConversation={() => {}} />)
+
+  await fire(ui.byText('Priya Sharma'), 'onDragStart')
+  await fire(ui.byText('Priya Sharma'), 'onDragEnd')
+  assert.equal(ctx.net.to('/api/leads/42/stage').length, 0)
+
+  await click(ui.byText('▦ Board'))
+  await fire(column(ui, 'Site Visit'), 'onDragOver')
+  assert.equal(ui.queryByText('Drop here'), null, 'the list drag did not carry into the board')
+})

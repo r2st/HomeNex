@@ -9,7 +9,7 @@
 // The first two tests are that bug. The rest are the shapes the API actually sends.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { fmtDate, fmtDateTime, fmtAgo, fmtPaise } from './api.js'
+import { api, setToken, fmtDate, fmtDateTime, fmtAgo, fmtPaise } from './api.js'
 
 // What pg + JSON.stringify produce for a TIMESTAMPTZ column: a JS Date, serialised.
 const TIMESTAMPTZ = new Date(Date.UTC(2026, 6, 1, 10, 30, 0)).toISOString()
@@ -88,4 +88,87 @@ test('fmtPaise renders whole rupees from the integer paise the API sends', () =>
   assert.equal(fmtPaise(0), '₹0.00')
   assert.equal(fmtPaise(null), '—')
   assert.equal(fmtPaise(undefined), '—')
+})
+
+// --- The requests the portal makes ---------------------------------------------
+//
+// Same reasoning as the agent client: these are one-line wrappers whose only content
+// is a verb, a URL and a renamed payload key, and nothing checks any of it. The
+// portal's pages stub `api`, so the wrapper bodies never run there.
+//
+// It matters more here than in the agent app, because these four are the destructive
+// end of the admin surface — a plan's price, and whether an invoice is marked paid.
+// A wrapper that PUTs to the wrong id fails as a 404 the portal shows as a toast.
+const store = new Map()
+globalThis.localStorage = {
+  getItem: (k) => (store.has(k) ? store.get(k) : null),
+  setItem: (k, v) => store.set(k, String(v)),
+  removeItem: (k) => store.delete(k),
+}
+globalThis.window ??= { dispatchEvent: () => true, addEventListener: () => {} }
+globalThis.Event ??= class { constructor(type) { this.type = type } }
+
+let adminCalls = []
+let adminResponses = []
+const withStubbedFetch = (t) => {
+  const real = globalThis.fetch
+  adminCalls = []
+  adminResponses = []
+  globalThis.fetch = async (url, options = {}) => {
+    adminCalls.push({ url: String(url), method: options.method || 'GET', headers: options.headers || {}, body: options.body })
+    return adminResponses.shift() ?? { ok: true, status: 200, json: async () => ({}) }
+  }
+  t.after(() => {
+    globalThis.fetch = real
+    store.clear()
+  })
+}
+
+const ADMIN_REQUESTS = [
+  ['auditLogs', () => api.auditLogs(50), 'GET', '/api/admin/audit-logs?limit=50'],
+  ['createPlan', () => api.createPlan({ name: 'Growth', price_paise: 99900 }), 'POST', '/api/admin/plans', { name: 'Growth', price_paise: 99900 }],
+  ['updatePlan', () => api.updatePlan(3, { price_paise: 149900 }), 'PUT', '/api/admin/plans/3', { price_paise: 149900 }],
+  ['setInvoiceStatus', () => api.setInvoiceStatus(9, 'paid'), 'PUT', '/api/admin/invoices/9/status', { status: 'paid' }],
+]
+
+for (const [name, call, method, url, body] of ADMIN_REQUESTS) {
+  test(`api.${name} sends ${method} ${url}`, async (t) => {
+    withStubbedFetch(t)
+    setToken('admin-tok')
+    await call()
+
+    assert.equal(adminCalls.length, 1)
+    assert.equal(adminCalls[0].method, method)
+    assert.equal(adminCalls[0].url, url)
+    assert.equal(adminCalls[0].headers.authorization, 'Bearer admin-tok')
+    if (body === undefined) assert.equal(adminCalls[0].body, undefined)
+    else assert.deepEqual(JSON.parse(adminCalls[0].body), body)
+  })
+}
+
+test('auditLogs with no limit asks for the server default rather than "?limit=undefined"', async (t) => {
+  withStubbedFetch(t)
+  await api.auditLogs()
+  assert.equal(adminCalls[0].url, '/api/admin/audit-logs')
+})
+
+test('an error response that is not JSON still throws a readable Error', async (t) => {
+  // nginx answers a 502 with an HTML page, not JSON. Without the catch the portal
+  // would surface "Unexpected token < in JSON" — a parse failure standing in for a
+  // dead upstream, which sends the admin looking in the wrong place.
+  withStubbedFetch(t)
+  adminResponses.push({ ok: false, status: 502, json: async () => { throw new SyntaxError('Unexpected token <') } })
+
+  const err = await api.plans().then(() => null, (e) => e)
+  assert.ok(err instanceof Error)
+  assert.equal(err.message, 'HTTP 502')
+  assert.doesNotMatch(err.message, /Unexpected token/)
+})
+
+test('a JSON error body is preferred over the status line', async (t) => {
+  withStubbedFetch(t)
+  adminResponses.push({ ok: false, status: 400, json: async () => ({ error: 'That plan name is taken' }) })
+
+  const err = await api.createPlan({ name: 'Growth' }).then(() => null, (e) => e)
+  assert.equal(err.message, 'That plan name is taken')
 })
