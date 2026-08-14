@@ -90,6 +90,19 @@ test('rankPropertyMatches: excludes non-fits, sorts highest score first, tiebrea
   assert.ok(ranked[0].match_reasons.length > 0)
 })
 
+test('rankPropertyMatches: a listing with no updated_at ranks as the oldest, not as invalid', () => {
+  // Inventory imported in bulk often arrives with updated_at never set. The tiebreak
+  // falls back to 0 (the epoch) on each side, so such a listing sorts last among
+  // equals — but it must still come back. Two of them, so one comparison exercises
+  // the fallback on both sides of the subtraction at once.
+  const properties = [{ id: 1 }, { id: 2, updated_at: '2024-06-01' }, { id: 3 }]
+
+  const ids = rankPropertyMatches({}, properties).map((p) => p.id)
+
+  assert.equal(ids[0], 2, 'a dated listing outranks one whose date was never filled in')
+  assert.deepEqual([...ids].sort(), [1, 2, 3], 'the undated ones are ranked, not dropped')
+})
+
 test('rankPropertyMatches: respects the limit', () => {
   const lead = {}
   const properties = Array.from({ length: 30 }, (_, i) => ({ id: i, updated_at: '2024-01-01' }))
