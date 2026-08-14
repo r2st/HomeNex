@@ -20,6 +20,7 @@ import {
   createLeadSourceEvent,
   updateLeadSourceEvent,
   logActivity,
+  stampLeadTeam,
   upsertSyndication,
 } from './db.js'
 import { sendTemplate, whatsappConfigured } from './whatsapp.js'
@@ -264,6 +265,20 @@ export async function ingestLead({
     const contact = await getContactByPhone(digits)
     if (contact?.agent_id === agent.id) await attachLeadContact(lead.id, contact.id)
   } catch { /* number claimed elsewhere / invalid — lead still stands */ }
+
+  // Tag the lead with its owner's team, so it reaches the shared inbox and the
+  // manager views. The inbound WhatsApp path has always done this; this one never
+  // did, and every lead that does NOT arrive as a WhatsApp message comes through
+  // here — walk-ins, phone quick-adds, portal notification emails, Meta Lead Ads,
+  // direct portal pulls. For an agency working 99acres and MagicBricks, that is
+  // most of the pipeline, and it was invisible to the manager who is supposed to
+  // be distributing it: absent from GET /api/team/leads, absent from the board and
+  // the leaderboard, and untouchable by auto-assign or pool distribution, which
+  // both answer "lead not found in this team".
+  //
+  // Two leads taken by the same agent on the same morning behaved differently based
+  // only on how the buyer happened to make contact.
+  if (isNew) await stampLeadTeam(lead.id, agent.id)
 
   // setLeadSourceProvenance returns the fresh row (with the contact_id just attached).
   const fresh = await setLeadSourceProvenance(lead.id, {
