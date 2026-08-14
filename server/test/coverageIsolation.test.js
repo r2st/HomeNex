@@ -180,7 +180,12 @@ test('test:coverage gates on the two metrics that hold still, and not on the thi
   const script = pkg.scripts['test:coverage']
 
   assert.match(script, /--test-coverage-lines=100\b/, 'lines are stable and complete — hold them there')
-  assert.match(script, /--test-coverage-functions=99\b/)
+  assert.match(
+    script,
+    /--test-coverage-functions=100\b/,
+    'functions are stable and complete too — the last uncovered one was the swallowed ' +
+      'mark-failed in deliverDueFestiveSchedules, now driven by festive.test.js',
+  )
   assert.doesNotMatch(
     script,
     /--test-coverage-branches=/,
