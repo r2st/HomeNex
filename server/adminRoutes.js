@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { boundedText, TEXT } from './middleware.js'
 import {
   getAgent,
   adminStats,
@@ -92,7 +93,7 @@ router.get('/agents/:id', ah(async (req, res) => {
 // PUT /api/admin/agents/:id — edit profile (name, email, phone, is_admin).
 // An is_admin change goes through setAgentAdmin() so this route can't be used to
 // bypass the self-demote / last-admin guards enforced on /agents/:id/admin.
-router.put('/agents/:id', ah(async (req, res) => {
+router.put('/agents/:id', boundedText({ name: TEXT.LINE, email: TEXT.LINE, phone: TEXT.LINE }), ah(async (req, res) => {
   const { name, email, phone, is_admin } = req.body ?? {}
   const id = Number(req.params.id)
   try {
@@ -136,7 +137,9 @@ router.put('/agents/:id/active', ah(async (req, res) => {
 }))
 
 // PUT /api/admin/agents/:id/waba — update WABA registration config/status.
-router.put('/agents/:id/waba', ah(async (req, res) => {
+router.put('/agents/:id/waba', boundedText({
+  status: TEXT.LINE, meta_waba_id: TEXT.LINE, wa_phone_number_id: TEXT.LINE, wa_phone_number: TEXT.LINE,
+}), ah(async (req, res) => {
   const { status, meta_waba_id, wa_phone_number_id, wa_phone_number } = req.body ?? {}
   if (!status) return res.status(400).json({ error: 'status is required' })
   if (!(await getAgent(Number(req.params.id)))) return res.status(404).json({ error: 'Agent not found' })
@@ -165,7 +168,7 @@ const portalErr = (res, err) => {
 
 router.get('/onboarding', ah(async (_req, res) => res.json(await onboardingQueue())))
 
-router.put('/agents/:id/kyc', ah(async (req, res) => {
+router.put('/agents/:id/kyc', boundedText({ status: TEXT.LINE, note: TEXT.PROSE }), ah(async (req, res) => {
   try {
     const result = await setAgentKyc(req.agent.id, Number(req.params.id), {
       status: req.body?.status,
@@ -206,7 +209,7 @@ router.post('/agents/:id/impersonate', ah(async (req, res) => {
 
 router.get('/templates/pending', ah(async (_req, res) => res.json(await pendingReviewTemplates())))
 
-router.put('/templates/:id/review', ah(async (req, res) => {
+router.put('/templates/:id/review', boundedText({ action: TEXT.LINE, note: TEXT.PROSE }), ah(async (req, res) => {
   try {
     const tpl = await reviewTemplate(req.agent.id, Number(req.params.id), {
       action: req.body?.action,
@@ -251,7 +254,7 @@ router.put('/agents/:id/subscription', ah(async (req, res) => {
   }
 }))
 
-router.post('/agents/:id/invoices', ah(async (req, res) => {
+router.post('/agents/:id/invoices', boundedText({ note: TEXT.PROSE }), ah(async (req, res) => {
   if (!(await getAgent(Number(req.params.id)))) return res.status(404).json({ error: 'Agent not found' })
   try {
     const invoice = await generateInvoice(Number(req.params.id), {
@@ -272,7 +275,7 @@ router.get('/invoices/:id', ah(async (req, res) => {
   res.json(invoice)
 }))
 
-router.put('/invoices/:id/status', ah(async (req, res) => {
+router.put('/invoices/:id/status', boundedText({ status: TEXT.LINE }), ah(async (req, res) => {
   try {
     const invoice = await setInvoiceStatus(Number(req.params.id), req.body?.status)
     await logAudit(req.agent.id, 'invoice', invoice.id, 'invoice_status', { status: invoice.status })
@@ -296,7 +299,7 @@ router.get('/tickets/:id', ah(async (req, res) => {
   res.json(ticket)
 }))
 
-router.post('/tickets/:id/reply', ah(async (req, res) => {
+router.post('/tickets/:id/reply', boundedText({ body: TEXT.PROSE }), ah(async (req, res) => {
   try {
     const msg = await addTicketMessage(Number(req.params.id), {
       authorAgentId: req.agent.id,

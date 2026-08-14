@@ -186,6 +186,60 @@ export function validateIdParams(target, names = ID_PARAMS) {
   return target
 }
 
+// --- Bounded text fields ---------------------------------------------------
+// Nearly every text column in the schema is an unbounded Postgres TEXT, which is
+// the right choice for storage and no answer at all for input. Until this, the only
+// ceiling on a lead note, a template body or a contact's name was express.json()'s
+// 25MB body cap — a limit that exists so the media library can post a base64 photo,
+// and one that let a signed-in agent (or anything holding their token) put roughly
+// eighteen megabytes into a field the dashboard renders on a single line.
+//
+// The bound is declared per route rather than inferred from the field name: `body`
+// is a two-line quick reply in one place and a support ticket in another, and a
+// guard that quietly picked one number for both would be wrong somewhere. Declaring
+// it at the route also keeps the limit visible next to what it protects, and lets
+// the 400 name the field and the number instead of just saying "too long".
+//
+// Only strings are measured. A non-string in a text field is a different complaint,
+// already answered by the route's own validation or by Postgres, and rejecting it
+// here would change behaviour that has nothing to do with length.
+export function boundedText(limits) {
+  const entries = Object.entries(limits)
+  return function boundedTextMiddleware(req, res, next) {
+    const body = req.body
+    if (body && typeof body === 'object' && !Array.isArray(body)) {
+      for (const [field, max] of entries) {
+        const value = body[field]
+        if (typeof value === 'string' && value.length > max) {
+          return res.status(400).json({
+            error: `${field} must be ${max} characters or fewer.`,
+            code: 'FIELD_TOO_LONG',
+            field,
+            max,
+          })
+        }
+      }
+    }
+    next()
+  }
+}
+
+// The sizes the product actually uses, named so a route says what kind of field it
+// is bounding instead of repeating a number whose meaning has to be guessed.
+export const TEXT = {
+  // A name, a locality, a builder — one line, rendered inside a fixed-width cell.
+  LINE: 120,
+  // A subject, a caption, a short description: a paragraph at most.
+  BLURB: 500,
+  // Free-form prose an agent types: notes, a ticket body, a template.
+  PROSE: 4000,
+  // WhatsApp's own hard limit on a text message body. Anything longer is refused by
+  // Meta *after* we have spent the send, so refuse it here instead.
+  WHATSAPP: 4096,
+  // A link. Well past any real URL, well short of a payload.
+  URL: 2000,
+}
+
 // --- Request logger --------------------------------------------------------
 // One structured line per request once the response finishes. Static assets and
 // uploads are skipped to keep the log signal-dense. Disabled under NODE_ENV=test

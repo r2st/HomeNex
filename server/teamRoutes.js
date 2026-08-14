@@ -28,6 +28,7 @@ import {
   getLead,
   logAudit,
 } from './db.js'
+import { boundedText, TEXT } from './middleware.js'
 
 const ah = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next)
 
@@ -104,7 +105,7 @@ router.post('/', ah(async (req, res) => {
 }))
 
 // PUT /api/team — owner edits name / assignment strategy / shared line.
-router.put('/', requireOwner, ah(async (req, res) => {
+router.put('/', requireOwner, boundedText({ assignment_strategy: TEXT.LINE, shared_wa_phone_number_id: TEXT.LINE }), ah(async (req, res) => {
   const { name, assignment_strategy, shared_wa_phone_number_id } = req.body ?? {}
   const fields = {}
   if (name !== undefined) fields.name = name
@@ -136,7 +137,7 @@ router.delete('/', requireOwner, ah(async (req, res) => {
 router.get('/members', requireMember, ah(async (req, res) => res.json(await listTeamMembers(req.team.id))))
 
 // PUT /api/team/members/:agentId/role — owner changes a member's role.
-router.put('/members/:agentId/role', requireOwner, ah(async (req, res) => {
+router.put('/members/:agentId/role', requireOwner, boundedText({ role: TEXT.LINE }), ah(async (req, res) => {
   try {
     const member = await setMemberRole(req.team.id, Number(req.params.agentId), req.body?.role)
     await logAudit(req.agent.id, 'team', req.team.id, 'member_role_changed', {
@@ -181,7 +182,7 @@ router.delete('/members/:agentId', requireMember, ah(async (req, res) => {
 
 // --- Invitations ---
 
-router.post('/invites', requireManager, ah(async (req, res) => {
+router.post('/invites', requireManager, boundedText({ phone: TEXT.LINE, role: TEXT.LINE }), ah(async (req, res) => {
   try {
     const invite = await inviteToTeam(req.team.id, req.agent.id, {
       phone: req.body?.phone,

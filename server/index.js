@@ -194,7 +194,10 @@ import {
 } from './leadSources.js'
 import { fetchLeadgenData } from './whatsapp.js'
 import { dbPing, closePool } from './db.js'
-import { securityHeaders, cors, requestLogger, rateLimit, clientIp, errorCodes, validateIdParams } from './middleware.js'
+import {
+  securityHeaders, cors, requestLogger, rateLimit, clientIp, errorCodes, validateIdParams,
+  boundedText, TEXT,
+} from './middleware.js'
 import { validateEnv } from './env.js'
 import { verifyWebhookSignature } from './webhookSignature.js'
 
@@ -698,7 +701,10 @@ app.post('/ingest/email/:token', ah(async (req, res) => {
 // --- Direct portal API / push integration (§5.2) ---
 // A portal (or Zapier/middleware bridge) pushes a structured lead as JSON, keyed by the
 // workspace ingest token and portal:  { name, phone, email, property, message, budget, external_id }
-app.post('/ingest/portal/:token/:portal', ah(async (req, res) => {
+app.post('/ingest/portal/:token/:portal', boundedText({
+  name: TEXT.LINE, phone: TEXT.LINE, email: TEXT.LINE, external_id: TEXT.LINE,
+  lead_id: TEXT.LINE, property: TEXT.BLURB, project: TEXT.BLURB, message: TEXT.PROSE,
+}), ah(async (req, res) => {
   const agent = await findAgentByIngestToken(req.params.token)
   if (!agent) return res.status(404).json({ error: 'unknown ingest token' })
   const portal = req.params.portal
@@ -779,6 +785,9 @@ app.put('/api/agent/password', ah(async (req, res) => {
 // Agent edits their own profile. Phone lives on PUT /api/agent/phone (password-gated).
 const PROFILE_FIELDS = ['name', 'email', 'business_name', 'city', 'bio', 'rera_id', 'rera_state', 'rera_expiry', 'avatar_url']
 const PROFILE_ERROR_STATUS = { EMAIL_TAKEN: 409, NOT_FOUND: 404 }
+// No boundedText here: updateAgentProfileSelf already caps every one of these, and
+// does it better — its limits are per-field (name 80, bio 500, RERA id 64) and its
+// message names the field the way the form labels it.
 app.put('/api/agent/profile', ah(async (req, res) => {
   const fields = pick(req.body ?? {}, PROFILE_FIELDS)
   try {
@@ -801,7 +810,7 @@ const PREFERENCE_FIELDS = [
   'quiet_hours_start',
   'quiet_hours_end',
 ]
-app.put('/api/agent/preferences', ah(async (req, res) => {
+app.put('/api/agent/preferences', boundedText({ timezone: TEXT.LINE, language: TEXT.LINE }), ah(async (req, res) => {
   const fields = pick(req.body ?? {}, PREFERENCE_FIELDS)
   try {
     const agent = await updateAgentPreferences(req.agent.id, fields)
@@ -946,7 +955,7 @@ app.get('/api/leads/:id/notes', ah(async (req, res) => {
   res.json(await listLeadNotes(lead.id))
 }))
 
-app.post('/api/leads/:id/notes', ah(async (req, res) => {
+app.post('/api/leads/:id/notes', boundedText({ body: TEXT.PROSE }), ah(async (req, res) => {
   const lead = await getAssignableLead(req.params.id, req.agent.id)
   if (!lead) return res.status(404).json({ error: 'not found' })
   try {
@@ -1036,7 +1045,10 @@ app.post('/api/leads/:id/autofill/apply', ah(async (req, res) => {
 }))
 
 // Update a lead's CRM fields (budget in paise, BHK, property type, localities, ...).
-app.put('/api/leads/:id', ah(async (req, res) => {
+app.put('/api/leads/:id', boundedText({
+  name: TEXT.LINE, pipeline_type: TEXT.LINE, bhk: TEXT.LINE, property_type: TEXT.LINE,
+  timeline: TEXT.LINE, financing: TEXT.LINE, preferred_localities: TEXT.BLURB, notes: TEXT.PROSE,
+}), ah(async (req, res) => {
   const fields = pick(req.body ?? {}, [
     'name', 'pipeline_type', 'budget_min', 'budget_max', 'bhk', 'property_type',
     'preferred_localities', 'timeline', 'financing', 'notes',
@@ -1059,7 +1071,7 @@ app.put('/api/leads/:id', ah(async (req, res) => {
 }))
 
 // Move a lead between pipeline stages. Moving to Lost requires a lost_reason.
-app.put('/api/leads/:id/stage', ah(async (req, res) => {
+app.put('/api/leads/:id/stage', boundedText({ stage: TEXT.LINE, lost_reason: TEXT.BLURB }), ah(async (req, res) => {
   const { stage, lost_reason } = req.body ?? {}
   if (!stage) return res.status(400).json({ error: 'stage is required' })
   try {
@@ -1135,7 +1147,7 @@ app.post('/api/leads/:id/ai', ah(async (req, res) => {
 // Agent sends a real WhatsApp message from the dashboard. Outside the 24-hour
 // service window Meta only accepts template messages, so free-text replies are
 // rejected with 409 and the client must send a template (template_id) instead.
-app.post('/api/leads/:id/reply', ah(async (req, res) => {
+app.post('/api/leads/:id/reply', boundedText({ text: TEXT.WHATSAPP }), ah(async (req, res) => {
   const lead = await getLeadForAgent(req.params.id, req.agent.id)
   if (!lead) return res.status(404).json({ error: 'not found' })
 
@@ -1176,7 +1188,7 @@ app.post('/api/leads/:id/reply', ah(async (req, res) => {
 }))
 
 // --- EMI calculator: agents can compute an EMI for any client question ---
-app.post('/api/emi', ah(async (req, res) => {
+app.post('/api/emi', boundedText({ text: TEXT.BLURB }), ah(async (req, res) => {
   const { text, principal_l, rate_pct, years } = req.body ?? {}
   const parsed = text
     ? parseEmiQuery(text)
@@ -1228,7 +1240,7 @@ app.get('/api/contacts/:id', ah(async (req, res) => {
   res.json(contact)
 }))
 
-app.put('/api/contacts/:id', ah(async (req, res) => {
+app.put('/api/contacts/:id', boundedText({ name: TEXT.LINE, notes: TEXT.PROSE, opt_in_status: TEXT.LINE }), ah(async (req, res) => {
   try {
     const contact = await updateContact(
       req.params.id,
@@ -1290,6 +1302,17 @@ const PROPERTY_BODY_FIELDS = [
   'status', 'rera_project_number', 'builder_name', 'owner_name', 'facing', 'floor', 'total_floors',
   'amenities', 'photos', 'brochure_url', 'video_url', 'notes',
 ]
+// The text half of that same list, shared by create and edit so the two can never
+// drift apart. `amenities`/`photos` are JSONB arrays and `size_sqft`/`price_paise`/
+// `floor` are numbers, so neither belongs here; everything else is a TEXT column a
+// listing card shows, and one of them (title) is what a public micro-page prints as
+// its heading.
+const PROPERTY_TEXT_LIMITS = {
+  title: TEXT.LINE, property_type: TEXT.LINE, bhk: TEXT.LINE, size_unit: TEXT.LINE,
+  locality: TEXT.LINE, city: TEXT.LINE, status: TEXT.LINE, rera_project_number: TEXT.LINE,
+  builder_name: TEXT.LINE, owner_name: TEXT.LINE, facing: TEXT.LINE,
+  brochure_url: TEXT.URL, video_url: TEXT.URL, notes: TEXT.PROSE,
+}
 
 // The filter set shared by the property list and its count, so the header total can
 // never describe a different set of rows than the page beneath it.
@@ -1326,7 +1349,7 @@ app.get('/api/properties/:id', ah(async (req, res) => {
   res.json(property)
 }))
 
-app.post('/api/properties', ah(async (req, res) => {
+app.post('/api/properties', boundedText(PROPERTY_TEXT_LIMITS), ah(async (req, res) => {
   try {
     const property = await createProperty(req.agent.id, pick(req.body ?? {}, PROPERTY_BODY_FIELDS))
     await logAudit(req.agent.id, 'property', property.id, 'create', { title: property.title })
@@ -1337,7 +1360,7 @@ app.post('/api/properties', ah(async (req, res) => {
   }
 }))
 
-app.put('/api/properties/:id', ah(async (req, res) => {
+app.put('/api/properties/:id', boundedText(PROPERTY_TEXT_LIMITS), ah(async (req, res) => {
   try {
     const property = await updateProperty(req.params.id, req.agent.id, pick(req.body ?? {}, PROPERTY_BODY_FIELDS))
     if (!property) return res.status(404).json({ error: 'not found' })
@@ -1422,7 +1445,7 @@ app.get('/api/followups', ah(async (req, res) =>
   })),
 ))
 
-app.post('/api/followups', ah(async (req, res) => {
+app.post('/api/followups', boundedText({ note: TEXT.PROSE, type: TEXT.LINE }), ah(async (req, res) => {
   const { lead_id, due_at, note, type } = req.body ?? {}
   if (!lead_id || !due_at) return res.status(400).json({ error: 'lead_id and due_at are required' })
   const lead = await getLeadForAgent(lead_id, req.agent.id)
@@ -1435,7 +1458,7 @@ app.post('/api/followups', ah(async (req, res) => {
   }
 }))
 
-app.put('/api/followups/:id', ah(async (req, res) => {
+app.put('/api/followups/:id', boundedText({ note: TEXT.PROSE, type: TEXT.LINE }), ah(async (req, res) => {
   try {
     const followup = await updateFollowup(
       req.params.id,
@@ -1459,7 +1482,7 @@ app.get('/api/site-visits', ah(async (req, res) =>
   })),
 ))
 
-app.post('/api/site-visits', ah(async (req, res) => {
+app.post('/api/site-visits', boundedText({ pickup_location: TEXT.BLURB }), ah(async (req, res) => {
   const { lead_id, property_id, scheduled_at, pickup_required, pickup_location, builder_preregistered } = req.body ?? {}
   if (!lead_id || !scheduled_at) return res.status(400).json({ error: 'lead_id and scheduled_at are required' })
   const lead = await getLeadForAgent(lead_id, req.agent.id)
@@ -1504,7 +1527,7 @@ app.post('/api/site-visits', ah(async (req, res) => {
   }
 }))
 
-app.put('/api/site-visits/:id', ah(async (req, res) => {
+app.put('/api/site-visits/:id', boundedText({ pickup_location: TEXT.BLURB, status: TEXT.LINE, outcome_notes: TEXT.PROSE }), ah(async (req, res) => {
   try {
     const visit = await updateSiteVisit(
       req.params.id,
@@ -1524,13 +1547,23 @@ app.put('/api/site-visits/:id', ah(async (req, res) => {
 
 // --- §5.4: deals, commissions, builder receivables + aging, GST invoices ---
 
+// Shared by create and edit on each side of the ledger, so a field can't be bounded
+// on the way in and unbounded on the way back through an edit.
+const DEAL_TEXT_LIMITS = {
+  deal_type: TEXT.LINE, builder_name: TEXT.LINE, stage_captured: TEXT.LINE,
+  status: TEXT.LINE, notes: TEXT.PROSE,
+}
+const COMMISSION_TEXT_LIMITS = {
+  payer_type: TEXT.LINE, builder_name: TEXT.LINE, status: TEXT.LINE, notes: TEXT.PROSE,
+}
+
 // Deals are captured automatically at the booking stage, but can also be listed,
 // created, and edited by hand.
 app.get('/api/deals', ah(async (req, res) =>
   res.json(await listDeals(req.agent.id, { status: req.query.status || '', dealType: req.query.type || '' })),
 ))
 
-app.post('/api/deals', ah(async (req, res) => {
+app.post('/api/deals', boundedText(DEAL_TEXT_LIMITS), ah(async (req, res) => {
   const body = req.body ?? {}
   if (!body.lead_id) return res.status(400).json({ error: 'lead_id is required' })
   const lead = await getLeadForAgent(body.lead_id, req.agent.id)
@@ -1552,7 +1585,7 @@ app.get('/api/deals/:id', ah(async (req, res) => {
   res.json({ ...deal, suggested_rental_commission_paise: suggestRentalCommissionPaise(deal) })
 }))
 
-app.put('/api/deals/:id', ah(async (req, res) => {
+app.put('/api/deals/:id', boundedText(DEAL_TEXT_LIMITS), ah(async (req, res) => {
   try {
     const deal = await updateDeal(req.params.id, req.agent.id, pick(req.body ?? {}, [
       'property_id', 'deal_type', 'builder_name', 'deal_value_paise', 'monthly_rent_paise', 'status', 'notes',
@@ -1574,7 +1607,7 @@ app.get('/api/commissions/receivables', ah(async (req, res) =>
   res.json(await builderReceivables(req.agent.id)),
 ))
 
-app.post('/api/commissions', ah(async (req, res) => {
+app.post('/api/commissions', boundedText(COMMISSION_TEXT_LIMITS), ah(async (req, res) => {
   const body = req.body ?? {}
   if (!body.lead_id) return res.status(400).json({ error: 'lead_id is required' })
   const lead = await getLeadForAgent(body.lead_id, req.agent.id)
@@ -1590,7 +1623,7 @@ app.post('/api/commissions', ah(async (req, res) => {
   }
 }))
 
-app.put('/api/commissions/:id', ah(async (req, res) => {
+app.put('/api/commissions/:id', boundedText(COMMISSION_TEXT_LIMITS), ah(async (req, res) => {
   try {
     const commission = await updateCommission(req.params.id, req.agent.id, pick(req.body ?? {}, [
       'deal_id', 'deal_value_paise', 'commission_pct', 'commission_flat_paise', 'payer_type',
@@ -1605,7 +1638,7 @@ app.put('/api/commissions/:id', ah(async (req, res) => {
 }))
 
 // Raise a GST-aware invoice for a commission (18% GST by default, split in paise).
-app.post('/api/commissions/:id/invoice', ah(async (req, res) => {
+app.post('/api/commissions/:id/invoice', boundedText({ invoice_number: TEXT.LINE, notes: TEXT.PROSE }), ah(async (req, res) => {
   try {
     const invoice = await createCommissionInvoice(req.agent.id, req.params.id, pick(req.body ?? {}, ['gst_rate', 'invoice_number', 'notes']))
     if (!invoice) return res.status(404).json({ error: 'commission not found' })
@@ -1625,7 +1658,7 @@ app.get('/api/commission-invoices', ah(async (req, res) =>
   })),
 ))
 
-app.put('/api/commission-invoices/:id', ah(async (req, res) => {
+app.put('/api/commission-invoices/:id', boundedText({ status: TEXT.LINE, notes: TEXT.PROSE }), ah(async (req, res) => {
   try {
     const invoice = await updateCommissionInvoice(req.params.id, req.agent.id, pick(req.body ?? {}, ['status', 'notes']))
     if (!invoice) return res.status(404).json({ error: 'not found' })
@@ -1637,9 +1670,14 @@ app.put('/api/commission-invoices/:id', ah(async (req, res) => {
 }))
 
 // --- Message templates (used by the template-only composer after the 24h window) ---
+// A template body is sent to Meta for approval and then to buyers, so it is bounded
+// at what WhatsApp will actually carry. `variables` is JSON and is left alone.
+const TEMPLATE_TEXT_LIMITS = {
+  name: TEXT.LINE, category: TEXT.LINE, meta_status: TEXT.LINE, body: TEXT.WHATSAPP,
+}
 app.get('/api/templates', ah(async (req, res) => res.json(await listMessageTemplates(req.agent.id))))
 
-app.post('/api/templates', ah(async (req, res) => {
+app.post('/api/templates', boundedText(TEMPLATE_TEXT_LIMITS), ah(async (req, res) => {
   try {
     res.json(await createMessageTemplate(req.agent.id, pick(req.body ?? {}, ['name', 'category', 'body', 'variables', 'rera_auto_append'])))
   } catch (err) {
@@ -1650,7 +1688,7 @@ app.post('/api/templates', ah(async (req, res) => {
 
 // Edit a template. Locked templates (system pack, or Meta-approved) accept metadata
 // changes but NOT body/name/category edits — agents fill variables, not the wording.
-app.put('/api/templates/:id', ah(async (req, res) => {
+app.put('/api/templates/:id', boundedText(TEMPLATE_TEXT_LIMITS), ah(async (req, res) => {
   const tpl = await getMessageTemplate(Number(req.params.id), req.agent.id)
   if (!tpl) return res.status(404).json({ error: 'not found' })
   const fields = pick(req.body ?? {}, ['name', 'category', 'body', 'variables', 'rera_auto_append', 'meta_status'])
@@ -1683,7 +1721,7 @@ app.delete('/api/templates/:id', ah(async (req, res) => {
 // --- Quick replies: saved snippets with {{name}}/{{property}}/{{visit_time}} ---
 app.get('/api/quick-replies', ah(async (req, res) => res.json(await listQuickReplies(req.agent.id))))
 
-app.post('/api/quick-replies', ah(async (req, res) => {
+app.post('/api/quick-replies', boundedText({ title: TEXT.LINE, body: TEXT.PROSE }), ah(async (req, res) => {
   try {
     res.json(await createQuickReply(req.agent.id, pick(req.body ?? {}, ['title', 'body'])))
   } catch (err) {
@@ -1692,7 +1730,7 @@ app.post('/api/quick-replies', ah(async (req, res) => {
   }
 }))
 
-app.put('/api/quick-replies/:id', ah(async (req, res) => {
+app.put('/api/quick-replies/:id', boundedText({ title: TEXT.LINE, body: TEXT.PROSE }), ah(async (req, res) => {
   const updated = await updateQuickReply(Number(req.params.id), req.agent.id, pick(req.body ?? {}, ['title', 'body']))
   if (!updated) return res.status(404).json({ error: 'not found' })
   res.json(updated)
@@ -1706,7 +1744,7 @@ app.delete('/api/quick-replies/:id', ah(async (req, res) => {
 // --- Labels: manage the workspace label set ---
 app.get('/api/labels', ah(async (req, res) => res.json(await listLabels(req.agent.id))))
 
-app.post('/api/labels', ah(async (req, res) => {
+app.post('/api/labels', boundedText({ name: TEXT.LINE, color: TEXT.LINE }), ah(async (req, res) => {
   try {
     res.json(await createLabel(req.agent.id, pick(req.body ?? {}, ['name', 'color'])))
   } catch (err) {
@@ -1728,11 +1766,17 @@ app.delete('/api/labels/:id', ah(async (req, res) => {
 }))
 
 // --- Media library: upload once, attach to any chat in two taps ---
+// `data_base64` is deliberately absent — an upload's ceiling is saveUpload's decoded
+// byte limit, not a character count.
+const MEDIA_TEXT_LIMITS = {
+  title: TEXT.LINE, kind: TEXT.LINE, caption: TEXT.BLURB, filename: TEXT.LINE,
+  mime: TEXT.LINE, url: TEXT.URL,
+}
 app.get('/api/media', ah(async (req, res) => res.json(await listMediaAssets(req.agent.id))))
 
 // Register an asset. Two modes: { storage:'url', url } for an already-hosted file,
 // or { storage:'local', data_base64, filename } to upload a file we host at /uploads.
-app.post('/api/media', uploadLimiter, ah(async (req, res) => {
+app.post('/api/media', uploadLimiter, boundedText(MEDIA_TEXT_LIMITS), ah(async (req, res) => {
   const b = req.body ?? {}
   try {
     let asset = pick(b, ['title', 'kind', 'caption'])
@@ -1759,7 +1803,7 @@ app.delete('/api/media/:id', ah(async (req, res) => {
 // Generic file upload → hosted URL. Lets forms (e.g. the property photo/brochure
 // picker) turn a phone-gallery file into a URL we store, without creating a media
 // library record. Returns { url, filename, mime, size }.
-app.post('/api/uploads', uploadLimiter, ah(async (req, res) => {
+app.post('/api/uploads', uploadLimiter, boundedText({ filename: TEXT.LINE, mime: TEXT.LINE }), ah(async (req, res) => {
   const b = req.body ?? {}
   if (!b.data_base64) return res.status(400).json({ error: 'data_base64 is required' })
   try {
@@ -1772,7 +1816,7 @@ app.post('/api/uploads', uploadLimiter, ah(async (req, res) => {
 // Send a library asset into a chat. Records the send so the UI can show "sent".
 // Free-text-window rules don't apply to media the same way, but Meta still requires
 // an open session for non-template media, so we enforce the 24h window here too.
-app.post('/api/media/:id/send', ah(async (req, res) => {
+app.post('/api/media/:id/send', boundedText({ caption: TEXT.BLURB }), ah(async (req, res) => {
   const lead = await getLeadForAgent(req.body?.lead_id, req.agent.id)
   if (!lead) return res.status(404).json({ error: 'lead not found' })
   const asset = await getMediaAsset(Number(req.params.id), req.agent.id)
@@ -1871,7 +1915,7 @@ async function deliverFestiveGreeting(agent, message, { enforceWindow = false } 
 }
 
 // Send now, or schedule for later (send_at in the future).
-app.post('/api/templates/festive/send', ah(async (req, res) => {
+app.post('/api/templates/festive/send', boundedText({ festival: TEXT.LINE, message: TEXT.WHATSAPP }), ah(async (req, res) => {
   const { festival, message, send_at } = req.body ?? {}
   const fest = getFestival(festival)
   if (!fest) return res.status(400).json({ error: 'Unknown festival' })
@@ -1947,7 +1991,7 @@ app.get('/api/properties/:id/analytics', ah(async (req, res) => {
 // --- Contact groups / segments + gated bulk send ---
 app.get('/api/groups', ah(async (req, res) => res.json(await listGroups(req.agent.id))))
 
-app.post('/api/groups', ah(async (req, res) => {
+app.post('/api/groups', boundedText({ name: TEXT.LINE, color: TEXT.LINE, kind: TEXT.LINE }), ah(async (req, res) => {
   try {
     const group = await createGroup(req.agent.id, pick(req.body ?? {}, ['name', 'color', 'kind', 'criteria']))
     res.json(group)
@@ -1963,7 +2007,7 @@ app.get('/api/groups/:id/members', ah(async (req, res) => {
   res.json(members)
 }))
 
-app.put('/api/groups/:id', ah(async (req, res) => {
+app.put('/api/groups/:id', boundedText({ name: TEXT.LINE, color: TEXT.LINE }), ah(async (req, res) => {
   const group = await updateGroup(req.params.id, req.agent.id, pick(req.body ?? {}, ['name', 'color', 'criteria']))
   if (!group) return res.status(404).json({ error: 'not found' })
   res.json(group)
@@ -2003,7 +2047,7 @@ app.post('/api/segments/preview', ah(async (req, res) =>
 
 // Targeted bulk send to a group, every recipient gated by the send limiter — one
 // relevant template instead of a blast, which is what keeps the quality rating green.
-app.post('/api/groups/:id/send', ah(async (req, res) => {
+app.post('/api/groups/:id/send', boundedText({ message: TEXT.WHATSAPP }), ah(async (req, res) => {
   const message = (req.body?.message || '').trim()
   if (!message) return res.status(400).json({ error: 'message is required' })
   const recipients = await groupMembers(req.params.id, req.agent.id)
@@ -2024,7 +2068,10 @@ app.post('/api/groups/:id/send', ah(async (req, res) => {
 // Walk-in / phone lead: the 10-second "Add lead" form. Creates the lead + contact,
 // tags the source, and returns a wa.me deep link the agent taps to open the thread
 // (plus an instant template send when a lead-intro template is configured).
-app.post('/api/leads/quick-add', ah(async (req, res) => {
+app.post('/api/leads/quick-add', boundedText({
+  phone: TEXT.LINE, name: TEXT.LINE, channel: TEXT.LINE,
+  message: TEXT.WHATSAPP, open_message: TEXT.WHATSAPP,
+}), ah(async (req, res) => {
   const { phone, name, tags, channel = 'walk_in', message, open_message } = req.body ?? {}
   if (!phone) return res.status(400).json({ error: 'phone required' })
   if (!['walk_in', 'phone'].includes(channel)) return res.status(400).json({ error: 'invalid channel' })
@@ -2093,7 +2140,7 @@ app.get('/api/portal-integrations', ah(async (req, res) =>
   res.json(await listPortalIntegrations(req.agent.id)),
 ))
 
-app.put('/api/portal-integrations/:portal', ah(async (req, res) => {
+app.put('/api/portal-integrations/:portal', boundedText({ api_key: TEXT.LINE, api_secret: TEXT.LINE }), ah(async (req, res) => {
   if (!SYNDICATION_PORTALS.includes(req.params.portal)) return res.status(400).json({ error: 'unknown portal' })
   const fields = pick(req.body ?? {}, ['enabled', 'api_key', 'api_secret', 'config'])
   const row = await upsertPortalIntegration(req.agent.id, req.params.portal, fields)
@@ -2126,7 +2173,9 @@ app.get('/api/support/tickets', ah(async (req, res) =>
   res.json(await listTickets({ agentId: req.agent.id, status: String(req.query.status || '').trim() })),
 ))
 
-app.post('/api/support/tickets', ah(async (req, res) => {
+app.post('/api/support/tickets', boundedText({
+  subject: TEXT.LINE, body: TEXT.PROSE, category: TEXT.LINE, priority: TEXT.LINE,
+}), ah(async (req, res) => {
   try {
     const ticket = await createTicket(req.agent.id, pick(req.body ?? {}, ['subject', 'body', 'category', 'priority']))
     res.json(ticket)
@@ -2143,7 +2192,7 @@ app.get('/api/support/tickets/:id', ah(async (req, res) => {
   res.json(ticket)
 }))
 
-app.post('/api/support/tickets/:id/reply', ah(async (req, res) => {
+app.post('/api/support/tickets/:id/reply', boundedText({ body: TEXT.PROSE }), ah(async (req, res) => {
   try {
     const msg = await addTicketMessage(
       Number(req.params.id),
@@ -2190,7 +2239,9 @@ validateIdParams(adminRouter)
 
 // Dev/test endpoint: pushes a message through the SAME real pipeline (DB + AI),
 // without an outbound WhatsApp send. Useful before the Meta webhook is wired up.
-app.post('/api/simulate', ah(async (req, res) => {
+app.post('/api/simulate', boundedText({
+  from: TEXT.LINE, name: TEXT.LINE, source: TEXT.LINE, text: TEXT.WHATSAPP,
+}), ah(async (req, res) => {
   const { from = 'test-' + Date.now(), name = 'Test Buyer', text, source = 'Test', wa_message_id = null } = req.body ?? {}
   if (!text) return res.status(400).json({ error: 'text required' })
   const result = await handleInbound({
