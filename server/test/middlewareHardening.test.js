@@ -16,6 +16,10 @@
 // index.js, and every request that reaches it has already been through ensureBody.
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
+import { execFile } from 'node:child_process'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 import { createTestDb, dropTestDb } from './helpers.js'
 
 process.env.NODE_ENV = 'test'
@@ -39,6 +43,15 @@ after(async () => {
   await closePool()
   await dropTestDb(dbName)
 })
+
+// A fresh process is how a config value read at module load has to be tested — see
+// fixtures/hstsProbe.mjs for why it is not an `import('…?query')`.
+const PROBE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'hstsProbe.mjs')
+const execFileAsync = promisify(execFile)
+const headersWith = async (env) => {
+  const { stdout } = await execFileAsync(process.execPath, [PROBE], { env: { ...process.env, ...env } })
+  return JSON.parse(stdout)
+}
 
 // The middleware only ever calls setHeader, so a plain recorder is a faithful res.
 const runHeaders = (req) => {
@@ -76,34 +89,23 @@ test('the always-safe headers are set either way, TLS or not', () => {
 })
 
 test('HSTS_MAX_AGE=0 turns it off, for a host that is not ready to commit', async () => {
-  // The max-age is read once at import, so this needs its own module instance —
-  // which is also the honest test of the config, since that is how the process sees it.
-  const prev = process.env.HSTS_MAX_AGE
-  process.env.HSTS_MAX_AGE = '0'
-  try {
-    const fresh = await import('../middleware.js?hsts=off')
-    const set = {}
-    fresh.securityHeaders({ secure: true }, { setHeader: (k, v) => (set[k] = v) }, () => {})
-    assert.equal(set['Strict-Transport-Security'], undefined, 'the opt-out did not opt out')
-    assert.equal(set['X-Content-Type-Options'], 'nosniff', 'and it took the other headers down with it')
-  } finally {
-    if (prev === undefined) delete process.env.HSTS_MAX_AGE
-    else process.env.HSTS_MAX_AGE = prev
-  }
+  const set = await headersWith({ HSTS_MAX_AGE: '0' })
+  assert.equal(set['Strict-Transport-Security'], undefined, 'the opt-out did not opt out')
+  assert.equal(set['X-Content-Type-Options'], 'nosniff', 'and it took the other headers down with it')
 })
 
 test('a shorter max-age can be staged before committing to a year', async () => {
-  const prev = process.env.HSTS_MAX_AGE
-  process.env.HSTS_MAX_AGE = '600'
-  try {
-    const fresh = await import('../middleware.js?hsts=600')
-    const set = {}
-    fresh.securityHeaders({ secure: true }, { setHeader: (k, v) => (set[k] = v) }, () => {})
-    assert.equal(set['Strict-Transport-Security'], 'max-age=600; includeSubDomains')
-  } finally {
-    if (prev === undefined) delete process.env.HSTS_MAX_AGE
-    else process.env.HSTS_MAX_AGE = prev
-  }
+  const set = await headersWith({ HSTS_MAX_AGE: '600' })
+  assert.equal(set['Strict-Transport-Security'], 'max-age=600; includeSubDomains')
+})
+
+test('a max-age that is not a number falls back to the year, it does not disable HSTS', async () => {
+  // `Number('nope') >= 0` is false, so the guard takes its other arm and the default
+  // stands. That is the right way round: a typo in a deploy's env should not silently
+  // withdraw a security header, and turning HSTS off has to be something someone
+  // typed on purpose (`HSTS_MAX_AGE=0`, asserted above).
+  assert.equal((await headersWith({ HSTS_MAX_AGE: 'nope' }))['Strict-Transport-Security'], 'max-age=31536000; includeSubDomains')
+  assert.equal((await headersWith({ HSTS_MAX_AGE: '-1' }))['Strict-Transport-Security'], 'max-age=31536000; includeSubDomains')
 })
 
 // --- HSTS, through the app as mounted ------------------------------------------
