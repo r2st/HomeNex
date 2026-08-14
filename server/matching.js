@@ -13,6 +13,10 @@
 const BUDGET_STRETCH = 1.1 // a listing up to 10% over budget_max still surfaces
 const BUDGET_SLACK = 0.9 // a listing down to 10% under budget_min still surfaces
 
+// Both call sites hand this a value they have already proved truthy — one filters
+// the list with Boolean first, the other returns early on a property with no
+// locality — so the `|| ''` is a guard on the helper, never a path taken.
+/* node:coverage ignore next */
 const norm = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ')
 
 // True when the property's price is inside the lead's stated budget band (with a
