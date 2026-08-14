@@ -968,7 +968,14 @@ app.post('/api/leads/:id/assign-to', ah(async (req, res) => {
   if (raw !== null) {
     assigneeId = Number(raw)
     if (!Number.isInteger(assigneeId) || assigneeId <= 0) {
-      return res.status(400).json({ error: 'assignee_id must be an agent id or null' })
+      // Phrased for the agent, not the caller: friendlyError.js shows a 4xx message
+      // through to the screen verbatim, and hides any that reads technical behind a
+      // generic line. "must be an agent id or null" was hidden by the word "null" —
+      // a specific, fixable error arriving as "Some details look incorrect".
+      return res.status(400).json({
+        error: 'Choose an agent to hand this chat to, or clear the assignment.',
+        code: 'BAD_ASSIGNEE_ID',
+      })
     }
     const target = await getAgent(assigneeId)
     if (!target || target.is_active !== 1) {

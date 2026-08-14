@@ -108,6 +108,12 @@ test('assign-to: a non-numeric assignee id is a 400, never a 500', async () => {
   for (const assignee_id of ['abc', 0, -3, 1.5, {}]) {
     const res = await req('POST', `/api/leads/${aliceLeadId}/assign-to`, { assignee_id }, alice.token)
     assert.equal(res.status, 400, `expected 400 for ${JSON.stringify(assignee_id)}`)
+    const body = await json(res)
+    assert.equal(body.code, 'BAD_ASSIGNEE_ID', `no code for ${JSON.stringify(assignee_id)}`)
+    // Its two siblings in this handler answer with a sentence an agent can act on;
+    // this arm used to answer "assignee_id must be an agent id or null", which the
+    // client hid behind a generic line because of the word "null".
+    assert.match(body.error, /^Choose an agent/)
   }
 })
 
