@@ -12,6 +12,7 @@ import {
   getLeadForAgent,
   getAssignableLead,
   getAgent,
+  getAgentsByIds,
   findAgentByPhone,
   findAgentByPhoneNumberId,
   updateAgentPhoneConfig,
@@ -2436,9 +2437,15 @@ await ready
 // tests can drive it directly.
 export async function deliverDueFestiveSchedules() {
   const due = await claimDueFestiveSchedules()
+  if (!due.length) return 0
+  // One read for every agent with a greeting due, rather than one inside the loop: a
+  // festival is the one moment every agent on the box has a schedule land in the same
+  // minute, which is exactly when the extra round trips are least affordable.
+  const agents = await getAgentsByIds(due.map((s) => s.agent_id))
   for (const schedule of due) {
     try {
-      const agent = await getAgent(schedule.agent_id)
+      const agent = agents.get(schedule.agent_id)
+      if (!agent) throw new Error(`agent ${schedule.agent_id} no longer exists`)
       const fest = getFestival(schedule.festival_key)
       // A scheduled delivery is automated — enforce the quiet-hours/night window.
       const result = await deliverFestiveGreeting(agent, schedule.message, { enforceWindow: true })

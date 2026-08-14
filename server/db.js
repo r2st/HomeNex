@@ -196,6 +196,16 @@ export async function getAgent(id) {
   return rows[0]
 }
 
+// getAgent for a whole list, as a Map(id -> agent). For the background loops, which
+// know every agent they are about to work on before they start and were fetching the
+// rows back one at a time inside the loop.
+export async function getAgentsByIds(ids) {
+  const { rows } = await q(`SELECT ${AGENT_COLS} FROM agents WHERE id = ANY($1::int[])`, [
+    [...new Set(ids)],
+  ])
+  return new Map(rows.map((a) => [a.id, a]))
+}
+
 export async function findAgentByPhone(phone) {
   const { rows } = await q('SELECT * FROM agents WHERE phone = $1', [normalizePhone(phone)])
   return rows[0]

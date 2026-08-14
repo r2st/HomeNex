@@ -11,7 +11,7 @@ delete process.env.WHATSAPP_APP_SECRET
 const dbName = await createTestDb('festive')
 
 const { app, deliverDueFestiveSchedules } = await import('../index.js')
-const { closePool, addContact, createFestiveSchedule } = await import('../db.js')
+const { closePool, addContact, createFestiveSchedule, pool } = await import('../db.js')
 
 let server
 let base
@@ -157,6 +157,62 @@ test('deliverDueFestiveSchedules claims due rows exactly once', async () => {
   const { scheduled } = await (await req('GET', '/api/templates/festive', undefined, other.token)).json()
   assert.equal(scheduled[0].status, 'sent') // zero contacts -> sent with 0 recipients
   assert.equal(scheduled[0].sent_count, 0)
+})
+
+test('the tick reads every agent with a greeting due in one query, not one each', async () => {
+  // A festival is the one moment every agent on the box has a schedule land in the same
+  // minute — precisely when an extra round trip per agent is least affordable. The
+  // agent rows are fetched once for the whole claim; the sends stay per schedule.
+  const made = []
+  for (let i = 0; i < 5; i++) {
+    const who = await (
+      await req('POST', '/api/auth/signup', {
+        name: `Batch Agent ${i}`,
+        phone: `+91980000006${i}`,
+        password: 'secret123',
+      })
+    ).json()
+    await createFestiveSchedule(who.agent.id, {
+      festival_key: 'holi',
+      message: 'Happy Holi, {name}!',
+      send_at: new Date(Date.now() - 60_000).toISOString(),
+    })
+    made.push(who)
+  }
+
+  const agentReads = []
+  const original = pool.query.bind(pool)
+  pool.query = (...args) => {
+    const sql = typeof args[0] === 'string' ? args[0] : args[0]?.text || ''
+    if (/FROM agents WHERE id/.test(sql)) agentReads.push(sql)
+    return original(...args)
+  }
+  let delivered
+  try {
+    delivered = await deliverDueFestiveSchedules()
+  } finally {
+    pool.query = original
+  }
+
+  assert.equal(delivered, 5)
+  assert.equal(agentReads.length, 1, 'the agent row was fetched once per schedule instead of once per claim')
+  assert.match(agentReads[0], /id = ANY/)
+})
+
+test('a claim with nothing due does not go looking for agents at all', async () => {
+  assert.equal(await deliverDueFestiveSchedules(), 0)
+  const reads = []
+  const original = pool.query.bind(pool)
+  pool.query = (...args) => {
+    reads.push(typeof args[0] === 'string' ? args[0] : args[0]?.text || '')
+    return original(...args)
+  }
+  try {
+    assert.equal(await deliverDueFestiveSchedules(), 0)
+  } finally {
+    pool.query = original
+  }
+  assert.equal(reads.length, 1, 'an empty claim should be the claim and nothing else')
 })
 
 // A scheduled delivery runs unattended on the once-a-minute tick, so the only thing
