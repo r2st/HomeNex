@@ -196,7 +196,7 @@ import { fetchLeadgenData } from './whatsapp.js'
 import { dbPing, closePool } from './db.js'
 import {
   securityHeaders, cors, requestLogger, rateLimit, clientIp, errorCodes, validateIdParams,
-  boundedText, TEXT,
+  boundedText, TEXT, boundedNumber, NUM,
 } from './middleware.js'
 import { validateEnv } from './env.js'
 import { verifyWebhookSignature } from './webhookSignature.js'
@@ -1048,7 +1048,9 @@ app.post('/api/leads/:id/autofill/apply', ah(async (req, res) => {
 app.put('/api/leads/:id', boundedText({
   name: TEXT.LINE, pipeline_type: TEXT.LINE, bhk: TEXT.LINE, property_type: TEXT.LINE,
   timeline: TEXT.LINE, financing: TEXT.LINE, preferred_localities: TEXT.BLURB, notes: TEXT.PROSE,
-}), ah(async (req, res) => {
+// A budget is paise, and it is the number the matcher compares every listing against.
+// A negative one silently matched nothing; a fractional one is not a paise.
+}), boundedNumber({ budget_min: NUM.PAISE, budget_max: NUM.PAISE }), ah(async (req, res) => {
   const fields = pick(req.body ?? {}, [
     'name', 'pipeline_type', 'budget_min', 'budget_max', 'bhk', 'property_type',
     'preferred_localities', 'timeline', 'financing', 'notes',
@@ -1188,7 +1190,17 @@ app.post('/api/leads/:id/reply', boundedText({ text: TEXT.WHATSAPP }), ah(async 
 }))
 
 // --- EMI calculator: agents can compute an EMI for any client question ---
-app.post('/api/emi', boundedText({ text: TEXT.BLURB }), ah(async (req, res) => {
+// The structured form (principal/rate/tenure) goes straight into the formula, so
+// `{ principal_l: 1e9, rate_pct: 1e6, years: 1e6 }` used to return a confident,
+// WhatsApp-ready message quoting an EMI in the quintillions. These are the bounds a
+// home loan actually has: up to ₹1,000 crore, a rate that is a percentage, and a
+// tenure that fits inside a career. Free text is parsed, not trusted, so it keeps its
+// own path.
+app.post('/api/emi', boundedText({ text: TEXT.BLURB }), boundedNumber({
+  principal_l: { min: 0, max: 100_000 },
+  rate_pct: NUM.PERCENT,
+  years: { min: 0, max: 50 },
+}), ah(async (req, res) => {
   const { text, principal_l, rate_pct, years } = req.body ?? {}
   const parsed = text
     ? parseEmiQuery(text)
@@ -1313,6 +1325,12 @@ const PROPERTY_TEXT_LIMITS = {
   builder_name: TEXT.LINE, owner_name: TEXT.LINE, facing: TEXT.LINE,
   brochure_url: TEXT.URL, video_url: TEXT.URL, notes: TEXT.PROSE,
 }
+// And the numeric half. The column types alone let a listing be saved at minus fifty
+// lakhs on minus nine hundred square feet — accepted by Postgres, priced into every
+// buyer match, and rendered on the card as "-₹50L".
+const PROPERTY_NUMBER_LIMITS = {
+  price_paise: NUM.PAISE, size_sqft: NUM.AREA, floor: NUM.FLOOR, total_floors: NUM.FLOOR,
+}
 
 // The filter set shared by the property list and its count, so the header total can
 // never describe a different set of rows than the page beneath it.
@@ -1327,10 +1345,16 @@ const propertyQuery = (query) => ({
   search: query.q || '',
 })
 
+// The price band is the one filter that reaches Postgres as a number rather than a
+// string, so it is the one that has to be a number before it gets there. Guarded on
+// the count as well as the list: they take the same filters and must agree, including
+// about which of them are rejected.
+const propertyPriceBand = boundedNumber({ min_price: NUM.PAISE, max_price: NUM.PAISE }, { from: 'query' })
+
 // Paged like /api/leads and /api/contacts: `limit` (default 100, max 500) and `offset`,
 // body still a plain array, a short page means the end. Anything that needs the true
 // total asks /api/properties/count.
-app.get('/api/properties', ah(async (req, res) =>
+app.get('/api/properties', propertyPriceBand, ah(async (req, res) =>
   res.json(await listProperties(req.agent.id, {
     ...propertyQuery(req.query),
     limit: req.query.limit,
@@ -1339,7 +1363,7 @@ app.get('/api/properties', ah(async (req, res) =>
 ))
 
 // Registered before /api/properties/:id so "count" isn't parsed as an id.
-app.get('/api/properties/count', ah(async (req, res) =>
+app.get('/api/properties/count', propertyPriceBand, ah(async (req, res) =>
   res.json(await propertyCount(req.agent.id, propertyQuery(req.query))),
 ))
 
@@ -1349,7 +1373,7 @@ app.get('/api/properties/:id', ah(async (req, res) => {
   res.json(property)
 }))
 
-app.post('/api/properties', boundedText(PROPERTY_TEXT_LIMITS), ah(async (req, res) => {
+app.post('/api/properties', boundedText(PROPERTY_TEXT_LIMITS), boundedNumber(PROPERTY_NUMBER_LIMITS), ah(async (req, res) => {
   try {
     const property = await createProperty(req.agent.id, pick(req.body ?? {}, PROPERTY_BODY_FIELDS))
     await logAudit(req.agent.id, 'property', property.id, 'create', { title: property.title })
@@ -1360,7 +1384,7 @@ app.post('/api/properties', boundedText(PROPERTY_TEXT_LIMITS), ah(async (req, re
   }
 }))
 
-app.put('/api/properties/:id', boundedText(PROPERTY_TEXT_LIMITS), ah(async (req, res) => {
+app.put('/api/properties/:id', boundedText(PROPERTY_TEXT_LIMITS), boundedNumber(PROPERTY_NUMBER_LIMITS), ah(async (req, res) => {
   try {
     const property = await updateProperty(req.params.id, req.agent.id, pick(req.body ?? {}, PROPERTY_BODY_FIELDS))
     if (!property) return res.status(404).json({ error: 'not found' })
@@ -1435,7 +1459,9 @@ app.post('/api/properties/:id/send-to-chat', ah(async (req, res) => {
 }))
 
 // --- Follow-ups & reminders ---
-app.get('/api/followups', ah(async (req, res) =>
+// `lead_id` reaches an integer column, so a non-numeric one is a 400 here rather than
+// a 22P02 the route never catches. Same for the site-visit list below.
+app.get('/api/followups', boundedNumber({ lead_id: NUM.ID }, { from: 'query' }), ah(async (req, res) =>
   res.json(await listFollowups(req.agent.id, {
     pendingOnly: req.query.pending === '1',
     today: req.query.today === '1',
@@ -1474,7 +1500,7 @@ app.put('/api/followups/:id', boundedText({ note: TEXT.PROSE, type: TEXT.LINE })
 }))
 
 // --- Site visits ---
-app.get('/api/site-visits', ah(async (req, res) =>
+app.get('/api/site-visits', boundedNumber({ lead_id: NUM.ID }, { from: 'query' }), ah(async (req, res) =>
   res.json(await listSiteVisits(req.agent.id, {
     leadId: req.query.lead_id || null,
     status: req.query.status || '',
@@ -1553,8 +1579,21 @@ const DEAL_TEXT_LIMITS = {
   deal_type: TEXT.LINE, builder_name: TEXT.LINE, stage_captured: TEXT.LINE,
   status: TEXT.LINE, notes: TEXT.PROSE,
 }
+// Money on a deal is what the commission is a percentage of, so a negative one is a
+// negative commission, a negative invoice, and a receivables ledger that owes the
+// builder money.
+const DEAL_NUMBER_LIMITS = {
+  lead_id: NUM.ID, property_id: NUM.ID, deal_value_paise: NUM.PAISE, monthly_rent_paise: NUM.PAISE,
+}
 const COMMISSION_TEXT_LIMITS = {
   payer_type: TEXT.LINE, builder_name: TEXT.LINE, status: TEXT.LINE, notes: TEXT.PROSE,
+}
+// commission_pct is NUMERIC(5,2): 5000% overflowed the column and answered with
+// Postgres's own "numeric field overflow", which tells the agent nothing about which
+// field they typed wrong.
+const COMMISSION_NUMBER_LIMITS = {
+  lead_id: NUM.ID, deal_id: NUM.ID, deal_value_paise: NUM.PAISE,
+  commission_pct: NUM.PERCENT, commission_flat_paise: NUM.PAISE,
 }
 
 // Deals are captured automatically at the booking stage, but can also be listed,
@@ -1563,7 +1602,7 @@ app.get('/api/deals', ah(async (req, res) =>
   res.json(await listDeals(req.agent.id, { status: req.query.status || '', dealType: req.query.type || '' })),
 ))
 
-app.post('/api/deals', boundedText(DEAL_TEXT_LIMITS), ah(async (req, res) => {
+app.post('/api/deals', boundedText(DEAL_TEXT_LIMITS), boundedNumber(DEAL_NUMBER_LIMITS), ah(async (req, res) => {
   const body = req.body ?? {}
   if (!body.lead_id) return res.status(400).json({ error: 'lead_id is required' })
   const lead = await getLeadForAgent(body.lead_id, req.agent.id)
@@ -1585,7 +1624,7 @@ app.get('/api/deals/:id', ah(async (req, res) => {
   res.json({ ...deal, suggested_rental_commission_paise: suggestRentalCommissionPaise(deal) })
 }))
 
-app.put('/api/deals/:id', boundedText(DEAL_TEXT_LIMITS), ah(async (req, res) => {
+app.put('/api/deals/:id', boundedText(DEAL_TEXT_LIMITS), boundedNumber(DEAL_NUMBER_LIMITS), ah(async (req, res) => {
   try {
     const deal = await updateDeal(req.params.id, req.agent.id, pick(req.body ?? {}, [
       'property_id', 'deal_type', 'builder_name', 'deal_value_paise', 'monthly_rent_paise', 'status', 'notes',
@@ -1607,7 +1646,7 @@ app.get('/api/commissions/receivables', ah(async (req, res) =>
   res.json(await builderReceivables(req.agent.id)),
 ))
 
-app.post('/api/commissions', boundedText(COMMISSION_TEXT_LIMITS), ah(async (req, res) => {
+app.post('/api/commissions', boundedText(COMMISSION_TEXT_LIMITS), boundedNumber(COMMISSION_NUMBER_LIMITS), ah(async (req, res) => {
   const body = req.body ?? {}
   if (!body.lead_id) return res.status(400).json({ error: 'lead_id is required' })
   const lead = await getLeadForAgent(body.lead_id, req.agent.id)
@@ -1623,7 +1662,7 @@ app.post('/api/commissions', boundedText(COMMISSION_TEXT_LIMITS), ah(async (req,
   }
 }))
 
-app.put('/api/commissions/:id', boundedText(COMMISSION_TEXT_LIMITS), ah(async (req, res) => {
+app.put('/api/commissions/:id', boundedText(COMMISSION_TEXT_LIMITS), boundedNumber(COMMISSION_NUMBER_LIMITS), ah(async (req, res) => {
   try {
     const commission = await updateCommission(req.params.id, req.agent.id, pick(req.body ?? {}, [
       'deal_id', 'deal_value_paise', 'commission_pct', 'commission_flat_paise', 'payer_type',
@@ -1638,6 +1677,10 @@ app.put('/api/commissions/:id', boundedText(COMMISSION_TEXT_LIMITS), ah(async (r
 }))
 
 // Raise a GST-aware invoice for a commission (18% GST by default, split in paise).
+// No boundedNumber for gst_rate: createCommissionInvoice already checks it, does it
+// more thoroughly (it rejects `[]` and `'18%'`, which coerce), and answers with
+// INVALID_GST_RATE — a code a client can branch on and a generic range error would
+// only shadow.
 app.post('/api/commissions/:id/invoice', boundedText({ invoice_number: TEXT.LINE, notes: TEXT.PROSE }), ah(async (req, res) => {
   try {
     const invoice = await createCommissionInvoice(req.agent.id, req.params.id, pick(req.body ?? {}, ['gst_rate', 'invoice_number', 'notes']))
@@ -1651,7 +1694,7 @@ app.post('/api/commissions/:id/invoice', boundedText({ invoice_number: TEXT.LINE
   }
 }))
 
-app.get('/api/commission-invoices', ah(async (req, res) =>
+app.get('/api/commission-invoices', boundedNumber({ commission_id: NUM.ID }, { from: 'query' }), ah(async (req, res) =>
   res.json(await listCommissionInvoices(req.agent.id, {
     commissionId: req.query.commission_id || null,
     status: req.query.status || '',

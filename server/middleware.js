@@ -240,6 +240,83 @@ export const TEXT = {
   URL: 2000,
 }
 
+// --- Bounded numbers -------------------------------------------------------
+// The numeric half of the same problem boundedText solves, and until this it had two
+// distinct failure modes, both of them ours:
+//
+//   1. A filter that isn't a number 500ed. `?min_price=abc` became `Number('abc')` =
+//      NaN, which is not null, so it was appended to the WHERE clause and travelled to
+//      Postgres as the string 'NaN' against a bigint column — 22P02, uncaught, "500
+//      Something went wrong on our side". It was the caller's input that was wrong,
+//      and a stale bookmark or a cleared filter field was enough to trip it.
+//   2. A number that is real but absurd was stored. A price of -5000 paise, a size of
+//      -900 sqft and a deal worth minus one rupee were all accepted, because the
+//      column type is the only thing that was checking. Nothing downstream expects
+//      negative money: the matcher compares it against budgets, the invoice sums it,
+//      and the dashboard renders it as "-₹50".
+//
+// So the bound is declared per route, next to what it protects, exactly like
+// boundedText — and for the same reason: `lead_id` is a row id in one place and
+// `floor` legitimately goes negative for a basement, and one inferred rule would be
+// wrong somewhere. An absent field is not this guard's business (a route's own
+// required-field check owns that), so null, undefined and '' pass through untouched.
+export function boundedNumber(limits, { from = 'body' } = {}) {
+  const entries = Object.entries(limits)
+  return function boundedNumberMiddleware(req, res, next) {
+    const source = from === 'query' ? req.query : req.body
+    if (!source || typeof source !== 'object' || Array.isArray(source)) return next()
+    for (const [field, spec] of entries) {
+      const raw = source[field]
+      // Absent, or a filter the UI cleared to the empty string.
+      if (raw == null || (typeof raw === 'string' && raw.trim() === '')) continue
+      const { min = -Infinity, max = Infinity, integer = false } = spec
+      // Only a number or a numeric string is a number. `true` coerces to 1 and an
+      // array of one coerces to its element, and neither is what the caller meant.
+      const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN
+      if (!Number.isFinite(n)) {
+        return res.status(400).json({ error: `${field} must be a number.`, code: 'FIELD_NOT_A_NUMBER', field })
+      }
+      if (integer && !Number.isInteger(n)) {
+        return res.status(400).json({ error: `${field} must be a whole number.`, code: 'FIELD_NOT_A_NUMBER', field })
+      }
+      if (n < min || n > max) {
+        return res.status(400).json({
+          error: `${field} must be between ${min} and ${max}.`,
+          code: 'FIELD_OUT_OF_RANGE',
+          field,
+          min,
+          max,
+        })
+      }
+    }
+    next()
+  }
+}
+
+// The ranges the schema actually holds, named after the kind of number rather than
+// the column, so a route declares what it is bounding instead of repeating a bound
+// whose meaning has to be guessed. Same intent as TEXT above.
+export const NUM = {
+  // Money, always paise in a BIGINT column. The ceiling is JS's safe-integer limit,
+  // not the column's: anything past 2^53 arrives from JSON already rounded, so a
+  // larger bound would only promise a precision we cannot keep. ₹90,07,19,92,54,740
+  // is well past any deal an Indian broker will book.
+  PAISE: { min: 0, max: Number.MAX_SAFE_INTEGER, integer: true },
+  // A percentage in a NUMERIC(5,2) column — commission, GST. Two decimals is the
+  // column's business; the range is ours.
+  PERCENT: { min: 0, max: 100 },
+  // A row id used as a filter. Same shape as a path :id, for the same reason.
+  ID: { min: 1, max: 2147483647, integer: true },
+  // Carpet or built-up area. A DOUBLE, so fractions are fine, but not a negative one
+  // and not a number that could only be a typo.
+  AREA: { min: 0, max: 10_000_000 },
+  // A floor number. Goes negative — basement parking is B1/B2 — and the tallest
+  // building in the world has 163.
+  FLOOR: { min: -10, max: 300, integer: true },
+  // An hour on a 24h clock, for the quiet-hours window.
+  HOUR: { min: 0, max: 23, integer: true },
+}
+
 // --- Request logger --------------------------------------------------------
 // One structured line per request once the response finishes. Static assets and
 // uploads are skipped to keep the log signal-dense. Disabled under NODE_ENV=test
