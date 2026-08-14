@@ -657,3 +657,11 @@ export const focus = (node, init) => fire(node, 'onFocus', init)
 
 /** Type into an input by firing onChange for the whole value (React-controlled inputs). */
 export const type = (node, value) => change(node, value)
+
+/**
+ * Pick files on a <input type="file">. The pickers clear `target.value` in the handler
+ * so the same photo can be chosen twice in a row, hence the writable shim rather than
+ * the frozen one `change` builds.
+ */
+export const selectFiles = (node, files) =>
+  fire(node, 'onChange', { target: { ...shimTarget(node), files, value: 'C:\\fakepath\\picked' } })

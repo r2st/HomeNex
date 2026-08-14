@@ -88,6 +88,19 @@ export function installBrowser({ online = true, now } = {}) {
   const document = {
     createElement: (tag) => {
       const el = { tagName: tag.toUpperCase(), style: {}, clicked: 0, click() { el.clicked++ }, setAttribute(k, v) { el[k] = v }, remove() {} }
+      // downscalePhoto draws a picked photo into a canvas and reads a JPEG back out.
+      // The shim records the size it was asked for and the quality it encoded at, so a
+      // test can assert the downscale maths rather than just that it didn't throw.
+      if (el.tagName === 'CANVAS') {
+        el.width = 0
+        el.height = 0
+        el.drawn = []
+        el.getContext = () => ({ drawImage: (img, x, y, w, h) => el.drawn.push({ x, y, w, h }) })
+        el.toDataURL = (type = 'image/png', quality) => {
+          el.encoded = { type, quality }
+          return `data:${type};base64,scaled-${el.width}x${el.height}`
+        }
+      }
       created.push(el)
       return el
     },
@@ -186,6 +199,107 @@ export function installBrowser({ online = true, now } = {}) {
         // Node exposes some of these (navigator, localStorage) as lazy accessors that
         // warn when touched. Restoring the accessor just re-arms that warning, so drop
         // the global instead — nothing outside a test should be reading it anyway.
+        if (descriptor && !descriptor.get) Object.defineProperty(globalThis, name, descriptor)
+        else delete globalThis[name]
+      }
+    },
+  }
+}
+
+/**
+ * The file-picking half of the browser: URL.createObjectURL, Image and FileReader.
+ *
+ * Opt-in rather than part of installBrowser, because only the two upload pickers need
+ * it and every other test is better off without globals it does not use. Pair with
+ * installBrowser — this one only adds what the picking path touches.
+ *
+ *   const files = installFileApis()
+ *   t.after(files.restore)
+ *   files.image('front.jpg', { width: 4000, height: 3000 })  // a phone-camera photo
+ *   files.image('broken.jpg', { broken: true })              // not decodable
+ *   files.doc('plan.pdf', 'application/pdf')                 // read by FileReader
+ *
+ * `leakedObjectUrls` is the check that matters beyond "it uploaded": downscalePhoto
+ * creates an object URL per photo and must revoke it on both the load and the error
+ * path, or picking a gallery-full of photos pins every one of them in memory.
+ */
+export function installFileApis() {
+  const saved = new Map()
+  const define = (name, value) => {
+    saved.set(name, Object.getOwnPropertyDescriptor(globalThis, name))
+    Object.defineProperty(globalThis, name, { value, configurable: true, writable: true })
+  }
+
+  const blobs = new Map()
+  let seq = 0
+
+  const make = (name, type, extra) => ({ name, type, size: 1024, ...extra })
+  const handle = {
+    image: (name, { width = 1600, height = 1200, broken = false } = {}) =>
+      make(name, 'image/jpeg', { width, height, broken }),
+    doc: (name, type = 'application/pdf', { unreadable = false } = {}) => make(name, type, { unreadable }),
+  }
+
+  // Node has a real URL constructor and api.js builds URLs with it, so add the two
+  // statics to it rather than replacing the global with a stub.
+  const RealURL = globalThis.URL
+  const savedCreate = Object.getOwnPropertyDescriptor(RealURL, 'createObjectURL')
+  const savedRevoke = Object.getOwnPropertyDescriptor(RealURL, 'revokeObjectURL')
+  RealURL.createObjectURL = (file) => {
+    const url = `blob:mock/${++seq}`
+    blobs.set(url, file)
+    return url
+  }
+  RealURL.revokeObjectURL = (url) => blobs.delete(url)
+
+  class FakeImage {
+    constructor() {
+      this.onload = null
+      this.onerror = null
+      this.width = 0
+      this.height = 0
+    }
+
+    set src(url) {
+      const file = blobs.get(url)
+      // Decoding is async in a browser, and the code under test revokes the object URL
+      // inside the handler — firing synchronously from the setter would hide an ordering
+      // bug that a real browser would expose.
+      queueMicrotask(() => {
+        if (!file || file.broken) return this.onerror?.(new Error('decode failed'))
+        this.width = file.width
+        this.height = file.height
+        this.onload?.()
+      })
+    }
+  }
+
+  class FakeFileReader {
+    readAsDataURL(file) {
+      queueMicrotask(() => {
+        if (file?.unreadable) return this.onerror?.(new Error('unreadable'))
+        this.result = `data:${file.type};base64,${Buffer.from(file.name).toString('base64')}`
+        this.onload?.()
+      })
+    }
+  }
+
+  define('Image', FakeImage)
+  define('FileReader', FakeFileReader)
+
+  return {
+    ...handle,
+    /** Object URLs created but never revoked — each one is a pinned image in a browser. */
+    get leakedObjectUrls() {
+      return [...blobs.keys()]
+    },
+    restore() {
+      blobs.clear()
+      if (savedCreate) Object.defineProperty(RealURL, 'createObjectURL', savedCreate)
+      else delete RealURL.createObjectURL
+      if (savedRevoke) Object.defineProperty(RealURL, 'revokeObjectURL', savedRevoke)
+      else delete RealURL.revokeObjectURL
+      for (const [name, descriptor] of saved) {
         if (descriptor && !descriptor.get) Object.defineProperty(globalThis, name, descriptor)
         else delete globalThis[name]
       }
