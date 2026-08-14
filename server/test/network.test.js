@@ -146,3 +146,101 @@ test('the board is shared but the matches are not', async () => {
 test('the feed requires a logged-in agent', async () => {
   assert.equal((await req('GET', '/api/network')).status, 401)
 })
+
+// --- The scorer now runs in SQL -------------------------------------------
+//
+// computeMatches used to pull every INVENTORY row into Node and score the cross
+// product in JavaScript. That is the one unbounded read left over a table nobody's
+// agent_id scopes, so it moved into a single statement. These are the places where
+// SQL and JavaScript disagree by default, and where the rewrite therefore had to say
+// what it meant rather than inherit it.
+
+test('an empty-string locality or config scores nothing, the way JS truthiness did', async () => {
+  // '' is NOT NULL, so a SQL rewrite that guarded with IS NOT NULL would happily
+  // match every buyer against a listing whose locality was left blank — and
+  // position('powai' in '') is 0 but position('' in 'powai') is 1, so the reverse
+  // leg would have scored 45 for nothing at all.
+  const blank = await signup('Blank Broker', '+919820000303')
+  await buyer(blank.agent.id, '919821000101', 'Blank Bindu', {
+    locality: 'Powai', config: '3BHK', min: 100, max: 150,
+  })
+  await addNetworkPost({ type: 'INVENTORY', broker: 'Empty Locality Eshan', text: 'no area given',
+    locality: '', config: '3BHK', budget_min_l: 110, budget_max_l: 140 })
+
+  const { matches } = await feed(blank.token)
+  assert.equal(pctFor(matches, 'Blank Bindu', 'Empty Locality Eshan'), null, 'a blank locality scored the 45')
+})
+
+test('a buyer with a blank locality is skipped, not matched against everything', async () => {
+  const blank = await signup('Blank Two', '+919820000304')
+  await buyer(blank.agent.id, '919821000102', 'Blankest Bharat', {
+    locality: '', config: '3BHK', min: 100, max: 150,
+  })
+  await addNetworkPost({ type: 'INVENTORY', broker: 'Somewhere Sameer', text: 'a flat',
+    locality: 'Powai', config: '3BHK', budget_min_l: 110, budget_max_l: 140 })
+
+  const { matches } = await feed(blank.token)
+  assert.deepEqual(matches, [], 'a buyer with no area was matched anyway')
+})
+
+test('a buyer whose temperature was never set is left out, as before', async () => {
+  // The original lead query said `temp != 'Cold'`, and SQL drops a NULL there. That
+  // is load-bearing: it is why an unscored lead does not appear on the board.
+  const unscored = await signup('Unscored Broker', '+919820000305')
+  const lead = await buyer(unscored.agent.id, '919821000103', 'Unscored Uma', {
+    locality: 'Powai', config: '3BHK', min: 100, max: 150,
+  })
+  await query('UPDATE leads SET temp = NULL WHERE id = $1', [lead.id])
+  await addNetworkPost({ type: 'INVENTORY', broker: 'Powai Prakash', text: 'ready 3BHK',
+    locality: 'Powai', config: '3BHK', budget_min_l: 110, budget_max_l: 140 })
+
+  const { matches } = await feed(unscored.token)
+  assert.deepEqual(matches, [], 'a lead with no temperature reached the board')
+})
+
+test('one buyer matching several listings is returned once per listing, hydrated fully', async () => {
+  // The pairs come back as ids and the two sides are fetched by id, so a lead that
+  // matches six listings is read once — but each pair must still carry the whole row.
+  const many = await signup('Many Broker', '+919820000306')
+  await buyer(many.agent.id, '919821000104', 'Popular Pooja', {
+    locality: 'Kothrud', config: '2BHK', min: 60, max: 90,
+  })
+  for (const broker of ['Kothrud One', 'Kothrud Two', 'Kothrud Three']) {
+    await addNetworkPost({ type: 'INVENTORY', broker, text: '2BHK', locality: 'Kothrud',
+      config: '2BHK', budget_min_l: 70, budget_max_l: 85 })
+  }
+
+  const { matches } = await feed(many.token)
+  assert.equal(matches.length, 3)
+  for (const m of matches) {
+    assert.equal(m.matchPct, 100)
+    assert.equal(m.lead.name, 'Popular Pooja')
+    assert.equal(m.lead.wa_id, '919821000104', 'the lead row came back partial')
+    assert.ok(m.inventory.text, 'the listing row came back partial')
+    assert.match(m.inventory.broker, /^Kothrud/)
+  }
+})
+
+test('two matches on the same score keep a stable order between requests', async () => {
+  // The JS sort left ties in whatever order two unordered SELECTs happened to
+  // produce. Paging or diffing a feed that reshuffles itself is not possible.
+  const stable = await signup('Stable Broker', '+919820000307')
+  await buyer(stable.agent.id, '919821000105', 'Tied Tanvi', {
+    locality: 'Wakad', config: '2BHK', min: 60, max: 90,
+  })
+  for (const broker of ['Tie A', 'Tie B', 'Tie C']) {
+    await addNetworkPost({ type: 'INVENTORY', broker, text: '2BHK', locality: 'Wakad',
+      config: '2BHK', budget_min_l: 70, budget_max_l: 85 })
+  }
+
+  const first = (await feed(stable.token)).matches.map((m) => m.inventory.broker)
+  const second = (await feed(stable.token)).matches.map((m) => m.inventory.broker)
+  assert.deepEqual(first, second, 'the same feed came back in a different order')
+  assert.deepEqual(first, ['Tie A', 'Tie B', 'Tie C'], 'ties should fall back to insertion order')
+})
+
+test('a board with no inventory at all is an empty list, not an error', async () => {
+  const empty = await signup('Empty Broker', '+919820000308')
+  const { matches } = await feed(empty.token)
+  assert.deepEqual(matches, [])
+})

@@ -892,37 +892,67 @@ export async function addNetworkPost(p) {
 }
 
 // Real matching: your qualified buyers x posted inventory, on locality + config + budget overlap.
+//
+// The board is the one table in HomeNex nobody's agent_id scopes — every agent reads
+// every listing — so it grows with the whole platform rather than with one brokerage.
+// This used to pull every INVENTORY row into Node (unindexed, unbounded) and score the
+// full cross product in JavaScript: at 10,000 posts and 200 qualified buyers that is
+// two million iterations of toLowerCase per request, plus the whole board over the
+// wire, to return the handful of pairs that clear 70.
+//
+// The cross product is unavoidable — locality matches as a substring in either
+// direction, which no index can serve — but it belongs in the database, where it is
+// one statement over one indexed scan instead of a table transfer. Only the pairs that
+// clear the threshold come back, and the two sides are hydrated by id.
+//
+// The three legs and the 70-point cutoff are byte-for-byte the old rules, including
+// the details that look like accidents and are not:
+//   * `temp <> 'Cold'` drops a NULL temp, because SQL NULL comparison is not true —
+//     that was the original lead query's behaviour and the feed is calibrated to it.
+//   * an empty-string locality or config scores nothing, matching JS truthiness
+//     rather than SQL's IS NOT NULL.
+// The ORDER BY adds what the JS sort could not: a deterministic tiebreak, so two
+// pairs on the same score no longer swap places between requests.
+const MATCH_SCORE = `
+  (CASE WHEN COALESCE(n.locality, '') <> ''
+          AND (position(lower(l.locality) in lower(n.locality)) > 0
+            OR position(lower(n.locality) in lower(l.locality)) > 0)
+        THEN 45 ELSE 0 END
+ + CASE WHEN COALESCE(n.config, '') <> '' AND COALESCE(l.config, '') <> ''
+          AND lower(regexp_replace(n.config, '\\s', '', 'g')) = lower(regexp_replace(l.config, '\\s', '', 'g'))
+        THEN 30 ELSE 0 END
+ + CASE WHEN n.budget_min_l IS NOT NULL AND n.budget_max_l IS NOT NULL
+          AND l.budget_min_l IS NOT NULL AND l.budget_max_l IS NOT NULL
+          AND n.budget_min_l <= l.budget_max_l AND n.budget_max_l >= l.budget_min_l
+        THEN 25 ELSE 0 END)`
+
 export async function computeMatches(agentId) {
-  const leads = (
-    await q(`SELECT * FROM leads WHERE agent_id = $1 AND locality IS NOT NULL AND temp != 'Cold'`, [agentId])
-  ).rows
-  const inventory = (await q(`SELECT * FROM network_posts WHERE type = 'INVENTORY'`)).rows
-  const matches = []
-  for (const lead of leads) {
-    for (const inv of inventory) {
-      let pct = 0
-      if (
-        inv.locality &&
-        lead.locality &&
-        (inv.locality.toLowerCase().includes(lead.locality.toLowerCase()) ||
-          lead.locality.toLowerCase().includes(inv.locality.toLowerCase()))
-      )
-        pct += 45
-      if (
-        inv.config &&
-        lead.config &&
-        inv.config.replace(/\s/g, '').toLowerCase() === lead.config.replace(/\s/g, '').toLowerCase()
-      )
-        pct += 30
-      const budgetsKnown =
-        inv.budget_min_l != null && inv.budget_max_l != null &&
-        lead.budget_min_l != null && lead.budget_max_l != null
-      if (budgetsKnown && inv.budget_min_l <= lead.budget_max_l && inv.budget_max_l >= lead.budget_min_l)
-        pct += 25
-      if (pct >= 70) matches.push({ lead, inventory: inv, matchPct: pct })
-    }
-  }
-  return matches.sort((a, b) => b.matchPct - a.matchPct)
+  const { rows: pairs } = await q(
+    `SELECT lead_id, post_id, pct FROM (
+       SELECT l.id AS lead_id, n.id AS post_id, ${MATCH_SCORE} AS pct
+         FROM leads l
+         CROSS JOIN network_posts n
+        WHERE l.agent_id = $1 AND COALESCE(l.locality, '') <> '' AND l.temp <> 'Cold'
+          AND n.type = 'INVENTORY'
+     ) scored
+      WHERE pct >= 70
+      ORDER BY pct DESC, lead_id, post_id`,
+    [agentId],
+  )
+  if (!pairs.length) return []
+
+  // Two lookups by id, not one per pair: a lead matching six listings is fetched once.
+  const [leads, posts] = await Promise.all([
+    q('SELECT * FROM leads WHERE id = ANY($1::int[])', [[...new Set(pairs.map((p) => p.lead_id))]]),
+    q('SELECT * FROM network_posts WHERE id = ANY($1::int[])', [[...new Set(pairs.map((p) => p.post_id))]]),
+  ])
+  const leadById = new Map(leads.rows.map((r) => [r.id, r]))
+  const postById = new Map(posts.rows.map((r) => [r.id, r]))
+  return pairs.map((p) => ({
+    lead: leadById.get(p.lead_id),
+    inventory: postById.get(p.post_id),
+    matchPct: p.pct,
+  }))
 }
 
 // --- Admin / WABA management ---
