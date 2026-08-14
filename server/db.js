@@ -3055,7 +3055,11 @@ export async function createNotificationsFor(items = []) {
   const rows = []
   for (const n of items) {
     if (n.dedupe_key != null) {
-      const key = `${n.agent_id} ${n.dedupe_key}`
+      // The separator is NUL: it cannot occur in an id or in any dedupe_key the
+      // schedulers build, so no two distinct pairs can straddle it into one string.
+      // Written as the escape, never as the raw byte — a literal NUL makes grep
+      // classify this whole file as binary and silently drop every match in it.
+      const key = `${n.agent_id}\u0000${n.dedupe_key}`
       if (seen.has(key)) continue
       seen.add(key)
     }
