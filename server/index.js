@@ -196,7 +196,7 @@ import { fetchLeadgenData } from './whatsapp.js'
 import { dbPing, closePool } from './db.js'
 import {
   securityHeaders, cors, requestLogger, rateLimit, clientIp, errorCodes, validateIdParams,
-  ensureBody, boundedText, TEXT, boundedNumber, NUM,
+  ensureBody, boundedText, TEXT, boundedNumber, NUM, boundedUrl,
 } from './middleware.js'
 import { validateEnv } from './env.js'
 import { verifyWebhookSignature } from './webhookSignature.js'
@@ -1334,6 +1334,10 @@ const PROPERTY_TEXT_LIMITS = {
 const PROPERTY_NUMBER_LIMITS = {
   price_paise: NUM.PAISE, size_sqft: NUM.AREA, floor: NUM.FLOOR, total_floors: NUM.FLOOR,
 }
+// And the link half. `brochure_url` is the one the app renders into an href, so it is
+// the one that could carry a script; the other two are bounded with it because they
+// are the same kind of field and a listing is shared across a whole team.
+const PROPERTY_URL_FIELDS = ['brochure_url', 'video_url', 'photos']
 
 // The filter set shared by the property list and its count, so the header total can
 // never describe a different set of rows than the page beneath it.
@@ -1376,7 +1380,7 @@ app.get('/api/properties/:id', ah(async (req, res) => {
   res.json(property)
 }))
 
-app.post('/api/properties', boundedText(PROPERTY_TEXT_LIMITS), boundedNumber(PROPERTY_NUMBER_LIMITS), ah(async (req, res) => {
+app.post('/api/properties', boundedText(PROPERTY_TEXT_LIMITS), boundedNumber(PROPERTY_NUMBER_LIMITS), boundedUrl(PROPERTY_URL_FIELDS), ah(async (req, res) => {
   try {
     const property = await createProperty(req.agent.id, pick(req.body, PROPERTY_BODY_FIELDS))
     await logAudit(req.agent.id, 'property', property.id, 'create', { title: property.title })
@@ -1387,7 +1391,7 @@ app.post('/api/properties', boundedText(PROPERTY_TEXT_LIMITS), boundedNumber(PRO
   }
 }))
 
-app.put('/api/properties/:id', boundedText(PROPERTY_TEXT_LIMITS), boundedNumber(PROPERTY_NUMBER_LIMITS), ah(async (req, res) => {
+app.put('/api/properties/:id', boundedText(PROPERTY_TEXT_LIMITS), boundedNumber(PROPERTY_NUMBER_LIMITS), boundedUrl(PROPERTY_URL_FIELDS), ah(async (req, res) => {
   try {
     const property = await updateProperty(req.params.id, req.agent.id, pick(req.body, PROPERTY_BODY_FIELDS))
     if (!property) return res.status(404).json({ error: 'not found' })
@@ -1822,7 +1826,7 @@ app.get('/api/media', ah(async (req, res) => res.json(await listMediaAssets(req.
 
 // Register an asset. Two modes: { storage:'url', url } for an already-hosted file,
 // or { storage:'local', data_base64, filename } to upload a file we host at /uploads.
-app.post('/api/media', uploadLimiter, boundedText(MEDIA_TEXT_LIMITS), ah(async (req, res) => {
+app.post('/api/media', uploadLimiter, boundedText(MEDIA_TEXT_LIMITS), boundedUrl(['url']), ah(async (req, res) => {
   const b = req.body
   try {
     let asset = pick(b, ['title', 'kind', 'caption'])

@@ -221,9 +221,7 @@ export function mockFetch(routes = {}) {
       return response(404, { error: `no mock route for ${method} ${path}` })
     }
     const resolved = typeof route === 'function' ? await route(call) : route
-    if (resolved && typeof resolved === 'object' && 'status' in resolved && !Array.isArray(resolved)) {
-      return response(resolved.status, resolved.body ?? {})
-    }
+    if (isResponseSpec(resolved)) return response(resolved.status, resolved.body ?? {})
     return response(200, resolved)
   }
 
@@ -238,6 +236,26 @@ export function mockFetch(routes = {}) {
       globalThis.fetch = real
     },
   }
+}
+
+// Is this route value a `{ status, body }` RESPONSE, or is it the response body?
+//
+// The test used to be `'status' in resolved`, and `status` is a column. A property
+// has one ('available'), so does a site visit, a deal, an invoice and a subscription
+// — so `'GET /api/properties/11': property` was read as "respond 'available' with an
+// empty body", the component saw a failed request, and the test went on to assert
+// against an error screen it never meant to be looking at. Nothing failed; the
+// assertions were simply about a different render. Two screens in the a11y sweep
+// (the property panel and the billing tab) had been checked in that state.
+//
+// So a spec now has to be unambiguous: a NUMERIC status, and nothing on it beyond
+// the three keys a response is made of. `{ status: 500, body: {} }` still means what
+// it always did; a row that happens to carry a status stays a row.
+const RESPONSE_KEYS = new Set(['status', 'body', 'headers'])
+function isResponseSpec(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  if (typeof value.status !== 'number') return false
+  return Object.keys(value).every((k) => RESPONSE_KEYS.has(k))
 }
 
 function response(status, body) {

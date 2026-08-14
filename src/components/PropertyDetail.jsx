@@ -3,6 +3,7 @@ import { api, usePoll, fmtAgo } from '../api.js'
 import { paiseToDisplay, lakhsToPaise, paiseToLakhs } from '../money.js'
 import { SlideOver, Sheet, Chip, Field, inputCls, useConfirm, InfoTip, DetailOverlay } from './ui.jsx'
 import { glossary } from '../lib/glossary.js'
+import { safeHref, isSafeHref } from '../lib/safeHref.js'
 
 // Downscale a phone-camera photo to a reasonable listing size in the browser, so a
 // 5 MB image never travels over a patchy 4G connection. Returns a JPEG data URL.
@@ -128,9 +129,16 @@ function BrochurePicker({ url, onChange, onError }) {
     return (
       <div className="flex items-center gap-2 bg-cream border border-line rounded-xl px-3 py-2.5">
         <span className="text-[16px]">📄</span>
-        <a href={url} target="_blank" rel="noopener noreferrer" className="flex-1 text-[12px] font-bold text-brand underline underline-offset-2 truncate">
-          Brochure added — view
-        </a>
+        {/* The edit form seeds this from the stored column, so it is the same
+            untrusted value the detail panel renders — and it keeps the Remove
+            button reachable, which is how a bad link gets cleared. */}
+        {isSafeHref(url) ? (
+          <a href={safeHref(url)} target="_blank" rel="noopener noreferrer" className="flex-1 text-[12px] font-bold text-brand underline underline-offset-2 truncate">
+            Brochure added — view
+          </a>
+        ) : (
+          <span className="flex-1 text-[12px] font-bold text-ink-faint truncate">Brochure link can't be opened</span>
+        )}
         <button type="button" onClick={() => onChange(null)} className="shrink-0 text-[11.5px] font-bold text-hot active:scale-95 transition">
           Remove
         </button>
@@ -667,8 +675,10 @@ export default function PropertyDetail({ propertyId, onClose, onChanged, onOpenL
                   </div>
                 ))}
               </dl>
-              {property.brochure_url && (
-                <a href={property.brochure_url} target="_blank" rel="noopener noreferrer" className="inline-block mt-3 text-[12.5px] font-bold text-brand underline underline-offset-2">
+              {/* isSafeHref, not just `&&`: a brochure link that isn't a web link is
+                  not a brochure, and offering it as one is how it gets followed. */}
+              {isSafeHref(property.brochure_url) && (
+                <a href={safeHref(property.brochure_url)} target="_blank" rel="noopener noreferrer" className="inline-block mt-3 text-[12.5px] font-bold text-brand underline underline-offset-2">
                   📄 Open brochure
                 </a>
               )}

@@ -266,6 +266,67 @@ export const TEXT = {
   URL: 2000,
 }
 
+// --- Link fields -----------------------------------------------------------
+// TEXT.URL bounds how LONG a link may be. Nothing bounded what SCHEME it used, and
+// a stored link is not inert: `brochure_url` is rendered by the app as
+//
+//   <a href={property.brochure_url}>Brochure added — view</a>
+//
+// and React renders a `javascript:` href with a console warning and no more. So an
+// agent could save a listing whose brochure link was a script, and it ran on our own
+// origin for whoever opened the listing next — which, on a team account, is a
+// manager or a teammate, and where the session token lives in localStorage. A
+// listing is exactly the object a team shares, so the reach was the whole team.
+//
+// The rule was already written down elsewhere: micropage.js has `safeUrl`, which
+// emits only http(s) into an attribute, because the public page was understood to be
+// rendering strangers' data. The in-app screens render the same columns and never
+// got the same treatment.
+//
+// Two shapes are legitimate here and nothing else is:
+//   - an absolute http(s) URL — a brochure hosted elsewhere, a portal listing;
+//   - a root-relative path — what saveUpload returns when PUBLIC_BASE_URL is unset.
+//
+// `//evil.com` is deliberately NOT relative: it is protocol-relative and resolves to
+// another origin, so a `startsWith('/')` test alone would wave through exactly the
+// off-site link this is here to keep out of the database.
+//
+// Not applied to `avatar_url`: that one is stored as a `data:` URI on purpose, and it
+// only ever reaches an <img src>, where a data: URI cannot execute.
+const isSafeUrl = (value) => {
+  const s = String(value).trim()
+  if (!s) return true // an empty string clears the field; the column allows it
+  if (s.startsWith('//')) return false // protocol-relative → another origin
+  if (s.startsWith('/')) return true // our own /uploads/… path
+  return /^https?:\/\//i.test(s)
+}
+
+export function boundedUrl(fields) {
+  const names = Array.isArray(fields) ? fields : Object.keys(fields)
+  return function boundedUrlMiddleware(req, res, next) {
+    const body = req.body
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return next()
+    for (const field of names) {
+      const value = body[field]
+      if (value == null) continue
+      // `photos` is a JSONB array of links, and one bad entry is enough — every one
+      // of them ends up in an attribute.
+      const values = Array.isArray(value) ? value : [value]
+      for (const one of values) {
+        if (typeof one !== 'string') continue // a non-string link is the route's complaint, not ours
+        if (!isSafeUrl(one)) {
+          return res.status(400).json({
+            error: `${field} must be a web link starting with http:// or https://`,
+            code: 'FIELD_NOT_A_URL',
+            field,
+          })
+        }
+      }
+    }
+    next()
+  }
+}
+
 // --- Bounded numbers -------------------------------------------------------
 // The numeric half of the same problem boundedText solves, and until this it had two
 // distinct failure modes, both of them ours:
