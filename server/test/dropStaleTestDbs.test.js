@@ -190,3 +190,15 @@ test('the CLI says so plainly when there is nothing to sweep', async () => {
   assert.match(out, /No stale test databases\./)
   assert.doesNotMatch(out, /would drop/)
 })
+
+test('the CLI names what a dry run would reclaim without reclaiming it', async () => {
+  const dead = await deadPid()
+  const stale = await makeDb(`${TEST_DB_PREFIX}sweepclidry_${dead}`)
+
+  const { code, out } = await runScript(['--dry-run'])
+  assert.equal(code, 0, `the sweep exited ${code}:\n${out}`)
+  assert.match(out, new RegExp(`would drop ${stale}`))
+  assert.match(out, /Would reclaim \d+\.\d MB from \d+ stale test database\(s\) at /)
+  assert.doesNotMatch(out, /^Reclaimed/m, 'a dry run must not claim it reclaimed anything')
+  assert.equal(await dbExists(stale), true, 'a dry run dropped a database')
+})
