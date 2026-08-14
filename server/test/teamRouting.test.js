@@ -250,15 +250,23 @@ test('distributing the pool skips members with no locality list', async () => {
 
 // --- The claim route's error arm ---------------------------------------------
 
-test('claiming a lead by a non-numeric id is a 400, not a 500', async () => {
+test('claiming a lead by an id that is not one is refused before any query runs', async () => {
   const solo = await signup('Claim Chetan', '+919833000003')
-  await createTeam(solo.agent.id, 'Claim Corp')
+  const team = await createTeam(solo.agent.id, 'Claim Corp')
 
-  const res = await fetch(`${base}/api/team/leads/not-a-number/claim`, {
+  const bad = await fetch(`${base}/api/team/leads/not-a-number/claim`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${solo.token}` },
   })
-  assert.equal(res.status, 400)
-  const body = await res.json()
-  assert.ok(body.error, 'the refusal says something')
+  assert.equal(bad.status, 400)
+  assert.deepEqual(await bad.json(), { error: 'Invalid id', code: 'BAD_ID' })
+
+  // A well-formed id for a lead that isn't claimable is the route's own answer.
+  const gone = await fetch(`${base}/api/team/leads/999999/claim`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${solo.token}` },
+  })
+  assert.equal(gone.status, 409)
+  assert.equal((await gone.json()).error, 'lead is not available to claim')
+  assert.ok(team.id, 'the team survived both refusals')
 })
