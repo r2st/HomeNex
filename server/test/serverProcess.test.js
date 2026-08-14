@@ -57,6 +57,17 @@ async function boot({ mode = 'boot', env = {} } = {}) {
       // Exercise the access log too — it is mounted on the same NODE_ENV check and
       // is otherwise never constructed under test.
       LOG_REQUESTS: '1',
+      // Every server started here stays alive until after(), so by the last test
+      // eleven of them are holding pools open at once. At the default max of 10 that
+      // is 110 possible backends against a postgres that ships with
+      // max_connections=100 — and the in-process suites running alongside us
+      // (--test-concurrency=4) want their own. Past the limit postgres closes the
+      // socket during startup, which pg surfaces from `pool.connect()` as
+      // "Connection terminated due to connection timeout": the child dies in
+      // runMigrations before it ever prints the banner, and the test that was
+      // waiting on the banner fails somewhere unrelated to what it was testing.
+      // None of these children needs more than a couple of connections.
+      PG_POOL_SIZE: '3',
       ...env,
     }),
     stdio: ['ignore', 'pipe', 'pipe'],

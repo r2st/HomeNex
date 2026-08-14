@@ -55,6 +55,11 @@ async function boot(env = {}) {
       PUBLIC_BASE_URL: `http://127.0.0.1:${port}`,
       PORT: String(port),
       LOG_REQUESTS: '0',
+      // These children live until after(), so their pools stack up alongside
+      // serverProcess.test.js's and the in-process suites'. See the note there: past
+      // postgres's max_connections the child dies in runMigrations rather than
+      // failing the assertion it was spawned for.
+      PG_POOL_SIZE: '3',
       ...env,
     }),
     stdio: ['ignore', 'pipe', 'pipe'],
