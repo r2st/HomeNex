@@ -112,6 +112,26 @@ This pushes a message through the identical pipeline (PostgreSQL + OpenRouter), 
 outbound WhatsApp send. The lead appears in the dashboard immediately. To reset all data:
 `docker compose down -v && docker compose up -d`.
 
+### Tests and coverage
+
+Two suites, two gates. `npm test` runs both without measuring; the coverage scripts are the
+gated ones, and both fail the build rather than printing a number nobody reads.
+
+- `npm run test:coverage` — the server suite, gated at **100% lines and functions**. Branches
+  are deliberately not gated: an unreachable arm of a `??` is not a hole in the tests.
+- `npm run test:ui:coverage` — the UI suite (dashboard + admin), gated at **96% lines, 85%
+  functions**.
+
+The UI gate measures production code only — `*.test.js(x)` and the `src/test/` harness are
+excluded, and so is `server/`, which the UI suite pulls in through `money.js` but does not test
+and the server gate already owns. Measuring a suite's own test files inflates lines (every
+assertion is a covered line) while deflating functions (a helper defined for one case is an
+uncovered function everywhere else), so including them moves the number in both directions at
+once and it stops meaning anything.
+
+The two thresholds are ratchets set just under what the suite actually achieves, not aspirations
+— raise them when coverage rises, and never lower one to make a red build green.
+
 ### Database
 
 - Connection: `DATABASE_URL` (see `server/.env.example`); pooled via `pg`.

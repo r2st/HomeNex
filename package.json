@@ -10,7 +10,7 @@
     "server": "node server/index.js",
     "test": "npm run test:ui && npm run test:server",
     "test:ui": "node --test --import ./src/test/register.mjs 'src/**/*.test.js' 'src/**/*.test.jsx' 'admin/src/**/*.test.js' 'admin/src/**/*.test.jsx'",
-    "test:ui:coverage": "node --test --import ./src/test/register.mjs --experimental-test-coverage 'src/**/*.test.js' 'src/**/*.test.jsx' 'admin/src/**/*.test.js' 'admin/src/**/*.test.jsx'",
+    "test:ui:coverage": "node --test --import ./src/test/register.mjs --experimental-test-coverage --test-coverage-exclude='**/*.test.js' --test-coverage-exclude='**/*.test.jsx' --test-coverage-exclude='src/test/**' --test-coverage-exclude='server/**' --test-coverage-lines=96 --test-coverage-functions=85 'src/**/*.test.js' 'src/**/*.test.jsx' 'admin/src/**/*.test.js' 'admin/src/**/*.test.jsx'",
     "test:db:clean": "node server/scripts/dropStaleTestDbs.js",
     "pretest:server": "npm run test:db:clean",
     "test:server": "node --test --test-concurrency=4 'server/test/*.test.js'",
