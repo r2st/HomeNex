@@ -33,7 +33,7 @@ delete process.env.WHATSAPP_ACCESS_TOKEN
 delete process.env.WHATSAPP_APP_SECRET
 const dbName = await createTestDb('migrationchain')
 
-const { closePool, query, ready } = await import('../db.js')
+const { closePool, pool, query, ready } = await import('../db.js')
 
 const MIGRATIONS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'migrations')
 const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort()
@@ -112,7 +112,7 @@ const explain = async (sql, params) =>
 // --- the chain's shape -------------------------------------------------------
 
 test('every migration is numbered, and the numbers run unbroken from 001', () => {
-  assert.ok(files.length >= 27, `expected at least 27 migrations, found ${files.length}`)
+  assert.ok(files.length >= 28, `expected at least 28 migrations, found ${files.length}`)
   const numbers = files.map((f) => {
     const m = /^(\d{3})_[a-z0-9_]+\.sql$/.exec(f)
     assert.ok(m, `${f} is not NNN_lower_snake_case.sql — the runner sorts by filename, so the shape is load-bearing`)
@@ -307,4 +307,93 @@ test('025 left both recency markers and both triggers in place', async () => {
 test('027 left both of its partial indexes in place', async () => {
   assert.ok(await indexdef('idx_leads_service_window'), 'migration 027 did not create idx_leads_service_window')
   assert.ok(await indexdef('idx_notifications_unread'), 'migration 027 did not create idx_notifications_unread')
+})
+
+// --- 028: the routing key, made unique --------------------------------------
+
+test('028 made wa_phone_number_id unique, and retired the plain index it replaces', async () => {
+  const def = await indexdef('idx_agents_wa_phone_number_id_unique')
+  assert.ok(def, 'migration 028 did not create idx_agents_wa_phone_number_id_unique')
+  assert.match(def, /CREATE UNIQUE INDEX/, 'a non-unique index enforces nothing')
+  // Partial, or every agent without a configured line collides with every other one.
+  assert.match(def, /WHERE \(wa_phone_number_id IS NOT NULL\)/)
+  assert.equal(
+    await indexdef('idx_agents_wa_phone_number_id'),
+    undefined,
+    '018’s plain index duplicates the unique one and should have been dropped',
+  )
+})
+
+test('028 collapses a pre-existing duplicate onto the agent whose WABA is live', async () => {
+  // The half of this migration that cannot be checked by looking at the finished
+  // schema: the UPDATE that has to run FIRST, on databases that already contain the
+  // duplicate the index forbids. Get that wrong and CREATE UNIQUE INDEX raises 23505,
+  // the chain aborts, and runMigrations takes the boot down with it — on production,
+  // which is the only place the duplicate exists.
+  //
+  // So run the real file, against the real table, seeded with the collision. Inside a
+  // transaction that is rolled back, because the index has to come off first.
+  const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, '028_agent_wa_phone_number_id_unique.sql'), 'utf8')
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    await client.query('DROP INDEX idx_agents_wa_phone_number_id_unique')
+
+    // Four agents on one line, in an order that makes every tie-break matter, plus a
+    // fifth on '' — the empty string the migration normalises before it counts.
+    const mk = async (suffix, status, registeredAt, pnid) =>
+      (
+        await client.query(
+          `INSERT INTO agents (name, phone, password_hash, waba_status, waba_registered_at, wa_phone_number, wa_phone_number_id)
+           VALUES ($1, $2, 'x', $3, $4, '+919769999999', $5) RETURNING id`,
+          [`Dup ${suffix}`, `+9197699000${suffix}`, status, registeredAt, pnid],
+        )
+      ).rows[0].id
+
+    // Deliberately inserted so that the lowest id is NOT the winner: oldest-wins (the
+    // rule migration 017 uses for email) would pick `first` and route every message to
+    // an agent Meta is not delivering to.
+    const first = await mk('01', 'registered', '2026-01-01T00:00:00Z', 'pnid_dup')
+    const live = await mk('02', 'active', '2026-06-01T00:00:00Z', 'pnid_dup')
+    const never = await mk('03', 'none', null, 'pnid_dup')
+    const alsoReg = await mk('04', 'registered', '2026-03-01T00:00:00Z', 'pnid_dup')
+    const blank = await mk('05', 'none', null, '')
+
+    await client.query(sql)
+
+    const rows = (
+      await client.query(
+        'SELECT id, wa_phone_number, wa_phone_number_id FROM agents WHERE id = ANY($1::int[]) ORDER BY id',
+        [[first, live, never, alsoReg, blank]],
+      )
+    ).rows
+    const by = (id) => rows.find((r) => r.id === id)
+
+    assert.equal(by(live).wa_phone_number_id, 'pnid_dup', 'the live WABA is the one Meta delivers to — it keeps the line')
+    for (const [id, why] of [
+      [first, 'registered but not active'],
+      [alsoReg, 'registered later than the active one'],
+      [never, 'never registered'],
+    ]) {
+      assert.equal(by(id).wa_phone_number_id, null, `the ${why} agent should have been cleared`)
+    }
+    // '' is "no line", not a line — normalised to NULL rather than counted as a
+    // collision against every other agent who never configured one.
+    assert.equal(by(blank).wa_phone_number_id, null)
+
+    // Only the routing id is cleared. The display number is the agent's own and is
+    // not a routing key, so taking it would be data loss for no benefit.
+    for (const id of [first, live, never, alsoReg]) {
+      assert.equal(by(id).wa_phone_number, '+919769999999', 'the display number is not the migration’s business')
+    }
+
+    // And the index it then built is real.
+    await assert.rejects(
+      () => client.query('UPDATE agents SET wa_phone_number_id = $1 WHERE id = $2', ['pnid_dup', first]),
+      (err) => err.code === '23505',
+    )
+  } finally {
+    await client.query('ROLLBACK').catch(() => {})
+    client.release()
+  }
 })

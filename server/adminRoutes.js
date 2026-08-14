@@ -160,7 +160,10 @@ router.put('/agents/:id/waba', boundedText({
     })
     res.json(updated)
   } catch (err) {
-    res.status(400).json({ error: err.message })
+    // A phone_number_id already routing to someone else is a conflict, not a
+    // malformed request — same code the agent-facing route answers with, so an
+    // admin tool can branch on it the same way.
+    res.status(err.code === 'PHONE_ID_TAKEN' ? 409 : 400).json({ error: err.message, code: err.code })
   }
 }))
 

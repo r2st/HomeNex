@@ -244,24 +244,36 @@ export async function getAgentPasswordHash(agentId) {
   return rows[0]?.password_hash || null
 }
 
+// wa_phone_number_id is what findAgentByPhoneNumberId routes every inbound message
+// by, so two agents holding the same one means a buyer's messages land in whichever
+// workspace Postgres returns first — see migration 028. Both writers of the column go
+// through this, because only one of them used to check: the agent-facing route did,
+// and the admin WABA route (updateWabaStatus), which sets the same column while
+// flipping a workspace live, did not.
+//
+// Migration 028 puts a unique index underneath, which is the guarantee; this stays in
+// front of it so the caller gets a named 409 and a sentence they can act on rather
+// than a driver error carrying a constraint name.
+async function assertPhoneNumberIdFree(waPhoneNumberId, agentId) {
+  if (!waPhoneNumberId) return
+  const { rows } = await q('SELECT id FROM agents WHERE wa_phone_number_id = $1 AND id != $2', [
+    waPhoneNumberId,
+    agentId,
+  ])
+  if (rows[0]) {
+    const err = new Error('This WhatsApp Business number ID is already assigned to another agent')
+    err.code = 'PHONE_ID_TAKEN'
+    throw err
+  }
+}
+
 // Update an agent's per-agent WhatsApp Business number configuration.
 // waPhoneNumber is the display number (E.164), waPhoneNumberId is the Meta API phone_number_id.
 // Either or both can be null to clear the configuration.
 export async function updateAgentPhoneConfig(agentId, waPhoneNumber, waPhoneNumberId) {
   const pn = waPhoneNumber ? normalizePhone(waPhoneNumber) : null
   if (pn && pn.replace(/\D/g, '').length < 10) throw new Error('Enter a valid WhatsApp Business number')
-  // Ensure wa_phone_number_id is unique across agents (two agents can't share the same line).
-  if (waPhoneNumberId) {
-    const { rows } = await q('SELECT id FROM agents WHERE wa_phone_number_id = $1 AND id != $2', [
-      waPhoneNumberId,
-      agentId,
-    ])
-    if (rows[0]) {
-      const err = new Error('This WhatsApp Business number ID is already assigned to another agent')
-      err.code = 'PHONE_ID_TAKEN'
-      throw err
-    }
-  }
+  await assertPhoneNumberIdFree(waPhoneNumberId, agentId)
   await q('UPDATE agents SET wa_phone_number = $1, wa_phone_number_id = $2 WHERE id = $3', [
     pn,
     waPhoneNumberId || null,
@@ -1060,6 +1072,7 @@ export async function updateWabaStatus(agentId, { status, metaWabaId, waPhoneNum
     updates.push(`meta_waba_id = $${params.length}`)
   }
   if (waPhoneNumberId !== undefined) {
+    await assertPhoneNumberIdFree(waPhoneNumberId, agentId)
     params.push(waPhoneNumberId || null)
     updates.push(`wa_phone_number_id = $${params.length}`)
   }

@@ -341,6 +341,74 @@ test('WABA update validates status and id', async () => {
   assert.equal((await req('PUT', '/api/admin/agents/99999/waba', { status: 'pending' })).status, 404)
 })
 
+test('the admin WABA route cannot hand one line to a second agent', async () => {
+  // wa_phone_number_id is the routing key: findAgentByPhoneNumberId turns the
+  // webhook's metadata.phone_number_id into the workspace a buyer's message belongs
+  // in. Two agents holding the same one made that lookup a coin flip — no ORDER BY,
+  // no LIMIT, and the winner changes whenever either row is updated — so one broker's
+  // conversations would land in another broker's inbox with the AI replying under
+  // their name, silently, on both sides.
+  //
+  // updateAgentPhoneConfig always refused this. updateWabaStatus, which writes the
+  // same column while flipping a workspace live, did not — so the rule held only on
+  // the path a support engineer is least likely to be on.
+  //
+  // plainAgent already owns 'pnid_777' from the workflow test above.
+  const res = await req('PUT', `/api/admin/agents/${adminAgent.id}/waba`, {
+    status: 'active',
+    wa_phone_number_id: 'pnid_777',
+  })
+  assert.equal(res.status, 409, 'a line already routing elsewhere is a conflict')
+  const body = await res.json()
+  assert.equal(body.code, 'PHONE_ID_TAKEN')
+
+  // The refusal is total: no half-applied write left the status moved with the id
+  // rejected, because the check runs before the UPDATE is assembled.
+  const target = await (await req('GET', `/api/admin/agents/${adminAgent.id}`)).json()
+  assert.equal(target.wa_phone_number_id, null)
+  assert.notEqual(target.waba_status, 'active')
+
+  // And the owner still has it.
+  const owner = await (await req('GET', `/api/admin/agents/${plainAgent.id}`)).json()
+  assert.equal(owner.wa_phone_number_id, 'pnid_777')
+})
+
+test('the database refuses a duplicate line even with the check bypassed', async () => {
+  // The guard above is check-then-act, and there are two writers racing on one
+  // column, so the index from migration 028 is the actual guarantee. Write straight
+  // past the application to prove it holds.
+  const { query } = await import('../db.js')
+  await assert.rejects(
+    () => query('UPDATE agents SET wa_phone_number_id = $1 WHERE id = $2', ['pnid_777', adminAgent.id]),
+    (err) => err.code === '23505', // unique_violation
+  )
+})
+
+test('clearing a line frees it for the next agent', async () => {
+  // NULL is "no line configured" and every agent without one has it, so the index has
+  // to be partial or the second agent to have no WABA fails to save anything at all.
+  await req('PUT', `/api/admin/agents/${plainAgent.id}/waba`, {
+    status: 'pending',
+    wa_phone_number_id: '',
+  })
+  const freed = await (await req('GET', `/api/admin/agents/${plainAgent.id}`)).json()
+  assert.equal(freed.wa_phone_number_id, null)
+
+  const res = await req('PUT', `/api/admin/agents/${adminAgent.id}/waba`, {
+    status: 'registered',
+    wa_phone_number_id: 'pnid_777',
+  })
+  assert.equal(res.status, 200, 'a released line is assignable')
+  assert.equal((await res.json()).wa_phone_number_id, 'pnid_777')
+
+  // Put the fixtures back for the tests that follow.
+  await req('PUT', `/api/admin/agents/${adminAgent.id}/waba`, { status: 'none', wa_phone_number_id: '' })
+  await req('PUT', `/api/admin/agents/${plainAgent.id}/waba`, {
+    status: 'active',
+    wa_phone_number_id: 'pnid_777',
+  })
+})
+
 // setAdmin is exercised indirectly via is_admin edits; keep the export honest.
 test('setAdmin db helper toggles the flag', async () => {
   assert.equal((await setAdmin(plainAgent.id, true)).is_admin, 1)
