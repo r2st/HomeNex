@@ -4,8 +4,8 @@
 // Plain HTML, no auth, HomeNex branding (dark green header, cream/warm body).
 
 const UPDATED = 'July 10, 2026'
-const CONTACT_EMAIL = 'support@homenex.aiknol.com'
-const SITE = 'homenex.aiknol.com'
+const CONTACT_EMAIL = 'support@homenex.doaide.com'
+const SITE = 'homenex.doaide.com'
 
 // Shared shell so both pages look identical. `title` is the <title> + H1,
 // `body` is the inner HTML.
@@ -107,6 +107,7 @@ ${body}
   <footer>
     HomeNex — AI-powered WhatsApp lead management for real estate agents.
     &nbsp;·&nbsp; <a href="/privacy">Privacy</a> &nbsp;·&nbsp; <a href="/terms">Terms</a>
+    &nbsp;·&nbsp; A <a href="https://doaide.com">DoAide</a> product
   </footer>
 </body>
 </html>`

@@ -1,5 +1,7 @@
 # HomeNex
 
+> A [DoAide](https://doaide.com) product · [homenex.doaide.com](https://homenex.doaide.com)
+
 AI-powered WhatsApp-native lead management for Indian real estate brokers.
 
 **Every lead answered in 30 seconds. Even at 2 AM.**

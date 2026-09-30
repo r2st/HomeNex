@@ -85,7 +85,7 @@ ${photos[0] ? `<meta property="og:image" content="${photos[0]}">` : ''}
     ${amenities.length ? `<div class="amenities">${amenities.slice(0, 20).map((a) => `<span>${esc(a)}</span>`).join('')}</div>` : ''}
     ${p.notes ? `<div class="notes">${esc(p.notes)}</div>` : ''}
   </div>
-  <div class="brand">Powered by HomeNex · homenex.aiknol.com</div>
+  <div class="brand">Powered by HomeNex · A <a href="https://doaide.com" style="color:inherit">DoAide</a> product</div>
 </div>
 ${waLink
     ? `<div class="cta"><div class="cta-inner">

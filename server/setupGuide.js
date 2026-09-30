@@ -4,7 +4,7 @@
 // Plain HTML, no auth, HomeNex branding (dark green header, cream/warm body) —
 // same visual shell as the legal pages so it feels part of the product.
 
-const CONTACT_EMAIL = 'support@homenex.aiknol.com'
+const CONTACT_EMAIL = 'support@homenex.doaide.com'
 const META_DOCS = 'https://www.facebook.com/business/help/456220311516626'
 const META_ADD_NUMBER = 'https://www.facebook.com/business/help/2087193751603668'
 const META_DISPLAY_NAME = 'https://www.facebook.com/business/help/338047025165344'
@@ -179,6 +179,7 @@ ${body}
   <footer>
     HomeNex — AI-powered WhatsApp lead management for real estate agents.
     &nbsp;·&nbsp; <a href="/privacy">Privacy</a> &nbsp;·&nbsp; <a href="/terms">Terms</a>
+    &nbsp;·&nbsp; A <a href="https://doaide.com">DoAide</a> product
   </footer>
 </body>
 </html>`

@@ -56,6 +56,7 @@ export default function Login({ onLogin }) {
         <button className="btn" disabled={busy}>
           {busy ? 'Signing in…' : 'Sign in'}
         </button>
+        <p className="powered-by">A <a href="https://doaide.com" target="_blank" rel="noopener noreferrer">DoAide</a> product</p>
       </form>
     </div>
   )

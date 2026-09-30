@@ -66,7 +66,7 @@ const runHeaders = (req) => {
 
 test('a request that arrived over TLS is promised HTTPS for a year', () => {
   const sts = runHeaders({ secure: true })['Strict-Transport-Security']
-  assert.ok(sts, 'no HSTS on a secure request — homenex.aiknol.com ships none, Caddy does not add it either')
+  assert.ok(sts, 'no HSTS on a secure request — homenex.doaide.com ships none, Caddy does not add it either')
   assert.match(sts, /max-age=31536000/, 'a year is the shortest max-age that is worth anything')
   assert.match(sts, /includeSubDomains/)
 })

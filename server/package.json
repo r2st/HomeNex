@@ -2,6 +2,8 @@
   "name": "homenex-server",
   "private": true,
   "version": "0.1.0",
+  "description": "HomeNex backend — a DoAide product.",
+  "homepage": "https://homenex.doaide.com",
   "type": "module",
   "scripts": {
     "start": "node index.js",

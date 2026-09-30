@@ -17,11 +17,11 @@
 // HTTP request in dev is not, and gets nothing.
 //
 // Caddy does not add this itself (v2 dropped v1's automatic HSTS), so without this
-// line homenex.aiknol.com ships no HSTS at all.
+// line homenex.doaide.com ships no HSTS at all.
 //
 // No `preload`. That flag is a submission to a list baked into browser binaries,
 // it is effectively irreversible on a release timescale, and it would commit every
-// sibling on aiknol.com — a decision for the estate, not for this service.
+// sibling on doaide.com — a decision for the estate, not for this service.
 const HSTS_MAX_AGE = Number(process.env.HSTS_MAX_AGE) >= 0 ? Number(process.env.HSTS_MAX_AGE) : 31_536_000
 
 export function securityHeaders(req, res, next) {

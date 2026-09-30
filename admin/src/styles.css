@@ -208,6 +208,8 @@ input:focus, select:focus { outline: none; border-color: var(--brand); box-shado
 .login-card h1 { font-size: 20px; margin: 0 0 2px; }
 .login-card .sub { color: var(--ink-faint); margin: 0 0 20px; font-size: 13px; }
 .login-card .btn { width: 100%; margin-top: 6px; }
+.login-card .powered-by { text-align: center; font-size: 11px; color: var(--ink-faint); margin: 16px 0 0; }
+.login-card .powered-by a { color: var(--ink-faint); text-decoration: underline; text-underline-offset: 2px; }
 
 .placeholder-note {
   border: 1px dashed var(--line);

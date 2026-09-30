@@ -169,6 +169,10 @@ export default function AuthScreen({ onAuthed }) {
       >
         {mode === 'signup' ? 'Already have an account? Log in' : 'New here? Create an account'}
       </button>
+
+      <p className="text-[11px] text-ink-faint mt-8 text-center rise rise-4">
+        A <a href="https://doaide.com" className="underline underline-offset-2" target="_blank" rel="noopener noreferrer">DoAide</a> product
+      </p>
     </div>
   )
 }

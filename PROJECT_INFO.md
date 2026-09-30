@@ -1,5 +1,7 @@
 # HomeNex — PROJECT_INFO
 
+> A [DoAide](https://doaide.com) product
+
 **AI-powered WhatsApp-native lead management for Indian real-estate brokers. Every lead answered in 30 seconds, even at 2 AM.**
 
 Buyers only ever see WhatsApp. HomeNex is the broker's dashboard: every buyer who messages
@@ -34,7 +36,7 @@ conversations, stats and matches, and replies go out from their own number
 | Code | `/opt/homenex` |
 | Service | systemd unit `homenex` |
 | Port | `3005` |
-| Public URL | https://homenex.aiknol.com |
+| Public URL | https://homenex.doaide.com (old: https://homenex.aiknol.com) |
 | Ingress | The box's shared Caddy container |
 | Deploy script | `../../apprend_tech/ops/deploy-homenex-prod.sh` — **lives in the ops repo, not here** |
 
