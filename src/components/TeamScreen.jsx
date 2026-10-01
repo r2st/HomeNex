@@ -307,7 +307,7 @@ function Inbox({ ctx, reload }) {
                 // announcing "Assign to…" tells the agent nothing about which is which.
                 aria-label={`${l.unassigned ? 'Assign' : 'Reassign'} ${l.name || l.wa_id} to a teammate`}
                 onChange={(e) => e.target.value && act(() => api.assignTeamLead(l.id, Number(e.target.value)))}
-                className="text-[11px] bg-white border border-line rounded-lg px-2 py-1 outline-none"
+                className="text-[11px] bg-[#111113] text-ink border border-line rounded-lg px-2 py-1 outline-none"
               >
                 <option value="" disabled>
                   {l.unassigned ? 'Assign to…' : 'Reassign…'}
@@ -452,7 +452,7 @@ function Settings({ ctx, reload }) {
               key={s.id}
               onClick={() => save({ assignment_strategy: s.id })}
               className={`w-full text-left rounded-xl px-3 py-2.5 border transition active:scale-[0.99] ${
-                ctx.team.assignment_strategy === s.id ? 'bg-brand-wash border-brand/40' : 'bg-white border-line'
+                ctx.team.assignment_strategy === s.id ? 'bg-brand-wash border-brand/40' : 'bg-[#111113] border-line'
               }`}
             >
               <p className="font-bold text-[13px] text-ink">{s.label}</p>

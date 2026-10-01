@@ -124,7 +124,7 @@ export default function InsightsTab() {
                     {s.count} <span className="text-ink-faint font-medium">({Math.round((s.count / stats.total) * 100)}%)</span>
                   </span>
                 </div>
-                <div className="h-2 rounded-full bg-cream border border-line overflow-hidden">
+                <div className="h-2 rounded-full bg-[#111113] border border-line overflow-hidden">
                   <div
                     className="h-full rounded-full grow-bar"
                     style={{

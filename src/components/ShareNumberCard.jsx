@@ -62,7 +62,7 @@ export default function ShareNumberCard({ agent, compact = false }) {
               <span className="font-display text-[18px] font-bold text-ink tabular-nums flex-1 truncate">{waNumber}</span>
               <button
                 onClick={copy}
-                className="shrink-0 text-[12px] font-bold rounded-full px-3.5 py-1.5 transition active:scale-95 bg-ink/5 text-ink-soft"
+                className="shrink-0 text-[12px] font-bold rounded-full px-3.5 py-1.5 transition active:scale-95 bg-[#222225] text-ink-soft"
               >
                 {copied ? 'Copied' : 'Copy'}
               </button>
@@ -115,7 +115,7 @@ export default function ShareNumberCard({ agent, compact = false }) {
         <span className="font-display text-[19px] font-bold text-ink tabular-nums flex-1 truncate">{waNumber}</span>
         <button
           onClick={copy}
-          className="shrink-0 text-[12px] font-bold rounded-full px-3.5 py-1.5 transition active:scale-95 bg-ink/5 text-ink-soft"
+          className="shrink-0 text-[12px] font-bold rounded-full px-3.5 py-1.5 transition active:scale-95 bg-[#222225] text-ink-soft"
         >
           {copied ? 'Copied' : 'Copy'}
         </button>

@@ -73,12 +73,12 @@ function PhoneForm({ phone, onSaved }) {
       </div>
 
       {msg && !editing && (
-        <p className="text-[12.5px] text-green-700 bg-green-50 rounded-xl px-3 py-2">{msg}</p>
+        <p className="text-[12.5px] text-[#34D399] bg-[rgba(52,211,153,0.1)] rounded-xl px-3 py-2">{msg}</p>
       )}
 
       {editing && (
         <form onSubmit={submit} className="space-y-3 pt-1">
-          <div className="flex items-stretch bg-white border border-line rounded-2xl overflow-hidden focus-within:border-brand/60">
+          <div className="flex items-stretch bg-[#111113] border border-line rounded-2xl overflow-hidden focus-within:border-brand/60">
             <input
               type="text"
               inputMode="tel"
@@ -87,7 +87,7 @@ function PhoneForm({ phone, onSaved }) {
               onChange={(e) => setCountryCode(e.target.value)}
               placeholder="+91"
               aria-label="Country code"
-              className="w-[4.5rem] px-3 py-3 text-[14px] font-semibold text-ink-soft bg-cream border-r border-line tracking-wide outline-none"
+              className="w-[4.5rem] px-3 py-3 text-[14px] font-semibold text-ink-soft bg-card border-r border-line tracking-wide outline-none"
             />
             <datalist id="change-country-codes">
               <option value="+91">India</option>
@@ -105,7 +105,7 @@ function PhoneForm({ phone, onSaved }) {
               onChange={(e) => setNewPhone(e.target.value.replace(/\D/g, '').slice(0, 12))}
               placeholder="New mobile number"
               aria-label="New WhatsApp number"
-              className="flex-1 px-4 py-3 text-[14px] outline-none bg-white tracking-wide"
+              className="flex-1 px-4 py-3 text-[14px] text-ink outline-none bg-[#111113] tracking-wide"
             />
           </div>
 
@@ -116,7 +116,7 @@ function PhoneForm({ phone, onSaved }) {
             placeholder="Confirm your password"
             aria-label="Current password"
             autoComplete="current-password"
-            className="w-full px-4 py-3 text-[14px] bg-white border border-line rounded-2xl outline-none focus:border-brand/60"
+            className="w-full px-4 py-3 text-[14px] text-ink bg-[#111113] border border-line rounded-2xl outline-none focus:border-brand/60"
           />
 
           <p className="text-[11px] text-ink-faint leading-snug">
@@ -213,7 +213,7 @@ function PasswordForm() {
       </div>
 
       {msg && !editing && (
-        <p className="text-[12.5px] text-green-700 bg-green-50 rounded-xl px-3 py-2">{msg}</p>
+        <p className="text-[12.5px] text-[#34D399] bg-[rgba(52,211,153,0.1)] rounded-xl px-3 py-2">{msg}</p>
       )}
 
       {editing && (
@@ -282,7 +282,7 @@ function PasswordForm() {
 // Everything that guards access to the account: login number and password.
 export default function SecurityCard({ agent, onSaved }) {
   return (
-    <div className="bg-white border border-line rounded-2xl p-4 space-y-3">
+    <div className="bg-card border border-line rounded-2xl p-4 space-y-3">
       <h3 className="text-[13px] font-bold text-ink-soft">Sign-in &amp; security</h3>
       <PhoneForm phone={agent?.phone} onSaved={onSaved} />
       <PasswordForm />

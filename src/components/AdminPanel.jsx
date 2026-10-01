@@ -3,10 +3,10 @@ import { api, fmtTime, fmtAgo } from '../api.js'
 import { inputCls } from './ui.jsx'
 
 const statusColors = {
-  none: 'bg-gray-100 text-gray-600',
-  pending: 'bg-amber-100 text-amber-700',
-  registered: 'bg-blue-100 text-blue-700',
-  active: 'bg-green-100 text-green-700',
+  none: 'bg-card text-ink-faint',
+  pending: 'bg-amber-wash text-[#FBBF24]',
+  registered: 'bg-[rgba(96,165,250,0.1)] text-[#60A5FA]',
+  active: 'bg-[rgba(52,211,153,0.1)] text-[#34D399]',
 }
 
 // Each label is followed by details.target when present, so it must read as a verb
@@ -26,14 +26,14 @@ function DashboardCards({ stats }) {
   if (!stats) return null
   const cards = [
     { label: 'Total Agents', value: stats.totalAgents, color: 'text-ink' },
-    { label: 'Pending WABA', value: stats.pendingWaba, color: 'text-amber-600' },
-    { label: 'Registered', value: stats.registeredWaba, color: 'text-blue-600' },
-    { label: 'Active WABA', value: stats.activeWaba, color: 'text-green-600' },
+    { label: 'Pending WABA', value: stats.pendingWaba, color: 'text-[#FBBF24]' },
+    { label: 'Registered', value: stats.registeredWaba, color: 'text-[#60A5FA]' },
+    { label: 'Active WABA', value: stats.activeWaba, color: 'text-[#34D399]' },
   ]
   return (
     <div className="grid grid-cols-2 gap-3">
       {cards.map((c) => (
-        <div key={c.label} className="bg-white border border-line rounded-2xl p-3">
+        <div key={c.label} className="bg-card border border-line rounded-2xl p-3">
           <div className={`text-[22px] font-bold ${c.color}`}>{c.value}</div>
           <div className="text-[11px] text-ink-faint font-medium">{c.label}</div>
         </div>
@@ -160,7 +160,7 @@ function AgentCard({ agent, me, onUpdate }) {
   }
 
   return (
-    <div className={`bg-white border rounded-2xl p-4 ${inactive ? 'border-line opacity-70' : 'border-line'}`}>
+    <div className={`bg-card border rounded-2xl p-4 ${inactive ? 'border-line opacity-70' : 'border-line'}`}>
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0 flex-1">
           {agent.avatar_url ? (
@@ -296,7 +296,7 @@ function AuditLog() {
   if (!logs.length) return <p className="text-[13px] text-ink-faint text-center py-8">No activity yet</p>
 
   return (
-    <div className="bg-white border border-line rounded-2xl divide-y divide-line">
+    <div className="bg-card border border-line rounded-2xl divide-y divide-line">
       {logs.map((log) => (
         <div key={log.id} className="px-4 py-3">
           <p className="text-[13px] text-ink leading-snug">

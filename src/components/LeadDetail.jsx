@@ -335,7 +335,7 @@ function CrmEditor({ lead, onSaved }) {
           <button type="submit" disabled={saving} className="flex-1 bg-brand text-white font-bold text-[13px] rounded-full py-2.5 active:scale-[0.99] transition disabled:opacity-50">
             {saving ? 'Saving…' : 'Save profile'}
           </button>
-          <button type="button" onClick={() => setForm(null)} className="px-4 text-[13px] font-bold text-ink-soft rounded-full py-2.5 bg-ink/5 active:scale-[0.99] transition">
+          <button type="button" onClick={() => setForm(null)} className="px-4 text-[13px] font-bold text-ink-soft rounded-full py-2.5 bg-[#222225] active:scale-[0.99] transition">
             Cancel
           </button>
         </div>
@@ -611,7 +611,7 @@ const TONE_STYLE = {
   urgent: 'border-l-hot bg-amber-wash',
   hot: 'border-l-hot bg-amber-wash',
   warm: 'border-l-brand bg-brand-wash',
-  info: 'border-l-ink-faint bg-cream',
+  info: 'border-l-ink-faint bg-[#111113]',
 }
 function BriefingPanel({ leadId, refreshKey }) {
   const [b, setB] = useState(null)
@@ -835,7 +835,7 @@ export default function LeadDetail({ leadId, onClose, onOpenConversation, onChan
                     <span className="font-semibold text-ink">{s.label}</span>
                     <span className="font-bold text-ink-soft tabular-nums">{s.value}</span>
                   </div>
-                  <div className="h-2 rounded-full bg-cream border border-line overflow-hidden">
+                  <div className="h-2 rounded-full bg-[#111113] border border-line overflow-hidden">
                     <div
                       className="h-full rounded-full grow-bar"
                       style={{
@@ -863,7 +863,7 @@ export default function LeadDetail({ leadId, onClose, onOpenConversation, onChan
               <div key={m.id} className={`flex ${m.role === 'buyer' ? 'justify-start' : 'justify-end'}`}>
                 <div
                   className={`max-w-[82%] rounded-xl px-3 py-2 text-[12.5px] leading-snug shadow-sm whitespace-pre-wrap ${
-                    m.role === 'buyer' ? 'bg-white rounded-tl-sm' : 'bg-buyer rounded-tr-sm'
+                    m.role === 'buyer' ? 'bg-card rounded-tl-sm' : 'bg-buyer rounded-tr-sm'
                   }`}
                 >
                   {m.text}

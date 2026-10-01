@@ -65,7 +65,7 @@ export default function BottomNav({ tab, setTab, moreBadge }) {
                     active ? 'bg-brand-deep' : 'bg-brand'
                   }`}
                 >
-                  <svg aria-hidden="true" viewBox="0 0 24 24" fill="white" className="w-7 h-7">
+                  <svg aria-hidden="true" viewBox="0 0 24 24" fill="#0A0A0B" className="w-7 h-7">
                     <path d="M12 2.2C6.6 2.2 2.2 6.4 2.2 11.6c0 1.9.6 3.7 1.6 5.2L2.4 21l4.4-1.3c1.5.9 3.3 1.4 5.2 1.4 5.4 0 9.8-4.2 9.8-9.4S17.4 2.2 12 2.2Zm0 3.1 1.1 2.9 3 .3-2.3 2 .7 3-2.5-1.7-2.5 1.7.7-3-2.3-2 3-.3L12 5.3Z" />
                   </svg>
                 </span>

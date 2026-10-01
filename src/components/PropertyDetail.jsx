@@ -127,7 +127,7 @@ function BrochurePicker({ url, onChange, onError }) {
 
   if (url) {
     return (
-      <div className="flex items-center gap-2 bg-cream border border-line rounded-xl px-3 py-2.5">
+      <div className="flex items-center gap-2 bg-[#111113] border border-line rounded-xl px-3 py-2.5">
         <span className="text-[16px]">📄</span>
         {/* The edit form seeds this from the stored column, so it is the same
             untrusted value the detail panel renders — and it keeps the Remove
@@ -285,7 +285,7 @@ export function PropertyForm({ initial, onSave, onCancel, saving, error }) {
       <button
         type="button"
         onClick={() => setShowMore((v) => !v)}
-        className="w-full flex items-center justify-between text-[12px] font-bold text-ink-soft bg-cream rounded-xl px-3.5 py-2.5 active:scale-[0.99] transition"
+        className="w-full flex items-center justify-between text-[12px] font-bold text-ink-soft bg-[#111113] rounded-xl px-3.5 py-2.5 active:scale-[0.99] transition"
       >
         More details (optional)
         <span className="text-ink-faint">{showMore ? '▲' : '▼'}</span>
@@ -318,7 +318,7 @@ export function PropertyForm({ initial, onSave, onCancel, saving, error }) {
         <button type="submit" disabled={saving} className="flex-1 bg-brand text-white font-bold text-[13.5px] rounded-full py-3 active:scale-[0.99] transition disabled:opacity-50">
           {saving ? 'Saving…' : 'Save property'}
         </button>
-        <button type="button" onClick={onCancel} className="px-5 text-[13px] font-bold text-ink-soft rounded-full py-3 bg-ink/5 active:scale-[0.99] transition">
+        <button type="button" onClick={onCancel} className="px-5 text-[13px] font-bold text-ink-soft rounded-full py-3 bg-[#222225] active:scale-[0.99] transition">
           Cancel
         </button>
       </div>
@@ -513,7 +513,7 @@ function AnalyticsCard({ propertyId, onOpenLead }) {
       <p className="text-[10.5px] font-bold tracking-[0.18em] text-brand mb-3">WHO'S LOOKING AT THIS PROPERTY</p>
       <div className="grid grid-cols-3 gap-2 mb-3">
         {[['Total', a.total], ['Last 24h', a.last_24h], ['Viewers', a.distinct_leads]].map(([label, v]) => (
-          <div key={label} className="bg-cream rounded-xl px-3 py-2 text-center">
+          <div key={label} className="bg-[#111113] rounded-xl px-3 py-2 text-center">
             <p className="font-display text-[20px] font-bold text-ink leading-none">{v}</p>
             <p className="text-[10px] font-semibold text-ink-soft mt-1">{label}</p>
           </div>
@@ -610,7 +610,7 @@ function SyndicateCard({ property }) {
             {preview.spec ? <span className="text-ink-soft font-semibold"> · {preview.spec}</span> : null}
           </p>
 
-          <div className="bg-cream border border-line rounded-xl p-3">
+          <div className="bg-[#111113] border border-line rounded-xl p-3">
             <p className="text-[10px] font-bold tracking-[0.14em] text-ink-soft mb-1">WHATSAPP TEXT</p>
             <p className="text-[12px] text-ink whitespace-pre-wrap leading-snug">{preview.whatsapp_text}</p>
             <button onClick={() => copy(preview.whatsapp_text, 'wa')} className="mt-1.5 text-[11px] font-bold text-brand-deep active:scale-95 transition">
@@ -618,7 +618,7 @@ function SyndicateCard({ property }) {
             </button>
           </div>
 
-          <div className="bg-cream border border-line rounded-xl p-3">
+          <div className="bg-[#111113] border border-line rounded-xl p-3">
             <p className="text-[10px] font-bold tracking-[0.14em] text-ink-soft mb-1">PORTAL DESCRIPTION</p>
             <p className="text-[12px] text-ink leading-snug">{preview.description}</p>
             <button onClick={() => copy(preview.description, 'desc')} className="mt-1.5 text-[11px] font-bold text-brand-deep active:scale-95 transition">

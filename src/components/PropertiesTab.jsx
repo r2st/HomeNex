@@ -257,7 +257,7 @@ export default function PropertiesTab({ onOpenLead }) {
           <div className="flex gap-2 mt-5">
             <button
               onClick={() => setFilters((s) => clearedFilters(s))}
-              className="px-4 text-[13px] font-bold text-ink-soft rounded-full py-2.5 bg-ink/5 active:scale-[0.99] transition"
+              className="px-4 text-[13px] font-bold text-ink-soft rounded-full py-2.5 bg-[#222225] active:scale-[0.99] transition"
             >
               Clear all
             </button>

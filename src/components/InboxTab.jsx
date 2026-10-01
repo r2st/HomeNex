@@ -90,7 +90,7 @@ function NotesSheet({ lead, onClose, onChanged }) {
       <div className="space-y-2 mb-3 max-h-52 overflow-y-auto no-scrollbar">
         {notes.length === 0 && <p className="text-[12px] text-ink-soft">No notes yet.</p>}
         {notes.map((n) => (
-          <div key={n.id} className="bg-white border border-line rounded-xl px-3 py-2">
+          <div key={n.id} className="bg-card border border-line rounded-xl px-3 py-2">
             <p className="text-[12.5px] text-ink whitespace-pre-line">{n.body}</p>
             <div className="flex items-center justify-between mt-1">
               <span className="text-[10px] text-ink-faint">
@@ -138,7 +138,7 @@ function QuickReplySheet({ lead, onClose, onPick }) {
           <button
             key={r.id}
             onClick={() => onPick(fillKnown(r.body, lead))}
-            className="w-full text-left bg-white border border-line rounded-xl px-3.5 py-2.5 active:scale-[0.99] transition"
+            className="w-full text-left bg-card border border-line rounded-xl px-3.5 py-2.5 active:scale-[0.99] transition"
           >
             <p className="text-[12px] font-bold text-ink">{r.title}</p>
             <p className="text-[11.5px] text-ink-soft line-clamp-2">{fillKnown(r.body, lead)}</p>
@@ -180,7 +180,7 @@ function MediaSheet({ lead, onClose, onSent, onError }) {
             key={a.id}
             onClick={() => send(a)}
             disabled={sendingId != null}
-            className="w-full text-left bg-white border border-line rounded-xl px-3.5 py-2.5 flex items-center gap-3 active:scale-[0.99] transition disabled:opacity-50"
+            className="w-full text-left bg-card border border-line rounded-xl px-3.5 py-2.5 flex items-center gap-3 active:scale-[0.99] transition disabled:opacity-50"
           >
             <span className="text-[20px]">{ICON[a.kind] || '📎'}</span>
             <div className="min-w-0 flex-1">
@@ -250,7 +250,7 @@ function TemplateComposer({ lead, onSent, onError }) {
           const isOpen = openId === t.id
           const unfilled = isOpen ? unfilledVars(t.body, vars) : []
           return (
-            <div key={t.id} className="bg-white border border-line rounded-xl px-3.5 py-2.5">
+            <div key={t.id} className="bg-card border border-line rounded-xl px-3.5 py-2.5">
               <button onClick={() => open(t)} className="w-full text-left">
                 <div className="flex items-center gap-2">
                   <p className="text-[12px] font-bold text-ink flex-1">{t.name}</p>
@@ -378,17 +378,17 @@ function Conversation({ leadId, onBack }) {
 
   return (
     <div className="flex flex-col h-[calc(100dvh-88px)]">
-      <div className="bg-brand-deep px-4 py-3 flex items-center gap-3 shrink-0">
-        <button aria-label="Back to conversations" onClick={onBack} className="text-white/90 text-[18px] px-1 active:scale-95 transition">
+      <div className="bg-card border-b border-line px-4 py-3 flex items-center gap-3 shrink-0">
+        <button aria-label="Back to conversations" onClick={onBack} className="text-ink-soft text-[18px] px-1 active:scale-95 transition">
           <span aria-hidden="true">←</span>
         </button>
         <div className="flex-1 min-w-0">
-          <p className="text-white font-bold text-[14.5px] leading-tight truncate">{lead.name || lead.wa_id}</p>
-          <p className="text-white/75 text-[11px] truncate">
+          <p className="text-ink font-bold text-[14.5px] leading-tight truncate">{lead.name || lead.wa_id}</p>
+          <p className="text-ink-soft text-[11px] truncate">
             +{lead.wa_id} · {lead.temp}
           </p>
           {win.known && (
-            <p className={`text-[10px] font-bold inline-flex items-center gap-1 ${win.open ? 'text-emerald-300' : 'text-amber-300'}`}>
+            <p className={`text-[10px] font-bold inline-flex items-center gap-1 ${win.open ? 'text-[#34D399]' : 'text-[#FBBF24]'}`}>
               {win.open ? `🟢 Free replies · ${fmtCountdown(win.msLeft)} left` : '🔒 Free-reply time is up'}
               <InfoTip label="" text={glossary.SERVICE_WINDOW} align="left" />
             </p>
@@ -400,14 +400,14 @@ function Conversation({ leadId, onBack }) {
         <button
           onClick={() => setSheet('notes')}
           aria-label={lead.notes?.length ? `Private notes (${lead.notes.length})` : 'Private notes'}
-          className="shrink-0 text-white/90 text-[11px] font-bold bg-white/15 rounded-full px-2.5 py-1.5 active:scale-95 transition"
+          className="shrink-0 text-ink-soft text-[11px] font-bold bg-[#222225] rounded-full px-2.5 py-1.5 active:scale-95 transition"
         >
           <span aria-hidden="true">📝{lead.notes?.length ? ` ${lead.notes.length}` : ''}</span>
         </button>
         <button
           onClick={toggleAi}
           className={`shrink-0 text-[10.5px] font-bold rounded-full px-2.5 py-1.5 transition active:scale-95 ${
-            lead.ai_enabled ? 'bg-white text-brand-deep' : 'bg-white/20 text-white'
+            lead.ai_enabled ? 'bg-brand text-[#0A0A0B]' : 'bg-[#222225] text-ink-soft'
           }`}
         >
           {lead.ai_enabled ? '🤖 Auto-reply' : '✋ You reply'}
@@ -429,7 +429,7 @@ function Conversation({ leadId, onBack }) {
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto no-scrollbar chat-texture px-3 py-3 space-y-2">
         {lead.messages.length === 0 && (
-          <p className="text-center text-[12px] text-ink-soft bg-white/80 rounded-lg px-3 py-2 shadow-sm mx-8">
+          <p className="text-center text-[12px] text-ink-soft bg-card/80 rounded-lg px-3 py-2 shadow-sm mx-8">
             No messages yet.
           </p>
         )}
@@ -437,7 +437,7 @@ function Conversation({ leadId, onBack }) {
           <div key={m.id} className={`flex ${m.role === 'buyer' ? 'justify-start' : 'justify-end'}`}>
             <div
               className={`max-w-[85%] rounded-xl px-3 py-2 shadow-sm text-[13.5px] leading-snug whitespace-pre-line ${
-                m.role === 'buyer' ? 'bg-white rounded-tl-sm' : 'bg-buyer rounded-tr-sm'
+                m.role === 'buyer' ? 'bg-card rounded-tl-sm text-ink' : 'bg-buyer rounded-tr-sm text-ink'
               }`}
             >
               {m.role !== 'buyer' && (
@@ -498,7 +498,7 @@ function Conversation({ leadId, onBack }) {
                 rows={1}
                 aria-label={`Reply to ${lead.name || 'buyer'} on WhatsApp`}
                 placeholder={`Reply to ${lead.name || 'buyer'} on WhatsApp…`}
-                className="flex-1 resize-none bg-white border border-line rounded-2xl px-4 py-3 text-[13.5px] outline-none focus:border-brand/50"
+                className="flex-1 resize-none bg-[#111113] border border-line rounded-2xl px-4 py-3 text-[13.5px] text-ink outline-none focus:border-brand/50"
               />
               <button
                 aria-label="Send reply on WhatsApp"

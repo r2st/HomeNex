@@ -81,9 +81,9 @@ export function ScoreRing({ score, size = 44 }) {
 }
 
 export const TEMP_STYLE = {
-  Hot: 'bg-amber-wash text-hot border-amber/40',
+  Hot: 'bg-amber-wash text-hot border-[rgba(251,191,36,0.3)]',
   Warm: 'bg-brand-wash text-brand-deep border-brand/30',
-  Cold: 'bg-cream text-ink-faint border-line',
+  Cold: 'bg-card text-ink-faint border-line',
 }
 
 export function Avatar({ name, className = '' }) {
@@ -128,7 +128,7 @@ export function SlideOver({ onClose, label = 'Details', children }) {
   useEscape(onClose)
   return (
     <div className="fixed inset-0 z-50">
-      <div className="absolute inset-0 bg-ink/50 backdrop-blur-[2px]" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px]" onClick={onClose} />
       <div
         role="dialog"
         aria-modal="true"
@@ -147,7 +147,7 @@ export function Sheet({ onClose, title, children }) {
   const titleId = useId()
   return (
     <div className="fixed inset-0 z-[60]">
-      <div className="absolute inset-0 bg-ink/50 backdrop-blur-[2px]" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px]" onClick={onClose} />
       <div
         role="dialog"
         aria-modal="true"
@@ -181,7 +181,7 @@ export function Chip({ active, onClick, children }) {
 }
 
 export const inputCls =
-  'w-full bg-white border border-line rounded-xl px-3.5 py-2.5 text-[13px] outline-none focus:border-brand/60'
+  'w-full bg-[#111113] border border-line rounded-xl px-3.5 py-2.5 text-[13px] text-ink outline-none focus:border-brand/60'
 
 export function Field({ label, children }) {
   return (
@@ -204,7 +204,7 @@ export function Confirm({ title, message, confirmLabel = 'Delete', cancelLabel =
   const msgId = useId()
   return (
     <div className="fixed inset-0 z-[80] flex items-end sm:items-center justify-center">
-      <div className="absolute inset-0 bg-ink/50 backdrop-blur-[2px]" onClick={busy ? undefined : onCancel} />
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px]" onClick={busy ? undefined : onCancel} />
       <div
         role="alertdialog"
         aria-modal="true"
@@ -325,7 +325,7 @@ export function ErrorBanner({ error, className = '' }) {
 export function DetailOverlay({ error, onClose, onRetry }) {
   return (
     <div className="fixed inset-0 z-50">
-      <div className="absolute inset-0 bg-ink/50 backdrop-blur-[2px]" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px]" onClick={onClose} />
       <div className="absolute right-0 top-0 bottom-0 w-full max-w-[440px] bg-cream shadow-float slide-in p-5">
         <button
           aria-label="Close"

@@ -132,7 +132,7 @@ function AnalyticsPanel({ pipeline }) {
               <span className={`w-[128px] shrink-0 text-[11.5px] font-semibold truncate ${f.stage === 'Lost' ? 'text-hot' : 'text-ink'}`}>
                 {f.stage}
               </span>
-              <div className="flex-1 h-4 rounded-full bg-cream border border-line overflow-hidden">
+              <div className="flex-1 h-4 rounded-full bg-[#111113] border border-line overflow-hidden">
                 <div className="h-full rounded-full bg-brand" style={{ width: `${(f.open / max) * 100}%` }} />
               </div>
               <span className="w-6 text-right text-[11.5px] font-bold text-ink tabular-nums">{f.open}</span>
@@ -268,7 +268,7 @@ export default function LeadsTab({ onOpenConversation }) {
             {chipCounts[p.id] > 0 && (
               <span
                 className={`ml-1.5 text-[10.5px] font-bold tabular-nums rounded-full px-1.5 py-0.5 ${
-                  pipeline === p.id ? 'bg-cream/25 text-cream' : 'bg-ink/10 text-ink-soft'
+                  pipeline === p.id ? 'bg-ink/15 text-ink' : 'bg-ink/10 text-ink-soft'
                 }`}
               >
                 {chipCounts[p.id]}

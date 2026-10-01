@@ -140,7 +140,7 @@ export default function ProfileCard({ agent, onSaved }) {
   }
 
   return (
-    <form onSubmit={submit} className="bg-white border border-line rounded-2xl p-4 space-y-3.5">
+    <form onSubmit={submit} className="bg-card border border-line rounded-2xl p-4 space-y-3.5">
       <h3 className="text-[13px] font-bold text-ink-soft">Profile</h3>
 
       <AvatarPicker
@@ -203,7 +203,7 @@ export default function ProfileCard({ agent, onSaved }) {
       </Field>
 
       {error && <p className="text-[12.5px] text-hot bg-amber-wash rounded-xl px-3 py-2">{error}</p>}
-      {msg && <p className="text-[12.5px] text-green-700 bg-green-50 rounded-xl px-3 py-2">{msg}</p>}
+      {msg && <p className="text-[12.5px] text-[#34D399] bg-[rgba(52,211,153,0.1)] rounded-xl px-3 py-2">{msg}</p>}
 
       <button
         type="submit"

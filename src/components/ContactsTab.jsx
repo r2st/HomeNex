@@ -95,7 +95,7 @@ function ContactDetail({ contactId, onClose, onOpenLead }) {
               <button
                 key={l.id}
                 onClick={() => onOpenLead(l.id)}
-                className="w-full text-left bg-cream border border-line rounded-xl px-3.5 py-2.5 active:scale-[0.99] transition"
+                className="w-full text-left bg-[#111113] border border-line rounded-xl px-3.5 py-2.5 active:scale-[0.99] transition"
               >
                 <p className="text-[13px] font-bold text-ink">
                   {l.stage || 'New'} <span className="text-ink-faint font-medium">· {pipelineLabel(l.pipeline_type)}</span>

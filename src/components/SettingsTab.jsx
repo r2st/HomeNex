@@ -24,7 +24,7 @@ function WabaCard({ agent }) {
   const status = agent?.waba_status || 'none'
 
   return (
-    <div className="bg-white border border-line rounded-2xl p-4 space-y-3">
+    <div className="bg-card border border-line rounded-2xl p-4 space-y-3">
       <h3 className="text-[13px] font-bold text-ink-soft">WhatsApp Business Number</h3>
 
       {agent?.wa_phone_number ? (
@@ -48,8 +48,8 @@ function WabaCard({ agent }) {
           )}
 
           {status === 'active' && (
-            <div className="bg-green-50 border border-green-200 rounded-xl px-3 py-2">
-              <p className="text-[12px] text-green-800 leading-snug">
+            <div className="bg-[rgba(52,211,153,0.1)] border border-[rgba(52,211,153,0.2)] rounded-xl px-3 py-2">
+              <p className="text-[12px] text-[#34D399] leading-snug">
                 Your WhatsApp Business number is active! All incoming messages are automatically
                 tracked in your dashboard. New senders are auto-added as clients.
               </p>
@@ -57,8 +57,8 @@ function WabaCard({ agent }) {
           )}
 
           {status === 'pending' && (
-            <div className="bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
-              <p className="text-[12px] text-amber-800 leading-snug">
+            <div className="bg-amber-wash border border-[rgba(251,191,36,0.2)] rounded-xl px-3 py-2">
+              <p className="text-[12px] text-[#FBBF24] leading-snug">
                 Our support team is registering this number on Meta WABA.
                 You'll be notified once it's active. This usually takes 1-2 business days.
               </p>
@@ -66,8 +66,8 @@ function WabaCard({ agent }) {
           )}
 
           {status === 'registered' && (
-            <div className="bg-blue-50 border border-blue-200 rounded-xl px-3 py-2">
-              <p className="text-[12px] text-blue-800 leading-snug">
+            <div className="bg-[rgba(96,165,250,0.1)] border border-[rgba(96,165,250,0.2)] rounded-xl px-3 py-2">
+              <p className="text-[12px] text-[#60A5FA] leading-snug">
                 Your number is registered with Meta. Our team is completing the final setup.
                 It will be active shortly.
               </p>
@@ -75,8 +75,8 @@ function WabaCard({ agent }) {
           )}
 
           {status === 'none' && (
-            <div className="bg-gray-50 border border-gray-200 rounded-xl px-3 py-2">
-              <p className="text-[12px] text-gray-700 leading-snug">
+            <div className="bg-card border border-line rounded-xl px-3 py-2">
+              <p className="text-[12px] text-ink-soft leading-snug">
                 Your number is saved but not yet submitted for WABA registration.
                 Contact support to begin registration.
               </p>
@@ -126,7 +126,7 @@ export default function SettingsTab({ agent, onAgentUpdate }) {
         href="/setup-guide"
         target="_blank"
         rel="noopener noreferrer"
-        className="block bg-white border border-line rounded-2xl p-4 active:scale-[0.99] transition hover:bg-cream"
+        className="block bg-card border border-line rounded-2xl p-4 active:scale-[0.99] transition hover:bg-[#222225]"
       >
         <div className="flex items-center gap-3">
           <span className="text-[22px]">📘</span>
@@ -142,7 +142,7 @@ export default function SettingsTab({ agent, onAgentUpdate }) {
       </a>
 
       {/* How it works */}
-      <div className="bg-white border border-line rounded-2xl p-4 space-y-3">
+      <div className="bg-card border border-line rounded-2xl p-4 space-y-3">
         <h3 className="text-[13px] font-bold text-ink-soft">How your WhatsApp number gets connected</h3>
         <ol className="text-[12.5px] text-ink-soft leading-relaxed space-y-1.5 list-decimal list-inside">
           <li>Provide a phone number (not your personal WhatsApp)</li>

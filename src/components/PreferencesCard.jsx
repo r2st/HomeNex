@@ -43,7 +43,7 @@ function Toggle({ checked, onChange, disabled, label }) {
       }`}
     >
       <span
-        className={`block w-5 h-5 rounded-full bg-white shadow transition-transform ${
+        className={`block w-5 h-5 rounded-full bg-ink shadow transition-transform ${
           checked ? 'translate-x-5' : 'translate-x-0'
         }`}
       />
@@ -83,10 +83,10 @@ export default function PreferencesCard({ agent, onSaved }) {
     )
 
   return (
-    <div className="bg-white border border-line rounded-2xl p-4 space-y-4">
+    <div className="bg-card border border-line rounded-2xl p-4 space-y-4">
       <div className="flex items-center justify-between">
         <h3 className="text-[13px] font-bold text-ink-soft">Preferences</h3>
-        {msg && <span className="text-[11px] font-bold text-green-700">{msg}</span>}
+        {msg && <span className="text-[11px] font-bold text-[#34D399]">{msg}</span>}
       </div>
 
       <Field label="Language">

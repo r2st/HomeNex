@@ -20,7 +20,7 @@ const PRIORITY_STYLE = {
   critical: { pill: 'text-white bg-hot', label: 'NOW' },
   high: { pill: 'text-hot bg-amber-wash', label: 'HIGH' },
   medium: { pill: 'text-brand bg-brand/10', label: 'SOON' },
-  low: { pill: 'text-ink-soft bg-ink/5', label: 'LATER' },
+  low: { pill: 'text-ink-soft bg-[#222225]', label: 'LATER' },
 }
 
 function greeting() {

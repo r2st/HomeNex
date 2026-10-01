@@ -2,31 +2,33 @@
 @import './doaide-theme.css';
 
 @theme {
-  --color-ink: #16241c;
-  --color-ink-soft: #4c5d53;
-  --color-ink-faint: #8b988f;
-  --color-cream: #faf7f1;
-  --color-card: #ffffff;
-  --color-line: #e9e4d9;
-  --color-brand: #1b7a4a;
-  --color-brand-deep: #0e5c36;
-  --color-brand-wash: #e8f4ec;
-  --color-gold: #b45309;
-  --color-amber: #d97706;
-  --color-amber-wash: #fdf3e3;
-  --color-hot: #c2410c;
-  --color-chat-bg: #ece5dd;
-  --color-buyer: #d9fdd3;
+  --color-ink: #E5E7EB;
+  --color-ink-soft: #9CA3AF;
+  --color-ink-faint: #6B7280;
+  --color-cream: #0A0A0B;
+  --color-card: #1A1A1D;
+  --color-line: #2A2A2D;
+  --color-brand: #F0B429;
+  --color-brand-deep: #D4A017;
+  --color-brand-wash: rgba(240, 180, 41, 0.10);
+  --color-gold: #F0B429;
+  --color-amber: #FBBF24;
+  --color-amber-wash: rgba(251, 191, 36, 0.10);
+  --color-hot: #F87171;
+  --color-chat-bg: #111113;
+  --color-buyer: rgba(240, 180, 41, 0.15);
 
-  --font-display: 'Fraunces', Georgia, serif;
-  --font-sans: 'Albert Sans', -apple-system, sans-serif;
+  --font-display: 'Instrument Serif', Georgia, serif;
+  --font-sans: 'Schibsted Grotesk', system-ui, -apple-system, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
 
-  --shadow-card: 0 1px 2px rgba(22, 36, 28, 0.05), 0 4px 16px rgba(22, 36, 28, 0.06);
-  --shadow-float: 0 8px 30px rgba(22, 36, 28, 0.16);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 16px rgba(0, 0, 0, 0.2);
+  --shadow-float: 0 8px 30px rgba(0, 0, 0, 0.5);
 }
 
 html {
-  background: #ede9e0;
+  background: #0A0A0B;
+  color-scheme: dark;
 }
 
 body {
@@ -46,7 +48,7 @@ body {
   min-height: 100dvh;
   background: var(--color-cream);
   position: relative;
-  box-shadow: 0 0 60px rgba(22, 36, 28, 0.12);
+  box-shadow: 0 0 60px rgba(0, 0, 0, 0.4);
 }
 
 @keyframes rise {
@@ -101,7 +103,7 @@ body {
 
 .chat-texture {
   background-color: var(--color-chat-bg);
-  background-image: radial-gradient(rgba(27, 122, 74, 0.055) 1.5px, transparent 1.5px);
+  background-image: radial-gradient(rgba(240, 180, 41, 0.04) 1.5px, transparent 1.5px);
   background-size: 22px 22px;
 }
 

@@ -74,7 +74,7 @@ function PortalRow({ portal, integration, onSaved }) {
           disabled={busy}
           className={`w-12 h-7 rounded-full transition relative ${enabled ? 'bg-brand' : 'bg-line'}`}
         >
-          <span aria-hidden="true" className={`absolute top-1 w-5 h-5 rounded-full bg-white shadow transition-all ${enabled ? 'left-6' : 'left-1'}`} />
+          <span aria-hidden="true" className={`absolute top-1 w-5 h-5 rounded-full bg-ink shadow transition-all ${enabled ? 'left-6' : 'left-1'}`} />
         </button>
       </div>
       <div className="flex gap-2 mt-2.5">
