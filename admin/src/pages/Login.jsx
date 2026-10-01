@@ -182,7 +182,7 @@ export default function Login({ onLogin }) {
         {robotSvg}
 
         <h1 style={s.title}>
-          DoAide <span style={s.titleAccent}>HomeNex</span>
+          DoAide <span style={s.titleAccent}>Realty</span>
         </h1>
         <p style={s.subtitle}>Internal staff sign-in</p>
 

@@ -291,7 +291,7 @@ export default function AuthScreen({ onAuthed }) {
         {robotSvg}
 
         <h1 style={styles.title}>
-          DoAide <span style={styles.titleAccent}>HomeNex</span>
+          DoAide <span style={styles.titleAccent}>Realty</span>
         </h1>
         <p style={styles.subtitle}>Your leads, answered in seconds</p>
 
