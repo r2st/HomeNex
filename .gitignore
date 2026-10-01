@@ -9,3 +9,5 @@ keys/
 .wrangler
 *.db*
 server/uploads/
+
+backups/
