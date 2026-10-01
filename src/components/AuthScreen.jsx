@@ -2,26 +2,22 @@ import { useState } from 'react'
 import { api, setToken } from '../api.js'
 
 const robotSvg = (
-  <svg viewBox="0 0 48 48" style={{ width: 48, height: 48, color: '#F0B429', margin: '0 auto 20px', display: 'block' }} aria-hidden="true">
-    <g fill="none">
-      <line x1="24" y1="8" x2="24" y2="3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-      <circle cx="24" cy="2" r="1.8" fill="currentColor" opacity="0.9" />
-      <circle cx="24" cy="2" r="2.8" fill="currentColor" opacity="0.25" />
-      <rect x="14" y="8" width="20" height="14" rx="4" fill="currentColor" />
-      <circle cx="19.5" cy="14" r="2.2" fill="#0A0A0B" />
-      <circle cx="28.5" cy="14" r="2.2" fill="#0A0A0B" />
-      <path d="M20 18.5 Q24 21.5 28 18.5" stroke="#0A0A0B" strokeWidth="1.4" fill="none" strokeLinecap="round" />
-      <rect x="16" y="23" width="16" height="12" rx="3" fill="currentColor" />
-      <rect x="8" y="24" width="7" height="3.5" rx="1.8" fill="currentColor" />
-      <rect x="33" y="24" width="7" height="3.5" rx="1.8" fill="currentColor" />
-      <rect x="19" y="36" width="3.5" height="5" rx="1.5" fill="currentColor" />
-      <rect x="25.5" y="36" width="3.5" height="5" rx="1.5" fill="currentColor" />
-      <g transform="translate(36, 28)">
-        <rect x="-2.5" y="0" width="7" height="5.5" rx="1" fill="#0A0A0B" stroke="currentColor" strokeWidth="0.8" />
-        <path d="M-0.5 0 v-1.2 a1.2 1.2 0 0 1 1.2-1.2 h0.6 a1.2 1.2 0 0 1 1.2 1.2 v1.2" stroke="currentColor" strokeWidth="0.7" fill="none" />
-        <rect x="0" y="2" width="2" height="1" rx="0.3" fill="currentColor" />
-      </g>
-    </g>
+  <svg viewBox="0 0 400 320" style={{ width: 80, height: 64, margin: '0 auto 20px', display: 'block' }} aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+    <defs><linearGradient id="hg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#F0B429"/><stop offset="100%" stopColor="#D4A017"/></linearGradient></defs>
+    <line x1="200" y1="45" x2="200" y2="20" stroke="#F0B429" strokeWidth="6" strokeLinecap="round"/>
+    <circle cx="200" cy="14" r="10" fill="#F0B429"/><circle cx="200" cy="14" r="5" fill="#F7CC5F"/>
+    <rect x="110" y="50" width="180" height="140" rx="35" fill="url(#hg)"/>
+    <rect x="130" y="68" width="140" height="105" rx="25" fill="#D4A017" opacity="0.4"/>
+    <ellipse cx="165" cy="115" rx="18" ry="20" fill="#0A0A0B"/><ellipse cx="235" cy="115" rx="18" ry="20" fill="#0A0A0B"/>
+    <circle cx="170" cy="113" r="8" fill="#F7CC5F"/><circle cx="240" cy="113" r="8" fill="#F7CC5F"/>
+    <circle cx="174" cy="109" r="3" fill="white" opacity="0.7"/><circle cx="244" cy="109" r="3" fill="white" opacity="0.7"/>
+    <path d="M170 155Q200 178 230 155" stroke="#0A0A0B" strokeWidth="4" fill="none" strokeLinecap="round"/>
+    <rect x="92" y="95" width="22" height="45" rx="8" fill="#D4A017"/><rect x="286" y="95" width="22" height="45" rx="8" fill="#D4A017"/>
+    <rect x="175" y="190" width="50" height="14" rx="5" fill="#D4A017"/>
+    <rect x="145" y="204" width="110" height="55" rx="18" fill="url(#hg)"/>
+    <circle cx="200" cy="228" r="7" fill="#0A0A0B"/><circle cx="200" cy="228" r="3.5" fill="#0A0A0B"/>
+    <path d="M145 218Q118 223 113 240Q108 257 120 262" stroke="#D4A017" strokeWidth="9" fill="none" strokeLinecap="round"/><circle cx="120" cy="265" r="7" fill="#D4A017"/>
+    <path d="M255 218Q282 223 287 240Q292 257 280 262" stroke="#D4A017" strokeWidth="9" fill="none" strokeLinecap="round"/><circle cx="280" cy="265" r="7" fill="#D4A017"/>
   </svg>
 )
 
@@ -209,12 +205,51 @@ export default function AuthScreen({ onAuthed }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [showPassword, setShowPassword] = useState(false)
+  const [resetStep, setResetStep] = useState(null) // null | 'phone' | 'code' | 'done'
+  const [resetData, setResetData] = useState({ cc: '+91', phone: '', code: '', newPassword: '', agentId: null })
 
   const setCc = (v) => {
     const digits = v.replace(/\D/g, '').slice(0, 4)
     setForm((s) => ({ ...s, cc: '+' + digits }))
   }
   const setPhone = (v) => setForm((s) => ({ ...s, phone: v.replace(/\D/g, '').slice(0, 12) }))
+
+  const requestResetCode = async (e) => {
+    e.preventDefault()
+    if (busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      const phone = (resetData.cc || '+91') + resetData.phone
+      const { agentId } = await api.requestReset({ phone })
+      setResetData((s) => ({ ...s, agentId }))
+      setResetStep('code')
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const submitReset = async (e) => {
+    e.preventDefault()
+    if (busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      const { token, agent } = await api.resetPassword({
+        agentId: resetData.agentId,
+        code: resetData.code,
+        newPassword: resetData.newPassword,
+      })
+      setToken(token)
+      onAuthed(agent)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const submit = async (e) => {
     e.preventDefault()
@@ -261,7 +296,105 @@ export default function AuthScreen({ onAuthed }) {
         <p style={styles.subtitle}>AI-powered CRM for Indian real estate agents</p>
 
         <div style={styles.card}>
-          <form onSubmit={submit}>
+          {resetStep === 'phone' && (
+            <form onSubmit={requestResetCode}>
+              <p style={{ ...styles.label, fontSize: 12, letterSpacing: '0.06em', marginBottom: 16, textTransform: 'none', color: 'rgba(255,255,255,0.5)' }}>
+                Enter the WhatsApp number you signed up with. We'll send a 6-digit code to reset your password.
+              </p>
+              <div style={styles.fieldGroup}>
+                <label style={styles.label}>WhatsApp Number</label>
+                <div style={styles.phoneRow}>
+                  <input
+                    type="text"
+                    inputMode="tel"
+                    value={resetData.cc}
+                    onChange={(e) => { const d = e.target.value.replace(/\D/g, '').slice(0, 4); setResetData((s) => ({ ...s, cc: '+' + d })) }}
+                    placeholder="+91"
+                    aria-label="Country code"
+                    required
+                    style={styles.ccInput}
+                    onFocus={handleFocus}
+                    onBlur={handleBlur}
+                  />
+                  <input
+                    type="tel"
+                    inputMode="numeric"
+                    value={resetData.phone}
+                    onChange={(e) => setResetData((s) => ({ ...s, phone: e.target.value.replace(/\D/g, '').slice(0, 12) }))}
+                    aria-label="Phone number"
+                    placeholder="98xxx xxxxx"
+                    required
+                    style={styles.phoneInput}
+                    onFocus={handleFocus}
+                    onBlur={handleBlur}
+                  />
+                </div>
+              </div>
+              {error && <p style={styles.error}>{error}</p>}
+              <button type="submit" disabled={busy} className="doaide-auth-btn" style={styles.button}>
+                {busy ? 'Sending…' : 'Send reset code →'}
+              </button>
+              <button type="button" onClick={() => { setResetStep(null); setError(null) }} className="doaide-auth-toggle" style={styles.toggle}>
+                ← Back to login
+              </button>
+            </form>
+          )}
+
+          {resetStep === 'code' && (
+            <form onSubmit={submitReset}>
+              <p style={{ ...styles.label, fontSize: 12, letterSpacing: '0.06em', marginBottom: 16, textTransform: 'none', color: 'rgba(255,255,255,0.5)' }}>
+                We sent a 6-digit code to your WhatsApp. Enter it below with your new password.
+              </p>
+              <div style={styles.fieldGroup}>
+                <label style={styles.label}>Reset Code</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={resetData.code}
+                  onChange={(e) => setResetData((s) => ({ ...s, code: e.target.value.replace(/\D/g, '').slice(0, 6) }))}
+                  placeholder="6-digit code"
+                  autoComplete="one-time-code"
+                  required
+                  style={{ ...styles.input, textAlign: 'center', fontSize: 20, letterSpacing: '0.3em', fontWeight: 600 }}
+                  onFocus={handleFocus}
+                  onBlur={handleBlur}
+                />
+              </div>
+              <div style={styles.fieldGroup}>
+                <label style={styles.label}>New Password</label>
+                <div style={styles.passwordWrap}>
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    value={resetData.newPassword}
+                    onChange={(e) => setResetData((s) => ({ ...s, newPassword: e.target.value }))}
+                    placeholder="At least 6 characters"
+                    autoComplete="new-password"
+                    required
+                    style={{ ...styles.input, paddingRight: 40 }}
+                    onFocus={handleFocus}
+                    onBlur={handleBlur}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((v) => !v)}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    style={styles.eyeBtn}
+                  >
+                    {showPassword ? '●' : '○'}
+                  </button>
+                </div>
+              </div>
+              {error && <p style={styles.error}>{error}</p>}
+              <button type="submit" disabled={busy} className="doaide-auth-btn" style={styles.button}>
+                {busy ? 'Resetting…' : 'Set new password →'}
+              </button>
+              <button type="button" onClick={() => { setResetStep('phone'); setError(null) }} className="doaide-auth-toggle" style={styles.toggle}>
+                ← Send a new code
+              </button>
+            </form>
+          )}
+
+          {!resetStep && <><form onSubmit={submit}>
             {mode === 'signup' && (
               <div style={styles.fieldGroup}>
                 <label style={styles.label}>Your Name</label>
@@ -366,6 +499,16 @@ export default function AuthScreen({ onAuthed }) {
             </button>
           </form>
 
+          {mode === 'login' && (
+            <button
+              onClick={() => { setResetStep('phone'); setError(null); setResetData((s) => ({ ...s, cc: form.cc, phone: form.phone })) }}
+              className="doaide-auth-toggle"
+              style={{ ...styles.toggle, marginTop: 12 }}
+            >
+              Forgot password?
+            </button>
+          )}
+
           <button
             onClick={() => { setMode(mode === 'signup' ? 'login' : 'signup'); setError(null) }}
             className="doaide-auth-toggle"
@@ -373,6 +516,7 @@ export default function AuthScreen({ onAuthed }) {
           >
             {mode === 'signup' ? 'Already have an account? Log in' : 'New here? Create an account'}
           </button>
+          </>}
         </div>
 
         <p style={styles.footer}>

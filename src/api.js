@@ -157,6 +157,8 @@ const qs = (params) => {
 export const api = {
   signup: (body) => post('/api/auth/signup', body),
   login: (body) => post('/api/auth/login', body),
+  requestReset: (body) => post('/api/auth/request-reset', body),
+  resetPassword: (body) => post('/api/auth/reset-password', body),
   me: () => get('/api/auth/me'),
   health: () => get('/api/health'),
   // Paged. Pass { limit, offset, pipeline_type, stage, q }. The server defaults to the

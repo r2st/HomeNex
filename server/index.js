@@ -167,7 +167,7 @@ import { renderTemplate, waMediaType } from './inbox.js'
 import fs from 'node:fs'
 import { privacyPage, termsPage } from './legal.js'
 import { setupGuidePage } from './setupGuide.js'
-import { signup, login, changePhone, changePassword, requireAuth } from './auth.js'
+import { signup, login, changePhone, changePassword, requestPasswordReset, resetPassword, requireAuth } from './auth.js'
 import { handleAgentCommand } from './agentCommands.js'
 import adminRouter from './adminRoutes.js'
 import teamRouter from './teamRoutes.js'
@@ -866,6 +866,30 @@ app.post('/api/auth/login', boundedText(AUTH_TEXT_LIMITS), ah(async (req, res) =
   } catch (err) {
     // 403, not 401: the credentials were right, the account is suspended.
     res.status(err.code === 'DEACTIVATED' ? 403 : 401).json({ error: err.message })
+  }
+}))
+
+app.post('/api/auth/request-reset', boundedText({ phone: TEXT.LINE }), ah(async (req, res) => {
+  try {
+    const { agentId, code, phone } = await requestPasswordReset(req.body)
+    // Send the code via WhatsApp if configured, otherwise return it for dev/test.
+    try {
+      const { sendText, whatsappConfigured } = await import('./whatsapp.js')
+      if (whatsappConfigured()) {
+        await sendText(phone, `Your HomeNex password reset code is: ${code}\n\nIt expires in 15 minutes. If you didn't request this, ignore this message.`)
+      }
+    } catch { /* WhatsApp not available — code still stored for manual recovery */ }
+    res.json({ agentId, sent: true })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+}))
+
+app.post('/api/auth/reset-password', boundedText({ agentId: TEXT.LINE, code: TEXT.LINE, newPassword: TEXT.PASSWORD }), ah(async (req, res) => {
+  try {
+    res.json(await resetPassword(req.body))
+  } catch (err) {
+    res.status(400).json({ error: err.message })
   }
 }))
 

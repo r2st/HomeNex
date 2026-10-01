@@ -184,6 +184,45 @@ export async function changePassword(agentId, { current_password, new_password }
   return { agent, token: await issueToken(agent.id, agent.token_version) }
 }
 
+// Password reset via WhatsApp. Generates a 6-digit code, stores it with a 15-minute
+// TTL, and texts it to the agent's registered number. The agent enters the code on the
+// client to set a new password. The code is single-use and rate-limited by the auth
+// limiter on the route.
+const resetCodes = new Map()
+
+export async function requestPasswordReset({ phone }) {
+  phone = (phone || '').trim()
+  if (!phone) throw new Error('Enter your WhatsApp number')
+  const agent = await findAgentByPhone(phone)
+  if (!agent) throw new Error('No account found with this number')
+  if (agent.is_active !== 1) throw new Error('This account has been deactivated')
+  const code = String(Math.floor(100000 + Math.random() * 900000))
+  const expires = Date.now() + 15 * 60 * 1000
+  resetCodes.set(agent.id, { code, expires, attempts: 0 })
+  return { agentId: agent.id, code, phone: agent.phone }
+}
+
+export async function resetPassword({ agentId, code, newPassword }) {
+  if (!agentId || !code || !newPassword) throw new Error('Missing required fields')
+  const entry = resetCodes.get(Number(agentId))
+  if (!entry) throw new Error('No reset code found — request a new one')
+  if (Date.now() > entry.expires) {
+    resetCodes.delete(Number(agentId))
+    throw new Error('Code expired — request a new one')
+  }
+  entry.attempts += 1
+  if (entry.attempts > 5) {
+    resetCodes.delete(Number(agentId))
+    throw new Error('Too many attempts — request a new code')
+  }
+  if (entry.code !== String(code).trim()) throw new Error('Wrong code — try again')
+  resetCodes.delete(Number(agentId))
+  if (String(newPassword).length < MIN_PASSWORD_LENGTH)
+    throw new Error(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`)
+  const agent = await updateAgentPassword(Number(agentId), hashPassword(newPassword))
+  return { token: await issueToken(agent.id, agent.token_version), agent }
+}
+
 // Express middleware for the dashboard API.
 export function requireAuth(req, res, next) {
   const token = (req.get('authorization') || '').replace(/^Bearer\s+/i, '')
