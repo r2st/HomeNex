@@ -97,7 +97,7 @@ test('switching to log in drops the name field and posts to the login route', as
 
   await click(ui.byText('Already have an account? Log in'))
   assert.equal(ui.queryByPlaceholder('Rajesh Kumar'), null, 'login should not ask for a name')
-  assert.match(ui.text(), /Welcome back/)
+  assert.match(ui.text(), /Log in/)
 
   await change(phoneInput(ui), '9876543210')
   await change(passwordInput(ui), 'secret123')
