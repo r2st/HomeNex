@@ -592,9 +592,8 @@ export default function InboxTab({ leadId, onSelectLead }) {
       {leads && leads.length === 0 && (
         <div className="mt-6 bg-card rounded-2xl border border-line shadow-card p-5 rise rise-1">
           <p className="font-bold text-[14.5px] text-ink">No conversations yet</p>
-          <p className="text-[12.5px] text-ink-soft leading-relaxed mt-1.5">
-            When one of your clients messages HomeNex, the conversation lands here and HomeNex AI
-            replies within seconds. Add your clients to start receiving their messages.
+          <p className="text-[12.5px] text-ink-soft mt-1.5">
+            Client messages appear here with instant AI replies.
           </p>
         </div>
       )}

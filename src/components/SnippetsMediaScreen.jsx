@@ -221,7 +221,7 @@ function TemplatesManager() {
             Auto-append my RERA number (required for promotions)
           </label>
         )}
-        <p className="text-[11px] text-ink-faint">Tap a chip above to drop in a fill-in — the name fills in automatically when you send.</p>
+        <p className="text-[11px] text-ink-faint">Tap a chip to insert a fill-in — auto-replaced on send.</p>
         {err && <p className="text-[11.5px] text-hot">{err}</p>}
         <button
           onClick={create}
@@ -389,8 +389,7 @@ function LabelsManager() {
         ))}
       </div>
       <p className="text-[11px] text-ink-faint mt-3 px-1">
-        The six lifecycle labels are applied automatically (New, Hot, Site Visit Scheduled, Token
-        Paid, Lost, Broker) and can't be deleted.
+        Six lifecycle labels are auto-applied and can't be deleted.
       </p>
     </div>
   )

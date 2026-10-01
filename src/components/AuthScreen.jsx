@@ -293,7 +293,7 @@ export default function AuthScreen({ onAuthed }) {
         <h1 style={styles.title}>
           DoAide <span style={styles.titleAccent}>HomeNex</span>
         </h1>
-        <p style={styles.subtitle}>AI-powered CRM for Indian real estate agents</p>
+        <p style={styles.subtitle}>Your leads, answered in seconds</p>
 
         <div style={styles.card}>
           {resetStep === 'phone' && (

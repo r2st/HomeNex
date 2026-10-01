@@ -324,9 +324,8 @@ export default function ContactsTab({ onOpenLead }) {
       {contacts && contacts.length === 0 && !q && (
         <div className="mt-6 bg-card rounded-2xl border border-line shadow-card p-5 rise rise-1">
           <p className="font-bold text-[14.5px] text-ink">No contacts yet</p>
-          <p className="text-[12.5px] text-ink-soft leading-relaxed mt-1.5">
-            Contacts appear here automatically the moment someone messages your WhatsApp
-            Business number — name, number, and source captured for you.
+          <p className="text-[12.5px] text-ink-soft mt-1.5">
+            Anyone who messages your WhatsApp appears here automatically.
           </p>
         </div>
       )}

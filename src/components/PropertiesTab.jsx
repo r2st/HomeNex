@@ -149,9 +149,7 @@ export default function PropertiesTab({ onOpenLead }) {
           </p>
           {filterCount > 0 || filters.q ? (
             <>
-              <p className="text-[12.5px] text-ink-soft leading-relaxed mt-1.5">
-                Try clearing filters or a different search to see your inventory.
-              </p>
+              <p className="text-[12.5px] text-ink-soft mt-1.5">Try a different search or clear filters.</p>
               <button
                 onClick={() => setFilters({ type: '', bhk: '', status: '', band: '', q: '' })}
                 className="inline-block mt-3 text-[12.5px] font-bold text-brand"
@@ -161,10 +159,8 @@ export default function PropertiesTab({ onOpenLead }) {
             </>
           ) : (
             <>
-              <p className="text-[12.5px] text-ink-soft leading-relaxed mt-1.5">
-                Add the flats, villas, and plots you're authorised to sell. HomeNex automatically
-                matches them to every lead's budget and location — so the right property is one tap
-                away in any WhatsApp chat.
+              <p className="text-[12.5px] text-ink-soft mt-1.5">
+                Add your inventory — HomeNex auto-matches properties to leads.
               </p>
               <button
                 onClick={() => setAdding(true)}

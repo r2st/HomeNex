@@ -90,7 +90,7 @@ function Deals({ onOpenLead }) {
       </div>
       {deals && deals.length === 0 && (
         <p className="mt-6 text-[12.5px] text-ink-faint">
-          No deals. One is captured automatically when a lead reaches Token/Booking.
+          No deals yet — auto-captured at Token/Booking stage.
         </p>
       )}
       <div className="mt-4 space-y-2.5">

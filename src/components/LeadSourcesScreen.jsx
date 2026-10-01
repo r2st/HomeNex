@@ -149,9 +149,8 @@ export default function LeadSourcesScreen() {
         <p className="text-[10.5px] font-bold tracking-[0.16em] text-ink-soft mb-2 flex items-center gap-1.5">
           YOUR LEAD EMAIL <InfoTip label="" text={glossary.PORTAL_EMAIL} align="left" />
         </p>
-        <p className="text-[12px] text-ink-soft leading-relaxed mb-2.5">
-          Set this as your contact email on 99acres, MagicBricks &amp; Housing. Every lead
-          notification becomes a lead here — with an instant WhatsApp reply. No setup needed.
+        <p className="text-[12px] text-ink-soft mb-2.5">
+          Paste on 99acres, MagicBricks &amp; Housing — leads auto-capture with instant WhatsApp replies.
         </p>
         <div className="flex items-center gap-2 bg-cream border border-line rounded-xl px-3 py-2.5">
           <code className="text-[12px] text-ink font-semibold truncate flex-1">{data?.ingest_email || '…'}</code>
@@ -166,10 +165,8 @@ export default function LeadSourcesScreen() {
         <p className="text-[10.5px] font-bold tracking-[0.16em] text-ink-soft mb-2 flex items-center gap-1.5">
           FACEBOOK / INSTAGRAM ADS <InfoTip label="" text={glossary.LEAD_ADS} align="left" />
         </p>
-        <p className="text-[12px] text-ink-soft leading-relaxed">
-          Running lead ads on Facebook or Instagram? Once connected, every enquiry flows straight
-          into your pipeline with an instant WhatsApp message. Ask support to connect your ad
-          account, or add it yourself under Advanced settings below.
+        <p className="text-[12px] text-ink-soft">
+          Connect your ad account to auto-capture every enquiry. Set up in Advanced below.
         </p>
       </section>
 
@@ -225,9 +222,8 @@ export default function LeadSourcesScreen() {
             {/* Facebook / Instagram ad form mapping */}
             <div>
               <p className="text-[11.5px] font-bold text-ink mb-1.5">Connect a Facebook / Instagram ad form</p>
-              <p className="text-[11px] text-ink-soft leading-relaxed mb-2">
-                If you manage your own ads, paste the ad's form id from Meta Ads Manager to route its
-                leads to you.
+              <p className="text-[11px] text-ink-soft mb-2">
+                Paste the form ID from Meta Ads Manager.
               </p>
               <div className="flex gap-2">
                 <input value={formId} onChange={(e) => setFormId(e.target.value)} aria-label="Facebook or Instagram ad form id" placeholder="Ad form id" className={inputCls} />

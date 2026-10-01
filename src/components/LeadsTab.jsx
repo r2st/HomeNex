@@ -299,17 +299,15 @@ export default function LeadsTab({ onOpenConversation }) {
           {counts && counts.total > 0 ? (
             <>
               <p className="font-bold text-[14.5px] text-ink">Nothing in this pipeline</p>
-              <p className="text-[12.5px] text-ink-soft leading-relaxed mt-1.5">
-                You have {counts.total} lead{counts.total === 1 ? '' : 's'} in other pipelines — switch
-                the tabs above, or move a lead into this one from its detail screen.
+              <p className="text-[12.5px] text-ink-soft mt-1.5">
+                {counts.total} lead{counts.total === 1 ? '' : 's'} in other pipelines — switch tabs above.
               </p>
             </>
           ) : (
             <>
               <p className="font-bold text-[14.5px] text-ink">No leads yet</p>
-              <p className="text-[12.5px] text-ink-soft leading-relaxed mt-1.5">
-                Every buyer who messages your WhatsApp number becomes a lead here — auto-captured
-                as a contact and dropped into the pipeline.
+              <p className="text-[12.5px] text-ink-soft mt-1.5">
+                WhatsApp enquiries auto-capture as leads in your pipeline.
               </p>
             </>
           )}

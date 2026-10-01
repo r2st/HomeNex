@@ -50,8 +50,7 @@ function WabaCard({ agent }) {
           {status === 'active' && (
             <div className="bg-[rgba(52,211,153,0.1)] border border-[rgba(52,211,153,0.2)] rounded-xl px-3 py-2">
               <p className="text-[12px] text-[#34D399] leading-snug">
-                Your WhatsApp Business number is active! All incoming messages are automatically
-                tracked in your dashboard. New senders are auto-added as clients.
+                Active — messages tracked, new senders auto-added.
               </p>
             </div>
           )}
@@ -59,8 +58,7 @@ function WabaCard({ agent }) {
           {status === 'pending' && (
             <div className="bg-amber-wash border border-[rgba(251,191,36,0.2)] rounded-xl px-3 py-2">
               <p className="text-[12px] text-[#FBBF24] leading-snug">
-                Our support team is registering this number on Meta WABA.
-                You'll be notified once it's active. This usually takes 1-2 business days.
+                Being registered with Meta — usually 1-2 business days.
               </p>
             </div>
           )}
@@ -68,8 +66,7 @@ function WabaCard({ agent }) {
           {status === 'registered' && (
             <div className="bg-[rgba(96,165,250,0.1)] border border-[rgba(96,165,250,0.2)] rounded-xl px-3 py-2">
               <p className="text-[12px] text-[#60A5FA] leading-snug">
-                Your number is registered with Meta. Our team is completing the final setup.
-                It will be active shortly.
+                Registered — final setup in progress, active shortly.
               </p>
             </div>
           )}
@@ -143,16 +140,12 @@ export default function SettingsTab({ agent, onAgentUpdate }) {
 
       {/* How it works */}
       <div className="bg-card border border-line rounded-2xl p-4 space-y-3">
-        <h3 className="text-[13px] font-bold text-ink-soft">How your WhatsApp number gets connected</h3>
-        <ol className="text-[12.5px] text-ink-soft leading-relaxed space-y-1.5 list-decimal list-inside">
-          <li>Provide a phone number (not your personal WhatsApp)</li>
-          <li>Our support team registers it on Meta WhatsApp Business API</li>
-          <li>Once active, all incoming messages are auto-tracked in your dashboard</li>
-          <li>New senders are automatically added as your clients</li>
+        <h3 className="text-[13px] font-bold text-ink-soft">How it works</h3>
+        <ol className="text-[12.5px] text-ink-soft space-y-1 list-decimal list-inside">
+          <li>You provide a phone number</li>
+          <li>We register it on Meta WABA</li>
+          <li>Messages auto-track, senders auto-add</li>
         </ol>
-        <a href="/setup-guide" target="_blank" rel="noopener noreferrer" className="inline-block text-[12.5px] font-bold text-brand">
-          Read the full setup guide →
-        </a>
       </div>
 
       {current.is_admin === 1 && (

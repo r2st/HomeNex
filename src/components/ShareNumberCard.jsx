@@ -54,9 +54,8 @@ export default function ShareNumberCard({ agent, compact = false }) {
         </div>
         {expanded && (
           <div className="mt-2 bg-card rounded-2xl border border-line shadow-card p-4">
-            <p className="text-[12px] text-ink-soft leading-relaxed">
-              Share this number with your clients. When they message it, HomeNex recognises them
-              and their qualified lead appears on Home.
+            <p className="text-[12px] text-ink-soft">
+              Share with clients — messages auto-capture as qualified leads.
             </p>
             <div className="flex items-center gap-2 mt-3">
               <span className="font-display text-[18px] font-bold text-ink tabular-nums flex-1 truncate">{waNumber}</span>
@@ -92,9 +91,8 @@ export default function ShareNumberCard({ agent, compact = false }) {
           <span className="text-[18px] leading-none">🟡</span>
           <p className="text-[11px] font-bold tracking-[0.18em] text-brand">WHATSAPP NUMBER BEING SET UP</p>
         </div>
-        <p className="text-[12.5px] text-ink-soft leading-relaxed mt-2">
-          Our team is connecting your WhatsApp Business number for you. You'll get an email the
-          moment it's live — then every buyer who messages it lands here, qualified automatically.
+        <p className="text-[12.5px] text-ink-soft mt-2">
+          Your WhatsApp number is being connected. You'll be notified when it's live.
         </p>
       </section>
     )
@@ -107,9 +105,8 @@ export default function ShareNumberCard({ agent, compact = false }) {
         <p className="text-[11px] font-bold tracking-[0.18em] text-brand">YOUR WHATSAPP BUSINESS NUMBER</p>
         <InfoTip label="" text={glossary.WABA} />
       </div>
-      <p className="text-[12.5px] text-ink-soft leading-relaxed mt-2">
-        Share this number with your clients. When they message it, HomeNex recognises them
-        and their qualified lead appears right here.
+      <p className="text-[12.5px] text-ink-soft mt-2">
+        Share with clients — messages auto-capture as qualified leads.
       </p>
       <div className="flex items-center gap-2 mt-3.5">
         <span className="font-display text-[19px] font-bold text-ink tabular-nums flex-1 truncate">{waNumber}</span>

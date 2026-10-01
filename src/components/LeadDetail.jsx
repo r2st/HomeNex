@@ -262,7 +262,7 @@ function CrmEditor({ lead, onSaved }) {
           <div className="rounded-xl bg-brand-wash/60 border border-brand/15 px-3.5 py-3">
             <p className="text-[12.5px] text-ink leading-snug">
               <span className="mr-1">✨</span>
-              Budget, location and configuration will be captured automatically as this buyer chats.
+              Budget, location and config auto-capture from chats.
             </p>
             <p className="text-[11.5px] text-ink-soft leading-snug mt-1">
               You can also tap <strong className="text-brand">Add details</strong> to fill them in now.
