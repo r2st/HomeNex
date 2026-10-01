@@ -1,3 +1,4 @@
+/* DoAide Unified Theme v3.0 — HomeNex (Realty) */
 @import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Schibsted+Grotesk:wght@400;500;600;700;800;900&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 :root {
   --doaide-bg: #0A0A0B; --doaide-bg-alt: #111113; --doaide-surface: #1A1A1D;
@@ -43,3 +44,33 @@ nav, [class*="sidebar"], [class*="nav-"] { background-color: var(--doaide-bg) !i
 [class*="badge"] { background-color: var(--doaide-gold-bg) !important; color: var(--doaide-gold) !important; }
 ::selection { background-color: var(--doaide-gold) !important; color: var(--doaide-text-on-gold) !important; }
 [class*="backdrop"], [class*="overlay"] { background-color: rgba(0,0,0,0.7) !important; }
+
+/* Cross-product footer */
+.doaide-footer {
+  border-top: 1px solid var(--doaide-border);
+  padding: 20px 24px 24px;
+  text-align: center;
+}
+.doaide-footer-nav {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0 16px;
+  margin-bottom: 10px;
+  font-family: var(--doaide-font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+.doaide-footer-nav a { color: rgba(255,255,255,0.2) !important; text-decoration: none !important; transition: color var(--doaide-transition); }
+.doaide-footer-nav a:hover { color: var(--doaide-gold) !important; }
+.doaide-footer-nav .active { color: var(--doaide-gold) !important; }
+.doaide-footer-copy {
+  font-family: var(--doaide-font-mono);
+  font-size: 10px;
+  color: rgba(255,255,255,0.2);
+  letter-spacing: 0.04em;
+  margin: 0;
+}
+.doaide-footer-copy a { color: rgba(255,255,255,0.2) !important; text-decoration: none !important; }
+.doaide-footer-copy a:hover { color: rgba(255,255,255,0.4) !important; }

@@ -163,15 +163,37 @@ const styles = {
   footer: {
     textAlign: 'center',
     marginTop: 28,
+  },
+  footerNav: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: '0 16px',
     fontFamily: "'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace",
     fontSize: 10,
-    color: 'rgba(255,255,255,0.25)',
-    letterSpacing: '0.08em',
+    textTransform: 'uppercase',
+    letterSpacing: '0.14em',
+    marginBottom: 10,
+  },
+  footerNavLink: {
+    color: 'rgba(255,255,255,0.2)',
+    textDecoration: 'none',
+    transition: 'color 150ms ease',
+  },
+  footerNavActive: {
+    color: '#F0B429',
+  },
+  footerCopy: {
+    fontFamily: "'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace",
+    fontSize: 10,
+    color: 'rgba(255,255,255,0.2)',
+    letterSpacing: '0.04em',
+    margin: 0,
   },
   footerLink: {
-    color: '#F0B429',
-    textDecoration: 'underline',
-    textUnderlineOffset: 2,
+    color: 'rgba(255,255,255,0.2)',
+    textDecoration: 'none',
+    transition: 'color 150ms ease',
   },
   hint: {
     fontFamily: "'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace",
@@ -519,9 +541,20 @@ export default function AuthScreen({ onAuthed }) {
           </>}
         </div>
 
-        <p style={styles.footer}>
-          A <a href="https://doaide.com" style={styles.footerLink} target="_blank" rel="noopener noreferrer">DoAide</a> product
-        </p>
+        <div style={styles.footer}>
+          <div style={styles.footerNav}>
+            <a href="https://desk.doaide.com" style={styles.footerNavLink} target="_blank" rel="noopener noreferrer">Desk</a>
+            <a href="https://herald.doaide.com" style={styles.footerNavLink} target="_blank" rel="noopener noreferrer">Herald</a>
+            <a href="https://409.doaide.com" style={styles.footerNavLink} target="_blank" rel="noopener noreferrer">409A</a>
+            <a href="https://job.doaide.com" style={styles.footerNavLink} target="_blank" rel="noopener noreferrer">AutoApply</a>
+            <span style={styles.footerNavActive}>Realty</span>
+          </div>
+          <p style={styles.footerCopy}>
+            &copy; {new Date().getFullYear()}{' '}
+            <a href="https://doaide.com" style={styles.footerLink} target="_blank" rel="noopener noreferrer">DoAide</a>
+            {' '}&middot; AI tools for small businesses
+          </p>
+        </div>
       </div>
     </div>
   )
