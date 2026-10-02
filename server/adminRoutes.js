@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { boundedText, TEXT } from './middleware.js'
+import { boundedText, boundedNumber, TEXT, NUM } from './middleware.js'
 import {
   getAgent,
   adminStats,
@@ -239,7 +239,7 @@ router.put('/templates/:id/review', boundedText({ action: TEXT.LINE, note: TEXT.
 
 router.get('/plans', ah(async (_req, res) => res.json(await listPlans())))
 
-router.post('/plans', ah(async (req, res) => {
+router.post('/plans', boundedText({ code: TEXT.LINE, name: TEXT.LINE }), boundedNumber({ price_paise: NUM.PAISE, conversation_quota: NUM.ID }), ah(async (req, res) => {
   try {
     res.json(await createPlan(req.body))
   } catch (err) {
@@ -248,14 +248,14 @@ router.post('/plans', ah(async (req, res) => {
   }
 }))
 
-router.put('/plans/:id', ah(async (req, res) => res.json(await updatePlan(Number(req.params.id), req.body))))
+router.put('/plans/:id', boundedText({ name: TEXT.LINE }), boundedNumber({ price_paise: NUM.PAISE, conversation_quota: NUM.ID }), ah(async (req, res) => res.json(await updatePlan(Number(req.params.id), req.body))))
 
 router.get('/agents/:id/billing', ah(async (req, res) => {
   if (!(await getAgent(Number(req.params.id)))) return res.status(404).json({ error: 'Agent not found' })
   res.json(await billingOverview(Number(req.params.id)))
 }))
 
-router.put('/agents/:id/subscription', ah(async (req, res) => {
+router.put('/agents/:id/subscription', boundedText({ status: TEXT.LINE }), boundedNumber({ plan_id: NUM.ID }), ah(async (req, res) => {
   try {
     const sub = await setSubscription(Number(req.params.id), Number(req.body.plan_id), req.body.status || 'active')
     await logAudit(req.agent.id, 'agent', Number(req.params.id), 'subscription_set', { plan_id: sub.plan_id })
@@ -323,7 +323,7 @@ router.post('/tickets/:id/reply', boundedText({ body: TEXT.PROSE }), ah(async (r
   }
 }))
 
-router.put('/tickets/:id', ah(async (req, res) => {
+router.put('/tickets/:id', boundedText({ status: TEXT.LINE, priority: TEXT.LINE, assigned_to: TEXT.LINE }), ah(async (req, res) => {
   try {
     const ticket = await updateTicket(Number(req.params.id), {
       status: req.body.status,

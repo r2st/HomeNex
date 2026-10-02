@@ -29,6 +29,7 @@ export function securityHeaders(req, res, next) {
   res.setHeader('X-Frame-Options', 'SAMEORIGIN')
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin')
   res.setHeader('X-DNS-Prefetch-Control', 'off')
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()')
   if (HSTS_MAX_AGE > 0 && req?.secure) {
     res.setHeader('Strict-Transport-Security', `max-age=${HSTS_MAX_AGE}; includeSubDomains`)
   }

@@ -28,7 +28,7 @@ import {
   getLead,
   logAudit,
 } from './db.js'
-import { boundedText, TEXT } from './middleware.js'
+import { boundedText, boundedNumber, TEXT, NUM } from './middleware.js'
 
 const ah = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next)
 
@@ -94,7 +94,7 @@ router.get('/', ah(async (req, res) => {
 }))
 
 // POST /api/team — create a team; the caller becomes owner.
-router.post('/', ah(async (req, res) => {
+router.post('/', boundedText({ name: TEXT.LINE }), ah(async (req, res) => {
   try {
     const team = await createTeam(req.agent.id, req.body.name)
     await logAudit(req.agent.id, 'team', team.id, 'team_created', { name: team.name })
@@ -153,6 +153,15 @@ router.put('/members/:agentId/role', requireOwner, boundedText({ role: TEXT.LINE
 // PUT /api/team/members/:agentId — owner/manager sets a member's localities /
 // whether they receive auto-assigned leads.
 router.put('/members/:agentId', requireManager, ah(async (req, res) => {
+  if (req.body.localities !== undefined) {
+    if (!Array.isArray(req.body.localities)) return res.status(400).json({ error: 'localities must be an array' })
+    if (req.body.localities.length > 50) return res.status(400).json({ error: 'localities has too many entries (max 50)' })
+    for (const loc of req.body.localities) {
+      if (typeof loc !== 'string' || loc.length > TEXT.LINE) {
+        return res.status(400).json({ error: `Each locality must be a string of ${TEXT.LINE} characters or fewer.` })
+      }
+    }
+  }
   const fields = {}
   if (req.body.localities !== undefined) fields.localities = req.body.localities
   if (req.body.accepts_leads !== undefined) fields.accepts_leads = req.body.accepts_leads
@@ -248,14 +257,14 @@ router.get('/pipeline', requireManager, ah(async (req, res) => {
 
 router.get('/leaderboard', requireManager, ah(async (req, res) => res.json(await teamLeaderboard(req.team.id))))
 
-router.get('/stale', requireManager, ah(async (req, res) =>
+router.get('/stale', requireManager, boundedNumber({ days: { min: 1, max: 365, integer: true } }, { from: 'query' }), ah(async (req, res) =>
   res.json(await teamStaleLeads(req.team.id, req.query.days ? Number(req.query.days) : 3)),
 ))
 
 // --- Assignment ---
 
 // Manual assign / reassign a team lead to a member.
-router.post('/leads/:id/assign', requireManager, ah(async (req, res) => {
+router.post('/leads/:id/assign', requireManager, boundedNumber({ agent_id: NUM.ID }), ah(async (req, res) => {
   const targetId = Number(req.body.agent_id)
   if (!targetId) return res.status(400).json({ error: 'agent_id is required' })
   try {

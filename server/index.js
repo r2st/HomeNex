@@ -2269,6 +2269,7 @@ app.delete('/api/groups/:id', ah(async (req, res) => {
 
 app.post('/api/groups/:id/members', ah(async (req, res) => {
   const ids = Array.isArray(req.body.contact_ids) ? req.body.contact_ids : []
+  if (ids.length > 500) return res.status(400).json({ error: 'contact_ids is too large (max 500)' })
   const added = await addGroupMembers(req.params.id, req.agent.id, ids)
   if (added === null) return res.status(400).json({ error: 'not found or not a static group' })
   res.json({ added })
