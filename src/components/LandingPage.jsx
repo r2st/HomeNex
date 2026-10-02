@@ -562,7 +562,7 @@ export default function LandingPage({ onAuthed }) {
             <PipelineViz />
             <TypewriterCycle />
 
-            <footer className="landing-footer">
+            <footer className="landing-footer landing-footer-desktop">
               <div className="landing-footer-products">
                 {DOAIDE_PRODUCTS.map((p) => (
                   <a key={p.name} href={p.url} className="landing-footer-link" target="_blank" rel="noopener noreferrer">
@@ -584,6 +584,23 @@ export default function LandingPage({ onAuthed }) {
         <div className={`landing-right${visible ? ' landing-visible' : ''}`}>
           <AuthForm onAuthed={onAuthed} />
         </div>
+
+        <footer className="landing-footer landing-footer-mobile">
+          <div className="landing-footer-products">
+            {DOAIDE_PRODUCTS.map((p) => (
+              <a key={p.name} href={p.url} className="landing-footer-link" target="_blank" rel="noopener noreferrer">
+                {p.name}
+              </a>
+            ))}
+          </div>
+          <div className="landing-footer-bottom">
+            <a href="https://doaide.com" className="landing-footer-home" target="_blank" rel="noopener noreferrer">
+              <RobotFace size={14} />
+              doaide.com
+            </a>
+            <span className="landing-footer-copy">&copy; {new Date().getFullYear()} DoAide</span>
+          </div>
+        </footer>
       </div>
     </div>
   )
