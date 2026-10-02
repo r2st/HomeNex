@@ -175,8 +175,9 @@
 }
 
 .landing-brand-text {
-  font-size: 18px;
-  font-weight: 600;
+  font-family: 'Instrument Serif', Georgia, serif;
+  font-size: 24px;
+  font-weight: 400;
   letter-spacing: -0.3px;
 }
 

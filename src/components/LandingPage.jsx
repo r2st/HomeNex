@@ -309,7 +309,7 @@ function AuthForm({ onAuthed }) {
     <div className="landing-auth-card">
       <div className="landing-mobile-brand">
         <RobotFace size={24} />
-        <span className="landing-brand-text">Do<em>Aide</em> Realty</span>
+        <span className="landing-brand-text">DoAide <em>Realty</em></span>
       </div>
 
       {!resetStep && (
@@ -543,7 +543,7 @@ export default function LandingPage({ onAuthed }) {
           <div className="landing-left-inner">
             <a href="https://doaide.com" className="landing-brand" target="_blank" rel="noopener noreferrer">
               <RobotFace size={28} />
-              <span className="landing-brand-text">Do<em>Aide</em> Realty</span>
+              <span className="landing-brand-text">DoAide <em>Realty</em></span>
             </a>
 
             <div className="landing-hero-area">
