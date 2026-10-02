@@ -44,11 +44,11 @@ function setup(t, { token = 'tok', routes = {}, online = true } = {}) {
 
 // --- Auth gate -------------------------------------------------------------
 
-test('with no token the agent goes straight to the auth screen', async (t) => {
+test('with no token the agent sees the landing page', async (t) => {
   const ctx = setup(t, { token: null })
   const ui = await render(<App />)
 
-  assert.match(ui.text(), /Start answering every lead in 30 seconds/)
+  assert.match(ui.text(), /AI-powered WhatsApp CRM/)
   assert.equal(ctx.net.to('/api/auth/me').length, 0, 'no point asking who we are without a token')
 })
 
@@ -60,11 +60,11 @@ test('a stored token loads the agent and lands on Home', async (t) => {
   assert.match(ui.text(), /Home/)
 })
 
-test('a token the server rejects falls back to the auth screen', async (t) => {
+test('a token the server rejects falls back to the landing page', async (t) => {
   setup(t, { routes: { 'GET /api/auth/me': { status: 401, body: {} } } })
   const ui = await render(<App />)
 
-  assert.match(ui.text(), /Start answering every lead in 30 seconds/)
+  assert.match(ui.text(), /AI-powered WhatsApp CRM/)
 })
 
 test('a 401 mid-session signs the agent out', async (t) => {
@@ -75,16 +75,16 @@ test('a 401 mid-session signs the agent out', async (t) => {
   // api.js dispatches this whenever any call comes back 401.
   await act(() => ctx.env.window.dispatchEvent(new Event('homenex-logout')))
 
-  assert.match(ui.text(), /Start answering every lead in 30 seconds/)
+  assert.match(ui.text(), /AI-powered WhatsApp CRM/)
 })
 
-test('signing out clears the token and returns to the auth screen', async (t) => {
+test('signing out clears the token and returns to the landing page', async (t) => {
   const ctx = setup(t)
   const ui = await render(<App />)
 
   await click(ui.byText('Sign out'))
 
-  assert.match(ui.text(), /Start answering every lead in 30 seconds/)
+  assert.match(ui.text(), /AI-powered WhatsApp CRM/)
   assert.equal(ctx.env.localStorage.getItem('homenex-token'), null)
 })
 

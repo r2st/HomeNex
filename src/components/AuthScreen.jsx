@@ -221,8 +221,8 @@ const styles = {
 
 const focusStyle = { borderColor: 'rgba(240,180,41,0.5)' }
 
-export default function AuthScreen({ onAuthed }) {
-  const [mode, setMode] = useState('signup')
+export default function AuthScreen({ onAuthed, initialMode, onBack }) {
+  const [mode, setMode] = useState(initialMode || 'signup')
   const [form, setForm] = useState({ name: '', cc: '+91', phone: '', password: '' })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
@@ -310,6 +310,11 @@ export default function AuthScreen({ onAuthed }) {
       `}</style>
 
       <div style={styles.wrapper}>
+        {onBack && (
+          <button onClick={onBack} className="doaide-auth-toggle" style={{ ...styles.toggle, marginTop: 0, marginBottom: 16, textAlign: 'left' }}>
+            ← Back
+          </button>
+        )}
         {robotSvg}
 
         <h1 style={styles.title}>
