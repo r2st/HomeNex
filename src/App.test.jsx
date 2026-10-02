@@ -48,7 +48,7 @@ test('with no token the agent sees the landing page', async (t) => {
   const ctx = setup(t, { token: null })
   const ui = await render(<App />)
 
-  assert.match(ui.text(), /AI-powered WhatsApp CRM/)
+  assert.match(ui.text(), /Close deals faster with AI/)
   assert.equal(ctx.net.to('/api/auth/me').length, 0, 'no point asking who we are without a token')
 })
 
@@ -64,7 +64,7 @@ test('a token the server rejects falls back to the landing page', async (t) => {
   setup(t, { routes: { 'GET /api/auth/me': { status: 401, body: {} } } })
   const ui = await render(<App />)
 
-  assert.match(ui.text(), /AI-powered WhatsApp CRM/)
+  assert.match(ui.text(), /Close deals faster with AI/)
 })
 
 test('a 401 mid-session signs the agent out', async (t) => {
@@ -75,7 +75,7 @@ test('a 401 mid-session signs the agent out', async (t) => {
   // api.js dispatches this whenever any call comes back 401.
   await act(() => ctx.env.window.dispatchEvent(new Event('homenex-logout')))
 
-  assert.match(ui.text(), /AI-powered WhatsApp CRM/)
+  assert.match(ui.text(), /Close deals faster with AI/)
 })
 
 test('signing out clears the token and returns to the landing page', async (t) => {
@@ -84,7 +84,7 @@ test('signing out clears the token and returns to the landing page', async (t) =
 
   await click(ui.byText('Sign out'))
 
-  assert.match(ui.text(), /AI-powered WhatsApp CRM/)
+  assert.match(ui.text(), /Close deals faster with AI/)
   assert.equal(ctx.env.localStorage.getItem('homenex-token'), null)
 })
 
