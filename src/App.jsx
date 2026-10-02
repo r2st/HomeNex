@@ -7,7 +7,6 @@ import PropertiesTab from './components/PropertiesTab.jsx'
 import MoreTab from './components/MoreTab.jsx'
 import AdminPanel from './components/AdminPanel.jsx'
 import BottomNav from './components/BottomNav.jsx'
-import AuthScreen from './components/AuthScreen.jsx'
 import LandingPage from './components/LandingPage.jsx'
 import { ErrorBoundary } from './components/ui.jsx'
 import { api, usePoll, getToken, setToken, offlineQueueSize, flushOfflineQueue } from './api.js'
@@ -72,7 +71,6 @@ export default function App() {
   const [inboxLeadId, setInboxLeadId] = useState(null)
   const [detailLeadId, setDetailLeadId] = useState(null) // lead panel opened from Home
   const [agent, setAgent] = useState(undefined) // undefined = checking, null = logged out
-  const [authMode, setAuthMode] = useState(null) // null = landing page, 'login' | 'signup' = auth screen
 
   useEffect(() => {
     if (!getToken()) return setAgent(null)
@@ -80,7 +78,7 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    const onLogout = () => { setAgent(null); setAuthMode(null) }
+    const onLogout = () => { setAgent(null) }
     window.addEventListener('homenex-logout', onLogout)
     return () => window.removeEventListener('homenex-logout', onLogout)
   }, [])
@@ -116,21 +114,8 @@ export default function App() {
     )
   }
 
-  if (!agent && !authMode) {
-    return (
-      <LandingPage
-        onLogin={() => setAuthMode('login')}
-        onSignup={() => setAuthMode('signup')}
-      />
-    )
-  }
-
   if (!agent) {
-    return (
-      <div className="phone">
-        <AuthScreen onAuthed={setAgent} initialMode={authMode} onBack={() => setAuthMode(null)} />
-      </div>
-    )
+    return <LandingPage onAuthed={setAgent} />
   }
 
   const openConversation = (leadId) => {
