@@ -233,6 +233,35 @@
   margin: 0;
 }
 
+/* ── Pipeline visualization ── */
+.landing-pipeline {
+  padding: 20px 0 4px;
+  overflow: hidden;
+}
+
+.landing-pipeline-svg {
+  width: 100%;
+  max-width: 470px;
+  height: auto;
+  display: block;
+}
+
+.landing-pipe-node {
+  opacity: 0;
+  animation: landing-pipe-appear 0.5s ease forwards;
+}
+
+@keyframes landing-pipe-appear {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.landing-pipe-node:hover {
+  stroke: rgba(240, 180, 41, 0.5);
+  filter: drop-shadow(0 0 8px rgba(240, 180, 41, 0.15));
+  transition: stroke 0.2s, filter 0.2s;
+}
+
 /* ── Typewriter value cycle ── */
 .landing-value-cycle {
   padding: 28px 0 32px;
@@ -640,6 +669,15 @@
     justify-content: center;
   }
 
+  .landing-pipeline {
+    padding: 16px 0 4px;
+  }
+
+  .landing-pipeline-svg {
+    max-width: 380px;
+    margin: 0 auto;
+  }
+
   .landing-value-cycle {
     padding: 20px 0 24px;
   }
@@ -690,5 +728,15 @@
     animation: none !important;
     opacity: 1 !important;
     transform: none !important;
+  }
+  .landing-pipe-node {
+    animation: none !important;
+    opacity: 1 !important;
+  }
+  .landing-pipe-dot {
+    display: none;
+  }
+  .landing-pipeline-svg animateMotion {
+    display: none;
   }
 }

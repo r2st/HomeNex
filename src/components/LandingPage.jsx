@@ -58,6 +58,123 @@ const HeroRobot = () => (
   </svg>
 )
 
+function PipelineViz() {
+  const stages = [
+    { label: 'Capture', icon: 'M7 4v16M17 4v16M3 8h4M13 8h8M3 12h18M3 16h4M13 16h8' },
+    { label: 'Qualify', icon: 'M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5' },
+    { label: 'Nurture', icon: 'M8 2v4M16 2v4M3 10h18M5 4h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V6a2 2 0 012-2z' },
+    { label: 'Close', icon: 'M22 11.08V12a10 10 0 11-5.93-9.14M22 4L12 14.01l-3-3' },
+  ]
+
+  const nodeW = 80
+  const nodeH = 52
+  const gap = 34
+  const totalW = stages.length * nodeW + (stages.length - 1) * gap
+  const svgW = totalW + 20
+  const svgH = nodeH + 36
+  const y = 18
+
+  return (
+    <div className="landing-pipeline" aria-label="Lead pipeline: Capture, Qualify, Nurture, Close">
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox={`0 0 ${svgW} ${svgH}`}
+        className="landing-pipeline-svg"
+        aria-hidden="true"
+      >
+        <defs>
+          <linearGradient id="pipe-gold" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stopColor="#F0B429"/>
+            <stop offset="100%" stopColor="#F7CC5F"/>
+          </linearGradient>
+          <filter id="pipe-glow">
+            <feGaussianBlur stdDeviation="3" result="blur"/>
+            <feMerge>
+              <feMergeNode in="blur"/>
+              <feMergeNode in="SourceGraphic"/>
+            </feMerge>
+          </filter>
+          <radialGradient id="dot-glow">
+            <stop offset="0%" stopColor="#F0B429" stopOpacity="1"/>
+            <stop offset="100%" stopColor="#F0B429" stopOpacity="0"/>
+          </radialGradient>
+        </defs>
+
+        {stages.map((stage, i) => {
+          const x = 10 + i * (nodeW + gap)
+          const cx = x + nodeW / 2
+          const cy = y + nodeH / 2
+
+          return (
+            <g key={stage.label}>
+              {i < stages.length - 1 && (
+                <>
+                  <line
+                    x1={x + nodeW}
+                    y1={cy}
+                    x2={x + nodeW + gap}
+                    y2={cy}
+                    stroke="rgba(240,180,41,0.15)"
+                    strokeWidth="1"
+                  />
+                  <circle r="2.5" fill="url(#pipe-gold)" filter="url(#pipe-glow)" className={`landing-pipe-dot landing-pipe-dot-${i}`}>
+                    <animateMotion
+                      dur="2s"
+                      repeatCount="indefinite"
+                      begin={`${i * 0.5}s`}
+                      path={`M${x + nodeW},${cy} L${x + nodeW + gap},${cy}`}
+                    />
+                  </circle>
+                  <circle r="5" fill="url(#dot-glow)" opacity="0.4" className={`landing-pipe-dot landing-pipe-dot-${i}`}>
+                    <animateMotion
+                      dur="2s"
+                      repeatCount="indefinite"
+                      begin={`${i * 0.5}s`}
+                      path={`M${x + nodeW},${cy} L${x + nodeW + gap},${cy}`}
+                    />
+                  </circle>
+                </>
+              )}
+
+              <rect
+                x={x}
+                y={y}
+                width={nodeW}
+                height={nodeH}
+                rx="12"
+                fill="rgba(16,16,18,0.8)"
+                stroke="rgba(240,180,41,0.2)"
+                strokeWidth="1"
+                className="landing-pipe-node"
+                style={{ animationDelay: `${i * 0.12}s` }}
+              />
+
+              <g transform={`translate(${cx},${cy - 6})`}>
+                <g transform="translate(-9,-9) scale(0.75)" stroke="#F0B429" strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round">
+                  <path d={stage.icon}/>
+                </g>
+              </g>
+
+              <text
+                x={cx}
+                y={cy + 17}
+                textAnchor="middle"
+                fill="rgba(255,255,255,0.5)"
+                fontSize="9"
+                fontFamily="'IBM Plex Mono', monospace"
+                fontWeight="500"
+                letterSpacing="0.04em"
+              >
+                {stage.label}
+              </text>
+            </g>
+          )
+        })}
+      </svg>
+    </div>
+  )
+}
+
 function TypewriterCycle() {
   const [phraseIdx, setPhraseIdx] = useState(0)
   const [charIdx, setCharIdx] = useState(0)
@@ -442,6 +559,7 @@ export default function LandingPage({ onAuthed }) {
               </p>
             </div>
 
+            <PipelineViz />
             <TypewriterCycle />
 
             <footer className="landing-footer">
