@@ -1,4 +1,8 @@
 User-agent: *
 Allow: /
+Allow: /tools/
+Allow: /blog/
+Allow: /embed
+Disallow: /api/
 
-Sitemap: https://home.doaide.com/sitemap.xml
+Sitemap: https://realty.doaide.com/sitemap.xml
