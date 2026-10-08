@@ -11,3 +11,7 @@ keys/
 server/uploads/
 
 backups/
+
+# Environment
+.env*
+!.env.example
