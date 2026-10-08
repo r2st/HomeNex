@@ -271,7 +271,7 @@ export default function MoreTab({ agent, onAgentUpdate, onOpenConversation, foll
     <div className="px-5 pt-7">
       <header className="rise">
         <h1 className="font-display text-[28px] font-semibold text-ink">More</h1>
-        <p className="text-[13px] text-ink-soft mt-0.5">Everything else in your HomeNex toolkit</p>
+        <p className="text-[13px] text-ink-soft mt-0.5">Everything else in your DoAide Realty toolkit</p>
       </header>
       <div className="space-y-2.5 mt-5">
         {MENU.map((m, i) => (
@@ -299,7 +299,7 @@ export default function MoreTab({ agent, onAgentUpdate, onOpenConversation, foll
         ))}
         {agent?.is_admin === 1 && (
           <button
-            onClick={() => window.dispatchEvent(new CustomEvent('homenex-navigate', { detail: 'admin' }))}
+            onClick={() => window.dispatchEvent(new CustomEvent('realty-navigate', { detail: 'admin' }))}
             className="w-full text-left bg-card rounded-2xl border border-line shadow-card px-4 py-4 active:scale-[0.99] transition"
           >
             <div className="flex items-center gap-3">

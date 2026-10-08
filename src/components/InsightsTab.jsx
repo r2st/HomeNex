@@ -42,7 +42,7 @@ export default function InsightsTab() {
   return (
     <div className="px-5 pt-7">
       <header className="rise">
-        <h1 className="font-display text-[28px] font-semibold text-ink">Your numbers with HomeNex</h1>
+        <h1 className="font-display text-[28px] font-semibold text-ink">Your numbers with DoAide Realty</h1>
         <p className="text-[13px] text-ink-soft mt-0.5">Computed live from your real conversations</p>
       </header>
 
@@ -53,7 +53,7 @@ export default function InsightsTab() {
           being current. */}
       {error && (
         <p role="status" className="mt-4 text-[12px] text-gold bg-amber-wash rounded-xl px-4 py-2.5">
-          Showing the last numbers HomeNex could load — the server isn't answering right now.
+          Showing the last numbers we could load — the server isn't answering right now.
         </p>
       )}
 

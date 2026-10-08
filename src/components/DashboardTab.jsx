@@ -207,7 +207,7 @@ export default function DashboardTab({ agent, onGoTo, onOpenConversation, onOpen
         {stats && (
           <p className="text-[13.5px] text-ink-soft mt-1.5 leading-snug">
             {stats.total === 0 ? (
-              <>HomeNex is live and waiting for your first WhatsApp lead</>
+              <>DoAide Realty is live and waiting for your first WhatsApp lead</>
             ) : (
               <>
                 <strong className="text-brand-deep">{stats.newToday}</strong> new lead{stats.newToday === 1 ? '' : 's'} today ·{' '}

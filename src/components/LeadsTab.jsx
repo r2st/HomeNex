@@ -245,7 +245,7 @@ export default function LeadsTab({ onOpenConversation }) {
         <p className="text-[13px] text-ink-soft mt-0.5">
           {loading && !leads
             ? 'Loading…'
-            : `${openCount} open in this pipeline · qualified by HomeNex AI`}
+            : `${openCount} open in this pipeline · qualified by DoAide AI`}
         </p>
       </header>
 

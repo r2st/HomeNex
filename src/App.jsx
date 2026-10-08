@@ -24,7 +24,7 @@ function OfflineBanner() {
       setOnline(navigator.onLine)
       setQueued(offlineQueueSize())
     }
-    const events = ['online', 'offline', 'homenex-queued', 'homenex-queue-flushed']
+    const events = ['online', 'offline', 'realty-queued', 'realty-queue-flushed']
     events.forEach((e) => window.addEventListener(e, update))
     if (navigator.onLine && offlineQueueSize()) flushOfflineQueue().catch(() => {})
     return () => events.forEach((e) => window.removeEventListener(e, update))
@@ -92,15 +92,15 @@ function AppShell() {
 
   useEffect(() => {
     const onLogout = () => { setAgent(null) }
-    window.addEventListener('homenex-logout', onLogout)
-    return () => window.removeEventListener('homenex-logout', onLogout)
+    window.addEventListener('realty-logout', onLogout)
+    return () => window.removeEventListener('realty-logout', onLogout)
   }, [])
 
   // Listen for internal navigation events (e.g. more -> admin)
   useEffect(() => {
     const onNav = (e) => setTab(e.detail)
-    window.addEventListener('homenex-navigate', onNav)
-    return () => window.removeEventListener('homenex-navigate', onNav)
+    window.addEventListener('realty-navigate', onNav)
+    return () => window.removeEventListener('realty-navigate', onNav)
   }, [])
 
   // Pending follow-ups drive the "act now" badge on the More tab + Follow-ups row.

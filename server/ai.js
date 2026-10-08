@@ -193,7 +193,7 @@ async function callOpenRouter(messages, { json, maxTokens, temperature, key }) {
       headers: {
         Authorization: `Bearer ${key}`,
         'Content-Type': 'application/json',
-        'X-Title': 'HomeNex',
+        'X-Title': 'DoAide Realty',
       },
       body: JSON.stringify({
         model: model(),

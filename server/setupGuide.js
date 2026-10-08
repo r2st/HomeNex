@@ -1,10 +1,10 @@
 // Public in-app guide served at /setup-guide. Walks agents (and admins) through
 // adding a phone number to their Meta WhatsApp Business Account (WABA), so support
 // isn't answering the same onboarding questions over and over.
-// Plain HTML, no auth, HomeNex branding (dark green header, cream/warm body) —
+// Plain HTML, no auth, DoAide Realty branding (dark green header, cream/warm body) —
 // same visual shell as the legal pages so it feels part of the product.
 
-const CONTACT_EMAIL = 'support@homenex.doaide.com'
+const CONTACT_EMAIL = 'support@realty.doaide.com'
 const META_DOCS = 'https://www.facebook.com/business/help/456220311516626'
 const META_ADD_NUMBER = 'https://www.facebook.com/business/help/2087193751603668'
 const META_DISPLAY_NAME = 'https://www.facebook.com/business/help/338047025165344'
@@ -19,7 +19,7 @@ function page(body) {
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="robots" content="index, follow" />
-<title>WhatsApp Business Setup Guide — HomeNex</title>
+<title>WhatsApp Business Setup Guide — DoAide Realty</title>
 <style>
   :root {
     --brand: #2D5016;
@@ -165,11 +165,11 @@ function page(body) {
 <body>
   <header>
     <div class="wrap">
-      <div class="brand">🏠 HomeNex</div>
+      <div class="brand">🏠 DoAide Realty</div>
       <h1>Adding a Phone Number to WhatsApp Business</h1>
       <div class="sub">
         A step-by-step guide to registering a phone number on your Meta WhatsApp
-        Business Account (WABA) so HomeNex can send and receive messages on it.
+        Business Account (WABA) so DoAide Realty can send and receive messages on it.
       </div>
     </div>
   </header>
@@ -177,7 +177,7 @@ function page(body) {
 ${body}
   </main>
   <footer>
-    HomeNex — AI-powered WhatsApp lead management for real estate agents.
+    DoAide Realty — AI-powered WhatsApp lead management for real estate agents.
     &nbsp;·&nbsp; <a href="/privacy">Privacy</a> &nbsp;·&nbsp; <a href="/terms">Terms</a>
     &nbsp;·&nbsp; A <a href="https://doaide.com">DoAide</a> product
   </footer>
@@ -192,7 +192,7 @@ export function setupGuidePage() {
         To use a number with the WhatsApp Business Platform, it has to be added to a
         <strong>Meta WhatsApp Business Account (WABA)</strong> and verified — this is
         different from installing the regular WhatsApp app. Follow the steps below, then
-        share the number with the HomeNex team from
+        share the number with the DoAide Realty team from
         <span class="path">More → Settings → WhatsApp Business Number</span> so we can
         connect it to your dashboard.
       </p>
@@ -260,7 +260,7 @@ export function setupGuidePage() {
           see when you message them.</li>
       </ul>
       <p>
-        Then come back to HomeNex and enter the number under
+        Then come back to DoAide Realty and enter the number under
         <span class="path">More → Settings → WhatsApp Business Number</span>. Our team
         completes the API connection and you'll be notified once it's <strong>Active</strong>.
       </p>
@@ -271,23 +271,23 @@ export function setupGuidePage() {
       <p>
         If an agent doesn't have a WhatsApp Business Account yet, the fastest path is Meta's
         <strong>Embedded Signup</strong> flow — a guided popup that creates the WABA and adds
-        the first number in one session, without leaving HomeNex's partner setup.
+        the first number in one session, without leaving DoAide Realty's partner setup.
       </p>
       <ol class="steps">
         <li>From the admin's Meta Business Suite, start the <strong>Embedded Signup</strong>
-          flow (launched from HomeNex's onboarding link or Meta's Partner setup).</li>
+          flow (launched from DoAide Realty's onboarding link or Meta's Partner setup).</li>
         <li>Log in with the <strong>Meta Business account</strong> that owns the business.</li>
         <li>Select an existing <strong>Business Portfolio</strong> or create a new one, then
           create the <strong>WhatsApp Business Account</strong>.</li>
         <li>Add the <strong>phone number</strong>, choose SMS or voice verification, and enter
           the <strong>OTP</strong> — exactly as in Step 1 above.</li>
-        <li>Grant HomeNex the requested <strong>permissions</strong> so it can send and receive
-          messages on the number. The WABA and phone number ID are shared with HomeNex
+        <li>Grant DoAide Realty the requested <strong>permissions</strong> so it can send and receive
+          messages on the number. The WABA and phone number ID are shared with DoAide Realty
           automatically when the popup closes.</li>
       </ol>
       <div class="callout tip">
         <p>💡 Embedded Signup is the recommended route for onboarding several agents — the
-        business owner stays in control of their own WABA, and HomeNex is added as a connected
+        business owner stays in control of their own WABA, and DoAide Realty is added as a connected
         app rather than owning the assets.</p>
       </div>
       <p>
@@ -352,7 +352,7 @@ export function setupGuidePage() {
         <li><a href="${META_DISPLAY_NAME}" target="_blank" rel="noopener">Meta — Display name guidelines</a></li>
       </ul>
       <p>
-        Stuck on any step? Email the HomeNex team at
+        Stuck on any step? Email the DoAide Realty team at
         <a href="mailto:${CONTACT_EMAIL}">${CONTACT_EMAIL}</a> and we'll help you get the
         number connected.
       </p>

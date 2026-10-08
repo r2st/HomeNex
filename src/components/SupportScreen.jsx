@@ -83,14 +83,14 @@ function TicketThread({ id, onBack }) {
       <div className="space-y-2">
         {ticket.messages.map((m) => (
           <div key={m.id} className={`max-w-[85%] rounded-2xl px-3.5 py-2 ${m.is_staff ? 'ml-auto bg-brand-wash' : 'bg-card border border-line'}`}>
-            <p className="text-[10.5px] text-ink-faint mb-0.5">{m.is_staff ? 'HomeNex support' : 'You'} · {fmtAgo(m.created_at)}</p>
+            <p className="text-[10.5px] text-ink-faint mb-0.5">{m.is_staff ? 'DoAide support' : 'You'} · {fmtAgo(m.created_at)}</p>
             <p className="text-[13px] text-ink whitespace-pre-wrap">{m.body}</p>
           </div>
         ))}
       </div>
       {ticket.status !== 'closed' && (
         <div className="flex gap-2 mt-3">
-          <input className={inputCls} value={reply} onChange={(e) => setReply(e.target.value)} aria-label="Reply to HomeNex support" placeholder="Reply…" onKeyDown={(e) => e.key === 'Enter' && send()} />
+          <input className={inputCls} value={reply} onChange={(e) => setReply(e.target.value)} aria-label="Reply to DoAide support" placeholder="Reply…" onKeyDown={(e) => e.key === 'Enter' && send()} />
           <button onClick={send} className="bg-brand text-white font-bold text-[13px] rounded-xl px-4 active:scale-95 transition">Send</button>
         </div>
       )}

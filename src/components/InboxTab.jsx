@@ -12,7 +12,7 @@ const REPLY_TONE = {
   amber: 'bg-amber-wash text-gold',
 }
 
-const ROLE_LABEL = { ai: 'HomeNex AI', agent: 'You' }
+const ROLE_LABEL = { ai: 'DoAide AI', agent: 'You' }
 
 const LabelChip = ({ label, onRemove }) => (
   <span

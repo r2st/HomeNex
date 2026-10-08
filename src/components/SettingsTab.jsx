@@ -104,7 +104,7 @@ export default function SettingsTab({ agent, onAgentUpdate }) {
 
   const logout = () => {
     setToken(null)
-    window.dispatchEvent(new Event('homenex-logout'))
+    window.dispatchEvent(new Event('realty-logout'))
   }
 
   if (!current) return <div className="p-5 text-[13px] text-ink-faint">Loading…</div>
@@ -150,7 +150,7 @@ export default function SettingsTab({ agent, onAgentUpdate }) {
 
       {current.is_admin === 1 && (
         <button
-          onClick={() => window.dispatchEvent(new CustomEvent('homenex-navigate', { detail: 'admin' }))}
+          onClick={() => window.dispatchEvent(new CustomEvent('realty-navigate', { detail: 'admin' }))}
           className="w-full bg-ink text-white font-bold text-[13px] rounded-2xl py-3 active:scale-[0.98] transition"
         >
           Team &amp; admin

@@ -5,7 +5,7 @@
 
 export const glossary = {
   RERA:
-    'RERA is the government real-estate regulator. Marketing messages must carry your RERA registration number — HomeNex adds it for you.',
+    'RERA is the government real-estate regulator. Marketing messages must carry your RERA registration number — DoAide Realty adds it for you.',
   WABA:
     'Your WhatsApp Business number is the number buyers message. Messages to it are saved as leads automatically and get instant replies.',
   WHATSAPP_BUSINESS:
@@ -17,21 +17,21 @@ export const glossary = {
   CTWA:
     'This lead came from a "Click to WhatsApp" ad — they tapped your ad and it opened a chat. You can message them free for 72 hours.',
   LEAD_ADS:
-    'A lead that came in from a Facebook or Instagram ad form, pulled into HomeNex automatically.',
+    'A lead that came in from a Facebook or Instagram ad form, pulled into DoAide Realty automatically.',
   SYNDICATION:
-    'Post the same property to portals like 99acres, MagicBricks and Housing without re-typing — HomeNex formats it for each one.',
+    'Post the same property to portals like 99acres, MagicBricks and Housing without re-typing — DoAide Realty formats it for each one.',
   PORTAL:
     'A property website like 99acres, MagicBricks, Housing or NoBroker where buyers find listings.',
   OPT_IN:
     'Whether this contact has agreed to receive your WhatsApp messages. WhatsApp can limit sending to people who haven\'t opted in.',
   AUTO_REPLY:
-    'HomeNex\'s AI answers new buyer messages for you, day and night. Take over any chat any time and it stops replying there.',
+    'DoAide Realty\'s AI answers new buyer messages for you, day and night. Take over any chat any time and it stops replying there.',
   MICRO_PAGE:
     'A ready-made web page for a property you can share in any chat or group. You see how many people open it.',
   PIPELINE:
     'The stages a buyer moves through — from a new enquiry to a closed deal. Drag a lead along as things progress.',
   GST:
-    'GST is the tax added to your brokerage invoice. HomeNex works out the split (CGST/SGST or IGST) for you.',
+    'GST is the tax added to your brokerage invoice. DoAide Realty works out the split (CGST/SGST or IGST) for you.',
   BLTC:
     'The four things a buyer needs pinned down before they can decide: budget, location, timeline and home type.',
   PORTAL_EMAIL:

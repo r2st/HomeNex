@@ -1,10 +1,27 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { friendlyMessage } from './lib/friendlyError.js'
 
-const TOKEN_KEY = 'homenex-token'
-// Declared here (not next to the queue helpers below) so clearSessionCaches can reach
-// it — the two are the same concern: state scoped to one logged-in agent.
-const QUEUE_KEY = 'homenex-offline-queue'
+const TOKEN_KEY = 'realty-token'
+const LEGACY_TOKEN_KEY = 'homenex-token'
+const QUEUE_KEY = 'realty-offline-queue'
+const LEGACY_QUEUE_KEY = 'homenex-offline-queue'
+
+function migrateKeys() {
+  try {
+    const oldToken = localStorage.getItem(LEGACY_TOKEN_KEY)
+    if (oldToken && !localStorage.getItem(TOKEN_KEY)) {
+      localStorage.setItem(TOKEN_KEY, oldToken)
+      localStorage.removeItem(LEGACY_TOKEN_KEY)
+    }
+    const oldQueue = localStorage.getItem(LEGACY_QUEUE_KEY)
+    if (oldQueue && !localStorage.getItem(QUEUE_KEY)) {
+      localStorage.setItem(QUEUE_KEY, oldQueue)
+      localStorage.removeItem(LEGACY_QUEUE_KEY)
+    }
+  } catch { /* private mode — nothing to migrate */ }
+}
+migrateKeys()
+
 export const getToken = () => localStorage.getItem(TOKEN_KEY)
 
 // Everything the app holds on behalf of ONE session, dropped whenever the session
@@ -63,7 +80,7 @@ export const setToken = (t) => {
 async function j(res) {
   if (res.status === 401) {
     setToken(null)
-    window.dispatchEvent(new Event('homenex-logout'))
+    window.dispatchEvent(new Event('realty-logout'))
   }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
@@ -119,7 +136,7 @@ async function queueable(method, url, body) {
   } catch (err) {
     if (!isNetworkError(err)) throw err
     writeQueue([...readQueue(), { method, url, body, queued_at: new Date().toISOString() }])
-    window.dispatchEvent(new Event('homenex-queued'))
+    window.dispatchEvent(new Event('realty-queued'))
     return { queued: true }
   }
 }
@@ -138,7 +155,7 @@ export async function flushOfflineQueue() {
     queue = rest
     writeQueue(queue)
   }
-  if (!queue.length) window.dispatchEvent(new Event('homenex-queue-flushed'))
+  if (!queue.length) window.dispatchEvent(new Event('realty-queue-flushed'))
   return queue.length
 }
 

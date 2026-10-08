@@ -1,8 +1,8 @@
 // First-run onboarding logic. Pure — no React, no DOM — so it can be unit-tested.
 // The banner walks a brand-new agent through the two things they must do before
-// HomeNex is useful: connect a WhatsApp number and add some properties.
+// DoAide Realty is useful: connect a WhatsApp number and add some properties.
 
-export const ONBOARDING_DISMISS_KEY = 'homenex_onboarding_dismissed'
+export const ONBOARDING_DISMISS_KEY = 'realty_onboarding_dismissed'
 
 // Ordered first-run steps with a done flag derived from the agent's real state.
 export function onboardingSteps({ hasWhatsApp = false, propertyCount = 0 } = {}) {
@@ -18,7 +18,7 @@ export function onboardingSteps({ hasWhatsApp = false, propertyCount = 0 } = {})
     {
       id: 'properties',
       label: 'Add your first properties',
-      hint: 'HomeNex matches them to every lead automatically.',
+      hint: 'DoAide Realty matches them to every lead automatically.',
       cta: 'Add properties',
       target: 'properties',
       done: Number(propertyCount) > 0,

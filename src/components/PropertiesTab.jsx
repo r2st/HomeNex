@@ -160,7 +160,7 @@ export default function PropertiesTab({ onOpenLead }) {
           ) : (
             <>
               <p className="text-[12.5px] text-ink-soft mt-1.5">
-                Add your inventory — HomeNex auto-matches properties to leads.
+                Add your inventory — DoAide Realty auto-matches properties to leads.
               </p>
               <button
                 onClick={() => setAdding(true)}
