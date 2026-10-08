@@ -169,6 +169,7 @@ import { privacyPage, termsPage } from './legal.js'
 import { setupGuidePage } from './setupGuide.js'
 import { signup, login, changePhone, changePassword, requestPasswordReset, resetPassword, requireAuth } from './auth.js'
 import { handleAgentCommand } from './agentCommands.js'
+import { mountSsoRoutes } from './oauthSso.js'
 import adminRouter from './adminRoutes.js'
 import teamRouter from './teamRoutes.js'
 import { getAgentTeam, pickRoundRobin, stampLeadTeam, teamLeadOwnerForWaId } from './db.js'
@@ -851,6 +852,12 @@ const AUTH_TEXT_LIMITS = {
   name: TEXT.LINE, phone: TEXT.LINE, email: TEXT.LINE,
   password: TEXT.PASSWORD, wa_phone_number: TEXT.LINE,
 }
+
+// SSO login routes (Google/GitHub/Microsoft) — mounted before the auth limiter's
+// scope so the OAuth callback can use its own per-IP budget rather than competing
+// with login/signup attempts. The routes are GET (redirect-based), not POST, and
+// only mount when the corresponding env vars are set.
+mountSsoRoutes(app)
 
 app.post('/api/auth/signup', boundedText(AUTH_TEXT_LIMITS), ah(async (req, res) => {
   try {
