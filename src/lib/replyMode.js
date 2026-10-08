@@ -12,4 +12,4 @@ export function replyModeBadge(lead = {}) {
 
 // One-line explanation of the two states, for the Inbox header helper text.
 export const REPLY_MODE_HELP =
-  ‘🤖 Auto-reply = DoAide AI answers · ✋ You reply = you’ve taken over’
+  '🤖 Auto-reply = DoAide AI answers · ✋ You reply = you’ve taken over'
