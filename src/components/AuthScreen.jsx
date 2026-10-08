@@ -549,7 +549,7 @@ export default function AuthScreen({ onAuthed, initialMode, onBack }) {
         <div style={styles.footer}>
           <div style={styles.footerNav}>
             <a href="https://desk.doaide.com" style={styles.footerNavLink} target="_blank" rel="noopener noreferrer">Desk</a>
-            <a href="https://herald.doaide.com" style={styles.footerNavLink} target="_blank" rel="noopener noreferrer">Herald</a>
+            <a href="https://pulse.doaide.com" style={styles.footerNavLink} target="_blank" rel="noopener noreferrer">Pulse</a>
             <a href="https://409.doaide.com" style={styles.footerNavLink} target="_blank" rel="noopener noreferrer">409A</a>
             <a href="https://job.doaide.com" style={styles.footerNavLink} target="_blank" rel="noopener noreferrer">AutoApply</a>
             <span style={styles.footerNavActive}>Realty</span>
