@@ -9,6 +9,7 @@ import AdminPanel from './components/AdminPanel.jsx'
 import BottomNav from './components/BottomNav.jsx'
 import LandingPage from './components/LandingPage.jsx'
 import { ErrorBoundary } from './components/ui.jsx'
+import InstallPrompt from './components/InstallPrompt.jsx'
 import { api, usePoll, getToken, setToken, offlineQueueSize, flushOfflineQueue } from './api.js'
 import { actionableFollowupCount, badgeText } from './lib/followups.js'
 import { resolvePublicRoute, ToolsIndex, ToolPage, BlogIndex, BlogPost, EmbedPage } from './components/PublicPages.jsx'
@@ -184,6 +185,7 @@ function AppShell() {
       )}
 
       {tab !== 'admin' && <BottomNav tab={tab} setTab={setTab} moreBadge={followupBadge} />}
+      <InstallPrompt />
     </div>
   )
 }
