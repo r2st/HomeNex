@@ -219,7 +219,7 @@ export async function createAgent(name, phone, email, passwordHash, waPhoneNumbe
       `INSERT INTO agents (name, phone, email, password_hash, wa_phone_number, waba_status, ingest_token)
        VALUES ($1, $2, $3, $4, $5, $6, substr(md5(random()::text || clock_timestamp()::text), 1, 12))
        RETURNING id`,
-      [name, normalizePhone(phone), email ? email.toLowerCase() : null, passwordHash, pn, pn ? 'pending' : 'none'],
+      [name, phone ? normalizePhone(phone) : null, email ? email.toLowerCase() : null, passwordHash, pn, pn ? 'pending' : 'none'],
     ))
   } catch (e) {
     // signup checks both of these first, so reaching the constraint means two

@@ -244,7 +244,7 @@ test('login on a deactivated account reports it only after the password checks o
   // wrong password — the deactivation is not a discovery oracle.
   const wrong = await rejects(() => login({ phone: '+919770000021', password: 'not-it' }))
   assert.equal(wrong.code, undefined)
-  assert.match(wrong.message, /Wrong WhatsApp number or password/)
+  assert.match(wrong.message, /Wrong email or password/)
 
   const right = await rejects(() => login({ phone: '+919770000021', password: 'secret123' }))
   assert.equal(right.code, 'DEACTIVATED')
@@ -338,4 +338,22 @@ test('changing the WhatsApp number leaves every session signed in', async () => 
   })
   await changePhone(mover.id, { phone: '+919770000053', password: 'secret123' })
   assert.equal((await verifyToken(token)).id, mover.id, 'the same token still works')
+})
+
+test('signup and login by email alone, with no WhatsApp number', async () => {
+  const { agent: e, token } = await signup({ name: 'Email Esha', email: ' Esha@Example.com ', password: 'secret123' })
+  assert.ok(token)
+  assert.equal(e.email, 'esha@example.com')
+  assert.equal(e.phone, null)
+  assert.equal(e.wa_phone_number, null)
+
+  const { agent: back } = await login({ email: 'ESHA@example.com', password: 'secret123' })
+  assert.equal(back.id, e.id)
+
+  const dup = await rejects(() => signup({ name: 'Dup', email: 'esha@example.com', password: 'secret123' }))
+  assert.match(dup.message, /email already exists/)
+  const none = await rejects(() => signup({ name: 'Nobody', password: 'secret123' }))
+  assert.match(none.message, /Name, email and password are required/)
+  const bad = await rejects(() => login({ email: 'esha@example.com', password: 'nope-nope' }))
+  assert.match(bad.message, /Wrong email or password/)
 })

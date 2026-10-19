@@ -100,34 +100,35 @@ export async function verifyToken(token) {
 
 export async function signup({ name, phone, email, password, wa_phone_number }) {
   name = (name || '').trim()
+  email = (email || '').trim().toLowerCase()
+  // Optional — can be added later in Settings. The API still accepts a number-only
+  // signup (older clients, scripts), but the app signs up by email.
   phone = (phone || '').trim()
-  email = (email || '').trim().toLowerCase() // optional
-  if (!name || !phone || !password) throw new Error('Name, WhatsApp number and password are required')
-  // A valid WhatsApp number is at least 10 digits (Indian mobile) once normalized.
-  const digits = normalizePhone(phone).replace(/\D/g, '')
-  if (digits.length < 10) throw new Error('Enter a valid WhatsApp number')
+  if (!name || !(email || phone) || !password) throw new Error('Name, email and password are required')
   if (email && !isValidEmail(email)) throw new Error('Enter a valid email address')
+  if (phone && normalizePhone(phone).replace(/\D/g, '').length < 10)
+    throw new Error('Enter a valid WhatsApp number')
   if (password.length < MIN_PASSWORD_LENGTH)
     throw new Error(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`)
-  // We now use a single number: the agent's WhatsApp number IS their WhatsApp Business
-  // number. Default the WABA number to the signup number (an explicit override is still
-  // honoured, and may match the login number).
-  const waPhone = (wa_phone_number || '').trim() || phone
-  if (await findAgentByPhone(phone))
-    throw new Error('An account with this WhatsApp number already exists — log in instead')
+  // The agent's WhatsApp number doubles as their WhatsApp Business number unless an
+  // explicit override is given.
+  const waPhone = (wa_phone_number || '').trim() || phone || null
   if (email && (await findAgentByEmail(email)))
     throw new Error('An account with this email already exists — log in instead')
-  const agent = await createAgent(name, phone, email || null, hashPassword(password), waPhone)
+  if (phone && (await findAgentByPhone(phone)))
+    throw new Error('An account with this WhatsApp number already exists — log in instead')
+  const agent = await createAgent(name, phone || null, email || null, hashPassword(password), waPhone)
   return { token: await issueToken(agent.id, agent.token_version), agent }
 }
 
 export async function login({ phone, email, password }) {
-  // Log in by WhatsApp number (email still accepted for older accounts).
-  const row = phone ? await findAgentByPhone(phone) : await findAgentByEmail((email || '').trim())
+  // Log in by email (a phone number is still accepted, e.g. from the admin portal).
+  email = (email || '').trim()
+  const row = email ? await findAgentByEmail(email) : phone ? await findAgentByPhone(phone) : null
   // Always verify, even with nothing to verify against — see ABSENT_ACCOUNT_HASH.
   const ok = verifyPassword(password || '', row ? row.password_hash : ABSENT_ACCOUNT_HASH)
   if (!row || !ok) {
-    throw new Error('Wrong WhatsApp number or password')
+    throw new Error('Wrong email or password')
   }
   // Checked after the password so a deactivated account can't be discovered by
   // anyone who doesn't already hold its credentials.

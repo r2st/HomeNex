@@ -134,7 +134,7 @@ test('letters typed into the number are dropped, not sent', async (t) => {
   assert.equal(net.to('/api/agent/phone', 'PUT')[0].body.phone, '+919812345678')
 })
 
-test('a changed number closes the form and says which number to log in with', async (t) => {
+test('a changed number closes the form and confirms the new number', async (t) => {
   const { net } = setup(t)
   const saved = []
   const ui = await render(<SecurityCard agent={AGENT} onSaved={(a) => saved.push(a)} />)
@@ -148,7 +148,7 @@ test('a changed number closes the form and says which number to log in with', as
   assert.equal(saved[0].phone, '+919812345678')
   assert.equal(ui.query((f) => f.type === 'form'), null, 'the form stayed open after a success')
   assert.match(ui.text(), /\+919812345678/)
-  assert.match(ui.text(), /log in/i, 'the agent was not told the number is now their login')
+  assert.match(ui.text(), /Your WhatsApp number is now/)
   assert.equal(net.to('/api/agent/phone', 'PUT')[0].body.password, 'secret123')
 })
 

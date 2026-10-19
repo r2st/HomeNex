@@ -232,7 +232,7 @@ test('a deactivated agent with a wrong password still gets a plain 401', async (
   await req('PUT', `/api/admin/agents/${bala.id}/active`, { is_active: false })
   const res = await req('POST', '/api/auth/login', { phone: bala.phone, password: 'wrong' }, null)
   assert.equal(res.status, 401)
-  assert.match((await res.json()).error, /Wrong WhatsApp number or password/)
+  assert.match((await res.json()).error, /Wrong email or password/)
 })
 
 test('reactivation restores login and clears deactivated_at', async () => {

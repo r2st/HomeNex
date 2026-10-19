@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { api, setToken } from '../api.js'
 import { inputCls, Field } from './ui.jsx'
 
-// Change the WhatsApp number the agent logs in with. Password-gated server-side.
+// Change (or add) the agent's WhatsApp number. Password-gated server-side.
 // Minimum local-part length we'll accept (covers short international numbers).
 const MIN_LOCAL_DIGITS = 6
 
@@ -43,7 +43,7 @@ function PhoneForm({ phone, onSaved }) {
     try {
       const updated = await api.changePhone({ phone: dialCode + newPhone, password })
       onSaved(updated)
-      setMsg(`Your WhatsApp number is now ${updated.phone}. Use it to log in next time.`)
+      setMsg(`Your WhatsApp number is now ${updated.phone}.`)
       close()
     } catch (err) {
       setError(err.message)
@@ -55,10 +55,10 @@ function PhoneForm({ phone, onSaved }) {
   return (
     <div className="space-y-2">
       <div className="text-[11px] font-bold text-ink-faint uppercase tracking-wide">
-        WhatsApp number (you log in with this)
+        WhatsApp number
       </div>
       <div className="flex items-center justify-between gap-3">
-        <span className="text-[15px] font-semibold text-ink tracking-wide">{phone}</span>
+        <span className="text-[15px] font-semibold text-ink tracking-wide">{phone || 'Not set'}</span>
         {!editing && (
           <button
             onClick={() => {

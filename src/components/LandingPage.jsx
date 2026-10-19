@@ -234,55 +234,10 @@ function Particles() {
 
 function AuthForm({ onAuthed }) {
   const [mode, setMode] = useState('login')
-  const [form, setForm] = useState({ name: '', cc: '+91', phone: '', password: '' })
+  const [form, setForm] = useState({ name: '', email: '', password: '' })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [showPassword, setShowPassword] = useState(false)
-  const [resetStep, setResetStep] = useState(null)
-  const [resetData, setResetData] = useState({ cc: '+91', phone: '', code: '', newPassword: '', agentId: null })
-
-  const setCc = (v) => {
-    const digits = v.replace(/\D/g, '').slice(0, 4)
-    setForm((s) => ({ ...s, cc: '+' + digits }))
-  }
-  const setPhone = (v) => setForm((s) => ({ ...s, phone: v.replace(/\D/g, '').slice(0, 12) }))
-
-  const requestResetCode = async (e) => {
-    e.preventDefault()
-    if (busy) return
-    setBusy(true)
-    setError(null)
-    try {
-      const phone = (resetData.cc || '+91') + resetData.phone
-      const { agentId } = await api.requestReset({ phone })
-      setResetData((s) => ({ ...s, agentId }))
-      setResetStep('code')
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const submitReset = async (e) => {
-    e.preventDefault()
-    if (busy) return
-    setBusy(true)
-    setError(null)
-    try {
-      const { token, agent } = await api.resetPassword({
-        agentId: resetData.agentId,
-        code: resetData.code,
-        newPassword: resetData.newPassword,
-      })
-      setToken(token)
-      onAuthed(agent)
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setBusy(false)
-    }
-  }
 
   const submit = async (e) => {
     e.preventDefault()
@@ -291,7 +246,7 @@ function AuthForm({ onAuthed }) {
     setError(null)
     try {
       const payload = {
-        phone: (form.cc || '+91') + form.phone,
+        email: form.email.trim(),
         password: form.password,
         ...(mode === 'signup' ? { name: form.name } : {}),
       }
@@ -312,239 +267,81 @@ function AuthForm({ onAuthed }) {
         <span className="landing-brand-text">DoAide <em>Realty</em></span>
       </div>
 
-      {!resetStep && (
-        <div className="landing-tabs">
-          <button
-            type="button"
-            className={`landing-tab${mode === 'login' ? ' landing-tab-active' : ''}`}
-            onClick={() => { setMode('login'); setError(null) }}
-          >
-            Sign in
-          </button>
-          <button
-            type="button"
-            className={`landing-tab${mode === 'signup' ? ' landing-tab-active' : ''}`}
-            onClick={() => { setMode('signup'); setError(null) }}
-          >
-            Create account
-          </button>
-        </div>
-      )}
+      <div className="landing-tabs">
+        <button
+          type="button"
+          className={`landing-tab${mode === 'login' ? ' landing-tab-active' : ''}`}
+          onClick={() => { setMode('login'); setError(null) }}
+        >
+          Sign in
+        </button>
+        <button
+          type="button"
+          className={`landing-tab${mode === 'signup' ? ' landing-tab-active' : ''}`}
+          onClick={() => { setMode('signup'); setError(null) }}
+        >
+          Create account
+        </button>
+      </div>
 
       <div className="landing-form-area">
-        {resetStep === 'phone' && (
-          <form onSubmit={requestResetCode} noValidate>
-            <p className="landing-form-hint">
-              Enter the WhatsApp number you signed up with. We'll send a 6-digit code to reset your password.
-            </p>
+        <form onSubmit={submit} noValidate>
+          {mode === 'signup' && (
             <div className="landing-field">
-              <label className="landing-label">WhatsApp Number</label>
-              <div className="landing-phone-row">
-                <input
-                  type="text"
-                  inputMode="tel"
-                  value={resetData.cc}
-                  onChange={(e) => { const d = e.target.value.replace(/\D/g, '').slice(0, 4); setResetData((s) => ({ ...s, cc: '+' + d })) }}
-                  placeholder="+91"
-                  aria-label="Country code"
-                  required
-                  className="landing-input landing-cc-input"
-                />
-                <input
-                  type="tel"
-                  inputMode="numeric"
-                  value={resetData.phone}
-                  onChange={(e) => setResetData((s) => ({ ...s, phone: e.target.value.replace(/\D/g, '').slice(0, 12) }))}
-                  aria-label="Phone number"
-                  placeholder="98xxx xxxxx"
-                  required
-                  className="landing-input landing-phone-input"
-                />
-              </div>
-            </div>
-            {error && <p className="landing-error">{error}</p>}
-            <button type="submit" disabled={busy} className="landing-submit-btn">
-              {busy ? 'Sending…' : 'Send reset code'}
-            </button>
-            <button type="button" onClick={() => { setResetStep(null); setError(null) }} className="landing-toggle-btn">
-              ← Back to sign in
-            </button>
-          </form>
-        )}
-
-        {resetStep === 'code' && (
-          <form onSubmit={submitReset} noValidate>
-            <p className="landing-form-hint">
-              We sent a 6-digit code to your WhatsApp. Enter it below with your new password.
-            </p>
-            <div className="landing-field">
-              <label className="landing-label">Reset Code</label>
+              <label className="landing-label" htmlFor="landing-name">Your Name <span className="landing-req">*</span></label>
               <input
+                id="landing-name"
                 type="text"
-                inputMode="numeric"
-                value={resetData.code}
-                onChange={(e) => setResetData((s) => ({ ...s, code: e.target.value.replace(/\D/g, '').slice(0, 6) }))}
-                placeholder="6-digit code"
-                autoComplete="one-time-code"
+                value={form.name}
+                onChange={(e) => setForm((s) => ({ ...s, name: e.target.value }))}
+                placeholder="Rajesh Kumar"
+                autoComplete="name"
                 required
-                className="landing-input landing-code-input"
+                className="landing-input"
               />
             </div>
-            <div className="landing-field">
-              <label className="landing-label">New Password</label>
-              <div className="landing-pw-wrap">
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  value={resetData.newPassword}
-                  onChange={(e) => setResetData((s) => ({ ...s, newPassword: e.target.value }))}
-                  placeholder="At least 6 characters"
-                  autoComplete="new-password"
-                  required
-                  className="landing-input"
-                />
-                <button type="button" onClick={() => setShowPassword((v) => !v)} aria-label={showPassword ? 'Hide password' : 'Show password'} className="landing-eye-btn">
-                  {showPassword ? '●' : '○'}
-                </button>
-              </div>
+          )}
+
+          <div className="landing-field">
+            <label className="landing-label" htmlFor="landing-email">Email <span className="landing-req">*</span></label>
+            <input
+              id="landing-email"
+              type="email"
+              inputMode="email"
+              value={form.email}
+              onChange={(e) => setForm((s) => ({ ...s, email: e.target.value }))}
+              placeholder="you@example.com"
+              autoComplete="email"
+              required
+              className="landing-input"
+            />
+          </div>
+
+          <div className="landing-field">
+            <label className="landing-label" htmlFor="landing-password">Password <span className="landing-req">*</span></label>
+            <div className="landing-pw-wrap">
+              <input
+                id="landing-password"
+                type={showPassword ? 'text' : 'password'}
+                value={form.password}
+                onChange={(e) => setForm((s) => ({ ...s, password: e.target.value }))}
+                placeholder={mode === 'signup' ? 'At least 6 characters' : '••••••••••'}
+                autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+                required
+                className="landing-input"
+              />
+              <button type="button" onClick={() => setShowPassword((v) => !v)} aria-label={showPassword ? 'Hide password' : 'Show password'} className="landing-eye-btn">
+                {showPassword ? '●' : '○'}
+              </button>
             </div>
-            {error && <p className="landing-error">{error}</p>}
-            <button type="submit" disabled={busy} className="landing-submit-btn">
-              {busy ? 'Resetting…' : 'Set new password'}
-            </button>
-            <button type="button" onClick={() => { setResetStep('phone'); setError(null) }} className="landing-toggle-btn">
-              ← Send a new code
-            </button>
-          </form>
-        )}
+          </div>
 
-        {!resetStep && (
-          <form onSubmit={submit} noValidate>
-            {mode === 'signup' && (
-              <div className="landing-field">
-                <label className="landing-label">Your Name <span className="landing-req">*</span></label>
-                <input
-                  type="text"
-                  value={form.name}
-                  onChange={(e) => setForm((s) => ({ ...s, name: e.target.value }))}
-                  placeholder="Rajesh Kumar"
-                  autoComplete="name"
-                  required
-                  className="landing-input"
-                />
-              </div>
-            )}
+          {error && <p className="landing-error">{error}</p>}
 
-            <div className="landing-field">
-              <label className="landing-label">WhatsApp Business Number <span className="landing-req">*</span></label>
-              <div className="landing-phone-row">
-                <input
-                  type="text"
-                  inputMode="tel"
-                  list="country-codes"
-                  value={form.cc}
-                  onChange={(e) => setCc(e.target.value)}
-                  placeholder="+91"
-                  aria-label="Country code"
-                  required
-                  className="landing-input landing-cc-input"
-                />
-                <datalist id="country-codes">
-                  <option value="+91">India</option>
-                  <option value="+1">USA / Canada</option>
-                  <option value="+44">UK</option>
-                  <option value="+971">UAE</option>
-                  <option value="+61">Australia</option>
-                  <option value="+65">Singapore</option>
-                  <option value="+92">Pakistan</option>
-                  <option value="+880">Bangladesh</option>
-                  <option value="+94">Sri Lanka</option>
-                  <option value="+49">Germany</option>
-                  <option value="+33">France</option>
-                  <option value="+81">Japan</option>
-                  <option value="+86">China</option>
-                </datalist>
-                <input
-                  type="tel"
-                  inputMode="numeric"
-                  value={form.phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  aria-label="Phone number"
-                  placeholder="98xxx xxxxx"
-                  autoComplete="tel-national"
-                  required
-                  className="landing-input landing-phone-input"
-                />
-              </div>
-            </div>
-
-            <div className="landing-field">
-              <label className="landing-label">Password <span className="landing-req">*</span></label>
-              <div className="landing-pw-wrap">
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  value={form.password}
-                  onChange={(e) => setForm((s) => ({ ...s, password: e.target.value }))}
-                  placeholder={mode === 'signup' ? 'At least 6 characters' : '••••••••••'}
-                  autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
-                  required
-                  className="landing-input"
-                />
-                <button type="button" onClick={() => setShowPassword((v) => !v)} aria-label={showPassword ? 'Hide password' : 'Show password'} className="landing-eye-btn">
-                  {showPassword ? '●' : '○'}
-                </button>
-              </div>
-            </div>
-
-            {mode === 'login' && (
-              <div className="landing-forgot-row">
-                <button
-                  type="button"
-                  onClick={() => { setResetStep('phone'); setError(null); setResetData((s) => ({ ...s, cc: form.cc, phone: form.phone })) }}
-                  className="landing-forgot-btn"
-                >
-                  Forgot password?
-                </button>
-              </div>
-            )}
-
-            {error && <p className="landing-error">{error}</p>}
-
-            <button type="submit" disabled={busy} className="landing-submit-btn">
-              {busy ? 'One moment…' : mode === 'signup' ? 'Create my dashboard' : 'Sign in'}
-            </button>
-
-            <div className="landing-sso-divider">
-              <span>or continue with</span>
-            </div>
-
-            <div className="landing-sso-row">
-              <a href="/api/auth/sso/google" className="landing-sso-btn">
-                <svg width="16" height="16" viewBox="0 0 48 48" aria-hidden="true">
-                  <path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9.1 3.6l6.8-6.8C35.7 2.4 30.2 0 24 0 14.6 0 6.5 5.4 2.6 13.2l7.9 6.2C12.4 13.5 17.7 9.5 24 9.5z" />
-                  <path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.7c-.6 3-2.3 5.5-4.8 7.2l7.7 6c4.5-4.2 6.9-10.4 6.9-17.7z" />
-                  <path fill="#FBBC05" d="M10.5 28.6a14.5 14.5 0 0 1 0-9.2l-7.9-6.2a24 24 0 0 0 0 21.6l7.9-6.2z" />
-                  <path fill="#34A853" d="M24 48c6.2 0 11.4-2 15.2-5.6l-7.7-6c-2.1 1.4-4.8 2.3-7.5 2.3-6.3 0-11.6-4-13.5-9.6l-7.9 6.2C6.5 42.6 14.6 48 24 48z" />
-                </svg>
-                Google
-              </a>
-              <a href="/api/auth/sso/github" className="landing-sso-btn">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                  <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z" />
-                </svg>
-                GitHub
-              </a>
-              <a href="/api/auth/sso/microsoft" className="landing-sso-btn">
-                <svg width="16" height="16" viewBox="0 0 23 23" aria-hidden="true">
-                  <rect fill="#f25022" x="1" y="1" width="10" height="10" />
-                  <rect fill="#00a4ef" x="1" y="12" width="10" height="10" />
-                  <rect fill="#7fba00" x="12" y="1" width="10" height="10" />
-                  <rect fill="#ffb900" x="12" y="12" width="10" height="10" />
-                </svg>
-                Microsoft
-              </a>
-            </div>
-          </form>
-        )}
+          <button type="submit" disabled={busy} className="landing-submit-btn">
+            {busy ? 'One moment…' : mode === 'signup' ? 'Create my dashboard' : 'Sign in'}
+          </button>
+        </form>
       </div>
     </div>
   )
