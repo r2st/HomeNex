@@ -17,7 +17,7 @@
 // results back through the API the agent's screens use.
 import { test, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { createTestDb, dropTestDb } from './helpers.js'
+import { createTestDb, dropTestDb, optInToWaApi } from './helpers.js'
 
 process.env.NODE_ENV = 'test'
 delete process.env.OPENROUTER_API_KEY
@@ -27,6 +27,7 @@ const dbName = await createTestDb('scheduledtick')
 
 const { app } = await import('../index.js')
 const { closePool, query, addMessage } = await import('../db.js')
+await optInToWaApi() // this suite drives the Meta Cloud API send path
 const { runDueJobs } = await import('../scheduler.js')
 
 const MIN = 60_000

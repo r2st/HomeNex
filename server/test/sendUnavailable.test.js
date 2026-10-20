@@ -7,7 +7,7 @@
 // the agent to the wrong half of the setup guide, and none of these arms had run.
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { createTestDb, dropTestDb } from './helpers.js'
+import { createTestDb, dropTestDb, optInToWaApi } from './helpers.js'
 
 process.env.NODE_ENV = 'test'
 delete process.env.OPENROUTER_API_KEY
@@ -21,6 +21,7 @@ const {
   closePool, upsertLead, createProperty, createMediaAsset,
   addContact, createGroup, addGroupMembers,
 } = await import('../db.js')
+await optInToWaApi() // this suite drives the Meta Cloud API send path
 
 let server, base, token
 let leadId, propertyId, mediaId, groupId

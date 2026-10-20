@@ -7,7 +7,7 @@
 // of a 409, both look fine until an agent trusts them.
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { createTestDb, dropTestDb } from './helpers.js'
+import { createTestDb, dropTestDb, optInToWaApi } from './helpers.js'
 
 process.env.NODE_ENV = 'test'
 delete process.env.OPENROUTER_API_KEY
@@ -17,6 +17,7 @@ const dbName = await createTestDb('routeedges')
 
 const { app } = await import('../index.js')
 const { closePool, query, getAgent, upsertLead } = await import('../db.js')
+await optInToWaApi() // this suite drives the Meta Cloud API send path
 const { formatPropertyMessage } = await import('../index.js')
 
 let server, base, token, agent
@@ -134,6 +135,9 @@ test('phone-config reads back nulls for an agent who has not set one', async () 
   assert.deepEqual(await jreq('GET', '/api/agent/phone-config'), {
     wa_phone_number: null,
     wa_phone_number_id: null,
+    wa_api_enabled: true, // this suite opts its agents in (optInToWaApi)
+    wa_api_available: false,
+    wa_send_mode: 'api',
   })
   await query('UPDATE agents SET wa_phone_number = $2 WHERE id = $1', [agent.id, agent.phone])
 })

@@ -13,6 +13,12 @@ function SendSheet({ festival, onClose, onDone }) {
   const [mode, setMode] = useState('schedule') // schedule | now
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
+  // Greetings to every contact are a bulk send, which wa.me can't do (one link opens
+  // one chat) — they need the optional WhatsApp Business API upgrade.
+  const [needsApi, setNeedsApi] = useState(false)
+  useEffect(() => {
+    api.phoneConfig().then((c) => setNeedsApi(c?.wa_send_mode === 'link')).catch(() => {})
+  }, [])
 
   const submit = async (e) => {
     e.preventDefault()
@@ -68,8 +74,14 @@ function SendSheet({ festival, onClose, onDone }) {
         <p className="text-[11px] text-ink-faint">
           Goes to all your contacts who haven't opted out, personalised with each client's name.
         </p>
+        {needsApi && (
+          <p className="text-[12px] text-brand-deep bg-brand-wash rounded-xl px-3.5 py-2.5">
+            Greetings to all contacts go out through the WhatsApp Business API — an optional upgrade in
+            Settings → WhatsApp sending. Until then, message clients one by one from their chat.
+          </p>
+        )}
         {error && <p className="text-[12px] text-hot bg-amber-wash rounded-xl px-3.5 py-2.5">{error}</p>}
-        <button type="submit" disabled={busy || !message.trim()} className="w-full bg-brand text-white font-bold text-[13.5px] rounded-full py-3 active:scale-[0.99] transition disabled:opacity-50">
+        <button type="submit" disabled={busy || needsApi || !message.trim()} className="w-full bg-brand text-white font-bold text-[13.5px] rounded-full py-3 active:scale-[0.99] transition disabled:opacity-50">
           {busy ? 'Working…' : mode === 'schedule' ? 'Schedule greeting' : 'Send to all contacts'}
         </button>
       </form>

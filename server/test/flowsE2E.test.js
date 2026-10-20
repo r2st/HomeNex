@@ -15,7 +15,7 @@
 import { test, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import crypto from 'node:crypto'
-import { createTestDb, dropTestDb, pinVisitToToday } from './helpers.js'
+import { createTestDb, dropTestDb, pinVisitToToday, optInToWaApi } from './helpers.js'
 
 process.env.NODE_ENV = 'test'
 delete process.env.OPENROUTER_API_KEY
@@ -27,6 +27,7 @@ const dbName = await createTestDb('flowse2e')
 
 const { app } = await import('../index.js')
 const { closePool, query, serviceWindow } = await import('../db.js')
+await optInToWaApi() // this suite drives the Meta Cloud API send path
 
 let server
 let base

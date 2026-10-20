@@ -23,7 +23,7 @@ import {
   stampLeadTeam,
   upsertSyndication,
 } from './db.js'
-import { sendTemplate, whatsappConfigured } from './whatsapp.js'
+import { sendTemplate, whatsappConfigured, waSendMode } from './whatsapp.js'
 
 const INGEST_DOMAIN = process.env.INGEST_EMAIL_DOMAIN || 'leads.homenex.in'
 
@@ -250,6 +250,8 @@ export function freeEntryWindow(lead) {
 // stored on the source event ('sent' | 'skipped:...' | 'failed:...').
 async function sendLeadIntro(agent, waId, { name, sourceRef }) {
   if (!whatsappConfigured()) return 'skipped:not_configured'
+  // An account on wa.me click-to-chat hasn't opted in to sending from the business number.
+  if (waSendMode(agent) !== 'api') return 'skipped:wa_link_mode'
   const tpl = process.env.WHATSAPP_LEAD_INTRO_TEMPLATE
   if (!tpl) return 'skipped:no_template'
   try {

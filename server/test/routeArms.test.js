@@ -8,7 +8,7 @@
 // first has actually gone out — which never happens with sending switched off.
 import { test, before, after, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { createTestDb, dropTestDb } from './helpers.js'
+import { createTestDb, dropTestDb, optInToWaApi } from './helpers.js'
 
 process.env.NODE_ENV = 'test'
 process.env.WHATSAPP_ACCESS_TOKEN = 'test-token'
@@ -23,6 +23,7 @@ const {
   closePool, addContact, updateContact, createGroup, addGroupMembers,
   upsertLead, addMessage, createMessageTemplate,
 } = await import('../db.js')
+await optInToWaApi() // this suite drives the Meta Cloud API send path
 
 const realFetch = global.fetch
 let server

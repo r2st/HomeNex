@@ -4,6 +4,7 @@ import { paiseToDisplay, lakhsToPaise, paiseToLakhs } from '../money.js'
 import { SlideOver, Sheet, Chip, Field, inputCls, useConfirm, InfoTip, DetailOverlay, ErrorBanner } from './ui.jsx'
 import { glossary } from '../lib/glossary.js'
 import { safeHref, isSafeHref } from '../lib/safeHref.js'
+import { openWhatsApp, isLinkMode, sendLabel, WA_LINK_HINT } from '../lib/waLink.js'
 
 // Downscale a phone-camera photo to a reasonable listing size in the browser, so a
 // 5 MB image never travels over a patchy 4G connection. Returns a JPEG data URL.
@@ -332,6 +333,11 @@ function SendToChatSheet({ property, onClose }) {
   const [loadErr, setLoadErr] = useState(null)
   const [q, setQ] = useState('')
   const [state, setState] = useState({}) // leadId -> 'sending' | 'sent' | error message
+  const [sendMode, setSendMode] = useState(null) // 'link' (wa.me) | 'api' (Meta Cloud API)
+
+  useEffect(() => {
+    api.phoneConfig().then((c) => setSendMode(c?.wa_send_mode ?? null)).catch(() => {})
+  }, [])
 
   // The search runs on the server. Filtering client-side stopped being correct the
   // moment the list took a LIMIT: an agent with 400 leads would have been searching
@@ -362,7 +368,8 @@ function SendToChatSheet({ property, onClose }) {
   const send = async (lead) => {
     setState((s) => ({ ...s, [lead.id]: 'sending' }))
     try {
-      await api.sendPropertyToChat(property.id, lead.id)
+      const res = await api.sendPropertyToChat(property.id, lead.id)
+      if (res?.wa_link) openWhatsApp(res.wa_link)
       setState((s) => ({ ...s, [lead.id]: 'sent' }))
     } catch (err) {
       setState((s) => ({ ...s, [lead.id]: err.message }))
@@ -381,6 +388,7 @@ function SendToChatSheet({ property, onClose }) {
         placeholder="Search contacts…"
         className={inputCls}
       />
+      {isLinkMode(sendMode) && <p className="text-[11.5px] text-ink-faint mt-2">{WA_LINK_HINT}</p>}
       <div className="mt-3 space-y-2 max-h-[50vh] overflow-y-auto no-scrollbar">
         {loadErr && <ErrorBanner error={loadErr} className="my-2" />}
         {!leads && !loadErr && (
@@ -408,7 +416,7 @@ function SendToChatSheet({ property, onClose }) {
                   st === 'sent' ? 'bg-brand-wash text-brand-deep' : 'bg-[#25D366] text-white'
                 } disabled:opacity-70`}
               >
-                {st === 'sending' ? 'Sending…' : st === 'sent' ? '✓ Sent' : 'Send'}
+                {st === 'sending' ? (isLinkMode(sendMode) ? 'Opening…' : 'Sending…') : sendLabel(sendMode, { done: st === 'sent' })}
               </button>
             </div>
           )

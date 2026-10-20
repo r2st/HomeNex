@@ -21,6 +21,21 @@ const waQueue = new RequestQueue({
 export const whatsappConfigured = () =>
   Boolean(process.env.WHATSAPP_ACCESS_TOKEN && process.env.WHATSAPP_PHONE_NUMBER_ID)
 
+// How an agent's dashboard sends go out. 'link' (the default) needs no Meta setup: the
+// client opens a wa.me click-to-chat link in the agent's own WhatsApp app. 'api' once
+// the account has opted in to the Meta WhatsApp Cloud API — sends then go out from the
+// business number, and a server without Meta credentials answers WA_NOT_CONFIGURED
+// rather than quietly switching the account back to wa.me.
+export const waSendMode = (agent) => (agent?.wa_api_enabled ? 'api' : 'link')
+
+// A wa.me click-to-chat link for `phone` (any format; only digits are kept) with
+// `text` pre-filled. No phone gives the contact-picker form (wa.me/?text=…).
+export function waMeLink(phone, text) {
+  const digits = String(phone ?? '').replace(/\D/g, '')
+  const q = text ? `?text=${encodeURIComponent(text)}` : ''
+  return `https://wa.me/${digits}${q}`
+}
+
 // Meta returns code 190 (OAuthException) when the access token is expired or revoked.
 // Callers care about this specifically because the fix is "refresh the token", not "retry".
 const isTokenError = (error) =>

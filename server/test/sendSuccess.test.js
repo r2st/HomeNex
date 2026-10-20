@@ -9,7 +9,7 @@
 // through the real fetch, so the routes are still exercised over the wire.
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { createTestDb, dropTestDb } from './helpers.js'
+import { createTestDb, dropTestDb, optInToWaApi } from './helpers.js'
 
 process.env.NODE_ENV = 'test'
 delete process.env.OPENROUTER_API_KEY
@@ -23,6 +23,7 @@ const {
   closePool, query, upsertLead, createProperty, createMediaAsset,
   addContact, createGroup, addGroupMembers, getMessages,
 } = await import('../db.js')
+await optInToWaApi() // this suite drives the Meta Cloud API send path
 
 let server, base, token, agentId
 let leadId, propertyId, mediaId, groupId

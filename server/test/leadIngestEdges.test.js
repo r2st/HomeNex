@@ -8,7 +8,7 @@
 // still exists afterwards and the source event says honestly what happened.
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { createTestDb, dropTestDb } from './helpers.js'
+import { createTestDb, dropTestDb, optInToWaApi } from './helpers.js'
 
 process.env.NODE_ENV = 'test'
 delete process.env.OPENROUTER_API_KEY
@@ -19,6 +19,7 @@ process.env.WA_MAX_RETRIES = '1' // a refused send must not sit on the wall cloc
 const dbName = await createTestDb('leadingest')
 
 const { ready, closePool, query, createAgent, getAgent } = await import('../db.js')
+await optInToWaApi() // this suite drives the Meta Cloud API send path
 const { ingestLead, extractReferral } = await import('../leadSources.js')
 const { hashPassword } = await import('../auth.js')
 

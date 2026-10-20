@@ -273,6 +273,7 @@ export const api = {
   updateProfile: (body) => put('/api/agent/profile', body),
   updatePreferences: (body) => put('/api/agent/preferences', body),
   phoneConfig: () => get('/api/agent/phone-config'),
+  setWaApi: (enabled) => put('/api/agent/wa-api', { enabled }),
   updatePhoneConfig: (body) =>
     fetch('/api/agent/phone-config', {
       method: 'PUT',

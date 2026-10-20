@@ -16,6 +16,7 @@ import {
   findAgentByPhone,
   findAgentByPhoneNumberId,
   updateAgentPhoneConfig,
+  setAgentWaApiEnabled,
   updateAgentProfileSelf,
   updateAgentPreferences,
   setAgentWaPhone,
@@ -162,7 +163,7 @@ import { renderMicroPage } from './micropage.js'
 import { buildBriefing } from './briefing.js'
 import { evaluateSend, warmupDailyCap } from './sendLimiter.js'
 import { runDueJobs } from './scheduler.js'
-import { sendText, sendMedia, markRead, whatsappConfigured, checkToken } from './whatsapp.js'
+import { sendText, sendMedia, markRead, whatsappConfigured, checkToken, waSendMode, waMeLink } from './whatsapp.js'
 import { renderTemplate, waMediaType } from './inbox.js'
 import fs from 'node:fs'
 import { privacyPage, termsPage } from './legal.js'
@@ -900,7 +901,7 @@ app.post('/api/auth/reset-password', boundedText({ agentId: TEXT.LINE, code: TEX
   }
 }))
 
-app.get('/api/auth/me', requireAuth, (req, res) => res.json(req.agent))
+app.get('/api/auth/me', requireAuth, (req, res) => res.json({ ...req.agent, wa_send_mode: waSendMode(req.agent) }))
 
 // Everything below requires a logged-in agent.
 app.use('/api', (req, res, next) => {
@@ -988,7 +989,26 @@ app.get('/api/agent/phone-config', ah(async (req, res) => {
   res.json({
     wa_phone_number: agent.wa_phone_number || null,
     wa_phone_number_id: agent.wa_phone_number_id || null,
+    wa_api_enabled: Boolean(agent.wa_api_enabled),
+    wa_api_available: whatsappConfigured(),
+    wa_send_mode: waSendMode(agent),
   })
+}))
+
+// Opt in/out of the Meta WhatsApp Cloud API. Off (the default) every send opens the
+// agent's own WhatsApp via wa.me; on, sends go out from the business number through
+// Meta. Turning it on needs Meta credentials on the server, or nothing could send.
+app.put('/api/agent/wa-api', ah(async (req, res) => {
+  const enabled = req.body.enabled === true
+  if (enabled && !whatsappConfigured()) {
+    return res.status(409).json({
+      error: 'The WhatsApp Business API isn\'t connected for this workspace yet — contact support to set it up.',
+      code: 'WA_NOT_CONFIGURED',
+    })
+  }
+  const agent = await setAgentWaApiEnabled(req.agent.id, enabled)
+  await logAudit(agent.id, 'agent', agent.id, enabled ? 'wa_api_enabled' : 'wa_api_disabled', {})
+  res.json({ wa_api_enabled: Boolean(agent.wa_api_enabled), wa_send_mode: waSendMode(agent) })
 }))
 
 // wa_phone_number is normalised down to digits before it is stored, but
@@ -1055,6 +1075,8 @@ app.get('/api/leads/:id', ah(async (req, res) => {
     hybrid_reason: hybrid.reason,
     hybrid_source: hybrid.source,
     service_window: serviceWindow(lead),
+    // 'link' = sends open the agent's WhatsApp app (wa.me); 'api' = Meta Cloud API.
+    wa_send_mode: waSendMode(req.agent),
     // Click-to-WhatsApp free-messaging window (72h) — null unless this is an ad lead.
     free_entry_window: freeEntryWindow(lead),
     messages: await getMessages(lead.id),
@@ -1337,12 +1359,20 @@ app.post('/api/leads/:id/ai', ah(async (req, res) => {
   res.json(await getLead(lead.id))
 }))
 
-// Agent sends a real WhatsApp message from the dashboard. Outside the 24-hour
-// service window Meta only accepts template messages, so free-text replies are
-// rejected with 409 and the client must send a template (template_id) instead.
+// Agent sends a WhatsApp message from the dashboard.
+//
+// Default ('link' mode, no Meta setup): nothing is delivered from here — the reply is
+// logged on the thread and a wa.me link comes back for the client to open the agent's
+// own WhatsApp app with the text pre-filled. The 24-hour window is a Cloud API rule, so
+// it doesn't apply to a message the agent sends from their own phone.
+//
+// With the Meta WhatsApp Cloud API enabled for the account ('api' mode) it is a real
+// send. Outside the 24-hour service window Meta only accepts template messages, so
+// free-text replies are rejected with 409 and the client must send a template instead.
 app.post('/api/leads/:id/reply', boundedText({ text: TEXT.WHATSAPP }), ah(async (req, res) => {
   const lead = await getLeadForAgent(req.params.id, req.agent.id)
   if (!lead) return res.status(404).json({ error: 'not found' })
+  const linkMode = waSendMode(req.agent) === 'link'
 
   const templateId = req.body.template_id
   let text
@@ -1361,7 +1391,7 @@ app.post('/api/leads/:id/reply', boundedText({ text: TEXT.WHATSAPP }), ah(async 
     if (!text) return res.status(400).json({ error: 'text required' })
     const win = serviceWindow(lead)
     // Only enforce when we know the window state (legacy leads have no anchor).
-    if (lead.last_inbound_at && !win.open) {
+    if (!linkMode && lead.last_inbound_at && !win.open) {
       return res.status(409).json({
         error: 'The 24-hour service window has closed — send an approved template instead',
         code: 'WINDOW_EXPIRED',
@@ -1370,11 +1400,16 @@ app.post('/api/leads/:id/reply', boundedText({ text: TEXT.WHATSAPP }), ah(async 
     }
   }
 
+  if (linkMode) {
+    const msg = await addMessage(lead.id, 'agent', text, null, 'wa_link')
+    await recordFirstResponse(lead.id)
+    return res.json({ ...msg, mode: 'link', wa_link: waMeLink(lead.wa_id, text) })
+  }
   try {
     const waMsgId = await sendText(lead.wa_id, text, req.agent.wa_phone_number_id)
     const msg = await addMessage(lead.id, 'agent', text, waMsgId)
     await recordFirstResponse(lead.id)
-    res.json(msg)
+    res.json({ ...msg, mode: 'api' })
   } catch (err) {
     res.status(err.code === 'WA_NOT_CONFIGURED' ? 503 : 502).json({ error: err.message, code: err.code })
   }
@@ -1642,12 +1677,20 @@ app.post('/api/properties/:id/send-to-chat', ah(async (req, res) => {
   if (withSlug?.micro_page_slug) {
     text += `\n\n🔗 ${req.protocol}://${req.get('host')}/p/${withSlug.micro_page_slug}?l=${lead.id}`
   }
+  if (waSendMode(req.agent) === 'link') {
+    // Personalise the opener — the agent is sending this from their own phone.
+    if (lead.name) text = `Hi ${lead.name}, sharing a property you may like:\n\n${text}`
+    const msg = await addMessage(lead.id, 'agent', text, null, 'wa_link')
+    await logActivity(req.agent.id, lead.id, 'agent', `Opened WhatsApp to share "${property.title}" with ${lead.name || lead.wa_id}`)
+    await logAudit(req.agent.id, 'property', property.id, 'send_to_chat', { lead_id: lead.id, mode: 'link' })
+    return res.json({ ok: true, mode: 'link', message: msg, text, wa_link: waMeLink(lead.wa_id, text) })
+  }
   try {
     const waMsgId = await sendText(lead.wa_id, text, req.agent.wa_phone_number_id)
     const msg = await addMessage(lead.id, 'agent', text, waMsgId)
     await logActivity(req.agent.id, lead.id, 'agent', `Sent "${property.title}" to ${lead.name || lead.wa_id}`)
     await logAudit(req.agent.id, 'property', property.id, 'send_to_chat', { lead_id: lead.id })
-    res.json({ ok: true, message: msg })
+    res.json({ ok: true, mode: 'api', message: msg })
   } catch (err) {
     res.status(err.code === 'WA_NOT_CONFIGURED' ? 503 : 502).json({ error: err.message, code: err.code })
   }
@@ -1733,6 +1776,11 @@ app.post('/api/site-visits', boundedText({ pickup_location: TEXT.BLURB }), ah(as
       pickup_required: visit.pickup_required, pickup_location: visit.pickup_location,
     }, { timezone: req.agent.timezone, lang })
     let confirmation_sent = false
+    // Without the Cloud API nothing can go out automatically — hand the confirmation
+    // back as a wa.me link the agent can tap to send it from their own WhatsApp.
+    if (waSendMode(req.agent) === 'link') {
+      return res.json({ ...visit, confirmation_sent, confirmation_text: text, confirmation_wa_link: waMeLink(lead.wa_id, text) })
+    }
     try {
       const waMsgId = await sendText(lead.wa_id, text, req.agent.wa_phone_number_id)
       await addMessage(lead.id, 'agent', text, waMsgId)
@@ -2059,6 +2107,14 @@ app.post('/api/media/:id/send', boundedText({ caption: TEXT.BLURB }), ah(async (
   if (!lead) return res.status(404).json({ error: 'lead not found' })
   const asset = await getMediaAsset(Number(req.params.id), req.agent.id)
   if (!asset) return res.status(404).json({ error: 'media not found' })
+  const caption = (req.body.caption ?? asset.caption) || asset.title
+  // wa.me can't carry an attachment, so link mode shares the file's link instead.
+  if (waSendMode(req.agent) === 'link') {
+    const text = [caption !== asset.title ? `${asset.title} — ${caption}` : asset.title, asset.url].filter(Boolean).join('\n')
+    await recordMediaSend(asset.id, lead.id, req.agent.id, null)
+    const msg = await addMessage(lead.id, 'agent', `📎 ${text}`, null, 'wa_link')
+    return res.json({ message: msg, media_id: asset.id, mode: 'link', wa_link: waMeLink(lead.wa_id, text) })
+  }
   const win = serviceWindow(lead)
   if (lead.last_inbound_at && !win.open) {
     return res.status(409).json({
@@ -2066,7 +2122,6 @@ app.post('/api/media/:id/send', boundedText({ caption: TEXT.BLURB }), ah(async (
       code: 'WINDOW_EXPIRED', service_window: win,
     })
   }
-  const caption = (req.body.caption ?? asset.caption) || asset.title
   try {
     const waMsgId = await sendMedia(
       lead.wa_id,
@@ -2075,7 +2130,7 @@ app.post('/api/media/:id/send', boundedText({ caption: TEXT.BLURB }), ah(async (
     )
     await recordMediaSend(asset.id, lead.id, req.agent.id, waMsgId)
     const msg = await addMessage(lead.id, 'agent', `📎 ${asset.title}${caption && caption !== asset.title ? ` — ${caption}` : ''}`, waMsgId)
-    res.json({ message: msg, media_id: asset.id })
+    res.json({ message: msg, media_id: asset.id, mode: 'api' })
   } catch (err) {
     res.status(err.code === 'WA_NOT_CONFIGURED' ? 503 : 502).json({ error: err.message, code: err.code })
   }
@@ -2093,6 +2148,19 @@ app.get('/api/templates/festive', ah(async (req, res) =>
 // opt-out enforcement and a quiet-hours window — because a WhatsApp number blasted
 // at all its contacts at once is exactly what Meta's quality rating punishes.
 // `personalize` optionally rewrites the body per contact (festive greetings do).
+// Bulk and scheduled sends have no wa.me equivalent — one link opens one chat — so
+// they stay a Cloud API feature. Thrown with the not-configured code so callers treat
+// it like any other "can't send from the server" (503) and stop the loop.
+function requireWaApi(agent) {
+  if (waSendMode(agent) === 'api') return
+  const err = new Error(
+    'Bulk and scheduled WhatsApp sends need the WhatsApp Business API — an optional upgrade in Settings. ' +
+      'You can still message each client one by one from their chat.',
+  )
+  err.code = 'WA_NOT_CONFIGURED'
+  throw err
+}
+
 async function sendToRecipients(agent, recipients, message, kind, { personalize = null, enforceWindow = true } = {}) {
   const startedAt = await ensureBulkSendStarted(agent.id) // stamp warmup anchor on first bulk send
   const dailyCap = warmupDailyCap(startedAt)
@@ -2145,6 +2213,7 @@ async function sendToRecipients(agent, recipients, message, kind, { personalize 
     }
     const body = personalize ? personalize(contact) : message
     try {
+      requireWaApi(agent)
       await sendText(contact.phone.replace('+', ''), body, agent.wa_phone_number_id)
       // Both recipient sources are rows straight out of `contacts`, so the id is
       // always there; the `?? null` keeps the column nullable for an audience that

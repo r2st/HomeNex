@@ -7,6 +7,7 @@ import { shouldShowScoreBreakdown } from '../lib/scoreDisplay.js'
 import { glossary } from '../lib/glossary.js'
 import { visitStatusLabel } from '../lib/labels.js'
 import { presetDate, FOLLOWUP_PRESETS } from '../lib/followupPresets.js'
+import { openWhatsApp, isLinkMode, sendLabel } from '../lib/waLink.js'
 
 const LOST_REASONS = [
   'Bought elsewhere',
@@ -444,6 +445,9 @@ function SiteVisitsSection({ lead, refresh }) {
   const [form, setForm] = useState({ scheduled_at: '', property_id: '', pickup_required: false, pickup_location: '' })
   const [properties, setProperties] = useState([])
   const [error, setError] = useState(null)
+  // Without the Cloud API the booking confirmation can't go out on its own — offer it
+  // as a pre-filled WhatsApp message the agent sends from their own phone.
+  const [confirmLink, setConfirmLink] = useState(null)
 
   useEffect(() => {
     // The list is paged now and this is a picker: a property missing from the dropdown
@@ -459,7 +463,7 @@ function SiteVisitsSection({ lead, refresh }) {
     if (!form.scheduled_at) return
     setError(null)
     try {
-      await api.createSiteVisit({
+      const visit = await api.createSiteVisit({
         lead_id: lead.id,
         scheduled_at: new Date(form.scheduled_at).toISOString(),
         property_id: form.property_id ? Number(form.property_id) : null,
@@ -468,6 +472,7 @@ function SiteVisitsSection({ lead, refresh }) {
       })
       setAdding(false)
       setForm({ scheduled_at: '', property_id: '', pickup_required: false, pickup_location: '' })
+      setConfirmLink(visit?.confirmation_wa_link || null)
       refresh()
     } catch (err) {
       setError(err.message)
@@ -511,6 +516,20 @@ function SiteVisitsSection({ lead, refresh }) {
           </button>
         </form>
       )}
+      {confirmLink && (
+        <div className="flex items-center gap-2 bg-brand-wash border border-brand/25 rounded-xl px-3 py-2.5 mb-3">
+          <p className="flex-1 text-[12px] text-brand-deep">Visit booked. Send {lead.name || 'the client'} the confirmation?</p>
+          <button
+            onClick={() => {
+              openWhatsApp(confirmLink)
+              setConfirmLink(null)
+            }}
+            className="shrink-0 text-[11.5px] font-bold rounded-full px-3 py-1.5 bg-[#25D366] text-white active:scale-95 transition"
+          >
+            Open WhatsApp ↗
+          </button>
+        </div>
+      )}
       {(lead.site_visits || []).length === 0 && !adding && (
         <p className="text-[12px] text-ink-faint">No site visits yet.</p>
       )}
@@ -545,6 +564,7 @@ function SiteVisitsSection({ lead, refresh }) {
 // Quick match: inventory that fits this lead's budget / BHK / locality, each with a
 // one-tap "Send" that pushes the property card into the WhatsApp conversation.
 function QuickMatchSection({ lead }) {
+  const linkMode = isLinkMode(lead.wa_send_mode)
   const [matches, setMatches] = useState(null)
   const [sent, setSent] = useState({})
   const [error, setError] = useState(null)
@@ -559,7 +579,8 @@ function QuickMatchSection({ lead }) {
     setError(null)
     setSent((s) => ({ ...s, [p.id]: 'sending' }))
     try {
-      await api.sendPropertyToChat(p.id, lead.id)
+      const res = await api.sendPropertyToChat(p.id, lead.id)
+      if (res?.wa_link) openWhatsApp(res.wa_link)
       setSent((s) => ({ ...s, [p.id]: 'sent' }))
     } catch (err) {
       setError(err.message)
@@ -571,7 +592,10 @@ function QuickMatchSection({ lead }) {
   return (
     <section className="bg-card rounded-2xl border border-line shadow-card p-4">
       <p className="text-[10.5px] font-bold tracking-[0.18em] text-ink-soft mb-1">🎯 MATCHING INVENTORY</p>
-      <p className="text-[11.5px] text-ink-faint mb-3">Fits this buyer's budget, BHK & locality.</p>
+      <p className="text-[11.5px] text-ink-faint mb-3">
+        Fits this buyer's budget, BHK & locality.
+        {linkMode && ' Tap to open WhatsApp with the details ready to send.'}
+      </p>
       {error && <p className="text-[12px] text-hot bg-amber-wash rounded-xl px-3.5 py-2.5 mb-3">{error}</p>}
       <div className="space-y-2">
         {matches.slice(0, 5).map((p) => {
@@ -595,7 +619,7 @@ function QuickMatchSection({ lead }) {
                   state === 'sent' ? 'bg-brand-wash text-brand-deep' : 'bg-brand text-white'
                 }`}
               >
-                {state === 'sent' ? '✓ Sent' : state === 'sending' ? '…' : 'Send'}
+                {state === 'sending' ? '…' : sendLabel(lead.wa_send_mode, { done: state === 'sent' })}
               </button>
             </div>
           )

@@ -8,7 +8,7 @@
 // every other test in the suite happens to produce.
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { createTestDb, dropTestDb } from './helpers.js'
+import { createTestDb, dropTestDb, optInToWaApi } from './helpers.js'
 
 process.env.NODE_ENV = 'test'
 delete process.env.OPENROUTER_API_KEY
@@ -23,6 +23,7 @@ const {
   ready, closePool, query, addContact, createGroup, addGroupMembers,
   createMediaAsset, createFestiveSchedule, upsertLead, addMessage,
 } = await import('../db.js')
+await optInToWaApi() // this suite drives the Meta Cloud API send path
 await ready
 
 let server, base, token, agentId

@@ -693,3 +693,57 @@ test('closing the panel stops its poll', async (t) => {
   ui.unmount()
   assert.equal(ctx.env.liveIntervals, 0)
 })
+
+// --- wa.me link mode (default: no Meta Business API) ------------------------
+
+test('link mode: a matching property opens WhatsApp with the details pre-filled', async (t) => {
+  const link = 'https://wa.me/919876543210?text=Hi%20Priya%20Sharma'
+  const ctx = setup(t, {
+    data: lead({ wa_send_mode: 'link' }),
+    routes: {
+      'GET /api/leads/5/property-matches': [{ id: 11, title: 'Prestige Lakeside', locality: 'Baner' }],
+      'POST /api/properties/11/send-to-chat': { ok: true, mode: 'link', wa_link: link },
+    },
+  })
+  const ui = await render(<LeadDetail {...props} />)
+
+  assert.match(ui.text(), /Tap to open WhatsApp with the details ready to send/)
+  await click(ui.byText('Open WhatsApp', { exact: true }))
+  assert.deepEqual(ctx.env.opened.map((o) => o.url), [link])
+  assert.match(ui.text(), /✓ Opened/)
+})
+
+test('link mode: a booked visit offers the confirmation as a WhatsApp message', async (t) => {
+  const link = 'https://wa.me/919876543210?text=Visit%20confirmed'
+  const ctx = setup(t, {
+    data: lead({ wa_send_mode: 'link' }),
+    routes: {
+      'POST /api/site-visits': { id: 8, confirmation_sent: false, confirmation_wa_link: link },
+      'GET /api/properties': [],
+    },
+  })
+  const ui = await render(<LeadDetail {...props} />)
+
+  await click(ui.byText('+ Schedule'))
+  await change(ui.get((f) => f.props.type === 'datetime-local', 'when'), '2026-08-14T11:00')
+  await submit(visitForm(ui))
+
+  assert.match(ui.text(), /Visit booked\. Send Priya Sharma the confirmation\?/)
+  assert.deepEqual(ctx.env.opened, [], 'nothing opens until the agent asks')
+  await click(ui.byText('Open WhatsApp ↗'))
+  assert.deepEqual(ctx.env.opened.map((o) => o.url), [link])
+  assert.doesNotMatch(ui.text(), /Visit booked\. Send/)
+})
+
+test('api mode: a visit confirmed by the server offers no WhatsApp prompt', async (t) => {
+  setup(t, {
+    data: lead({ wa_send_mode: 'api' }),
+    routes: { 'POST /api/site-visits': { id: 8, confirmation_sent: true }, 'GET /api/properties': [] },
+  })
+  const ui = await render(<LeadDetail {...props} />)
+
+  await click(ui.byText('+ Schedule'))
+  await change(ui.get((f) => f.props.type === 'datetime-local', 'when'), '2026-08-14T11:00')
+  await submit(visitForm(ui))
+  assert.doesNotMatch(ui.text(), /Send Priya Sharma the confirmation/)
+})

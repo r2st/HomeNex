@@ -10,7 +10,7 @@
 // arrive as something other than strings, and a delete aimed at somebody else's row.
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { createTestDb, dropTestDb } from './helpers.js'
+import { createTestDb, dropTestDb, optInToWaApi } from './helpers.js'
 
 process.env.NODE_ENV = 'test'
 delete process.env.OPENROUTER_API_KEY
@@ -21,6 +21,7 @@ const dbName = await createTestDb('routefallbacks')
 
 const { app } = await import('../index.js')
 const { ready, closePool, query, createAgent, createProperty, upsertUnassignedLead } = await import('../db.js')
+await optInToWaApi() // this suite drives the Meta Cloud API send path
 const { hashPassword } = await import('../auth.js')
 
 await ready

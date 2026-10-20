@@ -3,7 +3,7 @@
 // syndication. Parsing is deterministic so this runs with no AI / WhatsApp configured.
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { createTestDb, dropTestDb } from './helpers.js'
+import { createTestDb, dropTestDb, optInToWaApi } from './helpers.js'
 
 process.env.NODE_ENV = 'test'
 delete process.env.OPENROUTER_API_KEY
@@ -14,6 +14,7 @@ const dbName = await createTestDb('leadsources')
 
 const { app } = await import('../index.js')
 const { closePool, query, getAgent, getLeadByAgentWaId, recordCtwaReferral, upsertLead } = await import('../db.js')
+await optInToWaApi() // this suite drives the Meta Cloud API send path
 const {
   parsePortalEmail, parseLeadgenFields, detectPortal, extractReferral,
   formatListingForPortal, freeEntryWindow, ingestLead, ingestAddress, waDeepLink,

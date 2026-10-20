@@ -3,6 +3,7 @@ import { api, setToken, parseTs } from '../api.js'
 import ProfileCard from './ProfileCard.jsx'
 import SecurityCard from './SecurityCard.jsx'
 import PreferencesCard from './PreferencesCard.jsx'
+import WaSendingCard from './WaSendingCard.jsx'
 
 // Brand tokens so the pills match the green/cream/amber system used everywhere else
 // (no foreign blue/gray Tailwind defaults).
@@ -116,6 +117,7 @@ export default function SettingsTab({ agent, onAgentUpdate }) {
       <ProfileCard agent={current} onSaved={onSaved} />
       <SecurityCard agent={current} onSaved={onSaved} />
       <PreferencesCard agent={current} onSaved={onSaved} />
+      <WaSendingCard />
       <WabaCard agent={current} />
 
       {/* Setup guide: full step-by-step for adding a number to Meta WABA. */}
@@ -128,7 +130,7 @@ export default function SettingsTab({ agent, onAgentUpdate }) {
         <div className="flex items-center gap-3">
           <span className="text-[22px]">📘</span>
           <div className="min-w-0 flex-1">
-            <p className="font-bold text-[13.5px] text-ink">WhatsApp Business setup guide</p>
+            <p className="font-bold text-[13.5px] text-ink">WhatsApp Business API setup guide (optional)</p>
             <p className="text-[12px] text-ink-soft mt-0.5 leading-snug">
               How to add a phone number to Meta WhatsApp Business — prerequisites, steps,
               and troubleshooting.
@@ -142,9 +144,9 @@ export default function SettingsTab({ agent, onAgentUpdate }) {
       <div className="bg-card border border-line rounded-2xl p-4 space-y-3">
         <h3 className="text-[13px] font-bold text-ink-soft">How it works</h3>
         <ol className="text-[12.5px] text-ink-soft space-y-1 list-decimal list-inside">
-          <li>You provide a phone number</li>
-          <li>We register it on Meta WABA</li>
-          <li>Messages auto-track, senders auto-add</li>
+          <li>Message clients from the dashboard — it opens your own WhatsApp, no setup needed</li>
+          <li>Optional: we register your number on the Meta WhatsApp Business API</li>
+          <li>With the API, messages auto-track, senders auto-add and AI replies for you</li>
         </ol>
       </div>
 

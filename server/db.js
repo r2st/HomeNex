@@ -208,7 +208,7 @@ const AGENT_COLS =
   'timezone, language, notify_new_lead, notify_followup_due, notify_daily_digest, ' +
   'quiet_hours_start, quiet_hours_end, is_active, deactivated_at, ' +
   'wa_phone_number_id, wa_phone_number, waba_status, waba_registered_at, meta_waba_id, is_admin, ingest_token, ' +
-  'token_version, created_at'
+  'wa_api_enabled, token_version, created_at'
 
 export async function createAgent(name, phone, email, passwordHash, waPhoneNumber = null) {
   const pn = waPhoneNumber ? normalizePhone(waPhoneNumber) : null
@@ -309,6 +309,13 @@ export async function updateAgentPhoneConfig(agentId, waPhoneNumber, waPhoneNumb
     waPhoneNumberId || null,
     agentId,
   ])
+  return getAgent(agentId)
+}
+
+// Opt in to (or out of) sending through the Meta WhatsApp Cloud API. Off means every
+// dashboard send opens the agent's own WhatsApp app via a wa.me link instead.
+export async function setAgentWaApiEnabled(agentId, enabled) {
+  await q('UPDATE agents SET wa_api_enabled = $1 WHERE id = $2', [Boolean(enabled), agentId])
   return getAgent(agentId)
 }
 
@@ -666,10 +673,12 @@ export async function getAssignableLead(id, agentId) {
   ).rows[0]
 }
 
-export async function addMessage(leadId, role, text, waMessageId = null) {
+// sentVia: 'wa_link' when the message was handed to the agent's own WhatsApp app
+// (wa.me) instead of delivered through the Cloud API; null otherwise.
+export async function addMessage(leadId, role, text, waMessageId = null, sentVia = null) {
   const { rows } = await q(
-    'INSERT INTO messages (lead_id, role, text, wa_message_id) VALUES ($1, $2, $3, $4) RETURNING *',
-    [leadId, role, text, waMessageId],
+    'INSERT INTO messages (lead_id, role, text, wa_message_id, sent_via) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+    [leadId, role, text, waMessageId, sentVia],
   )
   // The 24h service window's anchor (last_inbound_at) and its outbound twin are no
   // longer stamped here: migration 025 moved both onto an AFTER INSERT trigger, so

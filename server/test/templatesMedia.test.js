@@ -2,7 +2,7 @@
 // quick replies, and the media library (register + send tracking + window rules).
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { createTestDb, dropTestDb } from './helpers.js'
+import { createTestDb, dropTestDb, optInToWaApi } from './helpers.js'
 
 process.env.NODE_ENV = 'test'
 delete process.env.OPENROUTER_API_KEY
@@ -12,6 +12,7 @@ const dbName = await createTestDb('templatesmedia')
 
 const { app } = await import('../index.js')
 const { closePool, query, createMediaAsset, recordMediaSend, mediaIdsSentToLead, listMediaAssets } = await import('../db.js')
+await optInToWaApi() // this suite drives the Meta Cloud API send path
 
 let server, base, token, agentId, leadId
 

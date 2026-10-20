@@ -5,6 +5,7 @@ import { glossary } from '../lib/glossary.js'
 import { replyModeBadge, REPLY_MODE_HELP } from '../lib/replyMode.js'
 import { windowState, fmtCountdown } from '../lib/waWindow.js'
 import { varsOf, fillKnown, unfilledVars } from '../lib/templateVars.js'
+import { buildWaLink, openWhatsApp, isLinkMode, WA_LINK_HINT, WA_API_HINT } from '../lib/waLink.js'
 
 // Colour classes for the reply-mode badge tones (keeps green/white theme).
 const REPLY_TONE = {
@@ -151,6 +152,7 @@ function QuickReplySheet({ lead, onClose, onPick }) {
 
 // Media library picker — two taps to attach a saved asset. Marks what's already sent.
 function MediaSheet({ lead, onClose, onSent, onError }) {
+  const linkMode = isLinkMode(lead.wa_send_mode)
   const [assets, setAssets] = useState(null)
   const [sendingId, setSendingId] = useState(null)
   const sent = new Set(lead.media_sent_ids || [])
@@ -160,7 +162,9 @@ function MediaSheet({ lead, onClose, onSent, onError }) {
   const send = async (a) => {
     setSendingId(a.id)
     try {
-      await api.sendMedia(a.id, lead.id)
+      const res = await api.sendMedia(a.id, lead.id)
+      // wa.me can't attach a file — the server pre-fills the file's link instead.
+      if (res?.wa_link) openWhatsApp(res.wa_link)
       onSent()
     } catch (e) {
       onError(e.message)
@@ -170,7 +174,12 @@ function MediaSheet({ lead, onClose, onSent, onError }) {
   }
   const ICON = { brochure: '📄', floor_plan: '📐', photo: '🖼️', video: '🎬', document: '📎' }
   return (
-    <Sheet onClose={onClose} title="Attach from media library">
+    <Sheet onClose={onClose} title={linkMode ? 'Share from media library' : 'Attach from media library'}>
+      {linkMode && (
+        <p className="text-[11.5px] text-ink-faint mb-3">
+          Opens WhatsApp with a link to the file ready to send.
+        </p>
+      )}
       {assets?.length === 0 && (
         <p className="text-[12px] text-ink-soft">Library is empty. Add files in More → Snippets &amp; media.</p>
       )}
@@ -188,11 +197,11 @@ function MediaSheet({ lead, onClose, onSent, onError }) {
               <p className="text-[11px] text-ink-faint truncate">{a.kind.replace('_', ' ')}</p>
             </div>
             {sendingId === a.id ? (
-              <span className="text-[10.5px] text-brand font-bold">Sending…</span>
+              <span className="text-[10.5px] text-brand font-bold">{linkMode ? 'Opening…' : 'Sending…'}</span>
             ) : sent.has(a.id) ? (
               <span className="text-[10px] text-emerald-600 font-bold">✓ sent</span>
             ) : (
-              <span className="text-[10.5px] text-brand font-bold">Send</span>
+              <span className="text-[10.5px] text-brand font-bold">{linkMode ? 'Share ↗' : 'Send'}</span>
             )}
           </button>
         ))}
@@ -354,6 +363,9 @@ function Conversation({ leadId, onBack }) {
   if (error) return <p className="text-center text-[13px] text-hot pt-16">Couldn't load this chat.</p>
   if (!lead) return <p className="text-center text-[13px] text-ink-faint pt-16">Loading…</p>
 
+  // 'link' (default): sends open the agent's own WhatsApp via wa.me, so Meta's 24-hour
+  // window and template rules don't apply. 'api': the Meta Cloud API upgrade is on.
+  const linkMode = isLinkMode(lead.wa_send_mode)
   const win = windowState(lead, now)
   const labels = lead.labels || []
 
@@ -366,8 +378,13 @@ function Conversation({ leadId, onBack }) {
     if (!text || sending) return
     setSending(true)
     setSendError(null)
+    // Open WhatsApp inside the tap itself, before any await: a tab opened after a
+    // round trip is what popup blockers refuse. The server call only logs the message.
+    if (linkMode) openWhatsApp(buildWaLink(lead.wa_id, text))
     try {
-      await api.reply(lead.id, text)
+      const res = await api.reply(lead.id, text)
+      // The account's mode changed since this thread loaded — follow the server.
+      if (!linkMode && res?.wa_link) openWhatsApp(res.wa_link)
       setDraft('')
     } catch (e) {
       setSendError(e.message)
@@ -387,7 +404,11 @@ function Conversation({ leadId, onBack }) {
           <p className="text-ink-soft text-[11px] truncate">
             +{lead.wa_id} · {lead.temp}
           </p>
-          {win.known && (
+          {linkMode ? (
+            <p className="text-[10px] font-bold text-[#34D399] inline-flex items-center gap-1">
+              ↗ Replies open in your WhatsApp
+            </p>
+          ) : win.known && (
             <p className={`text-[10px] font-bold inline-flex items-center gap-1 ${win.open ? 'text-[#34D399]' : 'text-[#FBBF24]'}`}>
               {win.open ? `🟢 Free replies · ${fmtCountdown(win.msLeft)} left` : '🔒 Free-reply time is up'}
               <InfoTip label="" text={glossary.SERVICE_WINDOW} align="left" />
@@ -446,7 +467,10 @@ function Conversation({ leadId, onBack }) {
                 </span>
               )}
               {m.text}
-              <span className="block text-right text-[10px] text-ink-faint mt-1">{fmtTime(m.created_at)}</span>
+              <span className="block text-right text-[10px] text-ink-faint mt-1">
+                {m.sent_via === 'wa_link' && <span title="Opened in your WhatsApp app to send">↗ via WhatsApp app · </span>}
+                {fmtTime(m.created_at)}
+              </span>
             </div>
           </div>
         ))}
@@ -454,7 +478,7 @@ function Conversation({ leadId, onBack }) {
 
       <div className="shrink-0 bg-cream border-t border-line px-3 pt-2.5 pb-3">
         {sendError && <p className="text-[11.5px] text-hot bg-amber-wash rounded-lg px-3 py-2 mb-2">{sendError}</p>}
-        {!win.open ? (
+        {!linkMode && !win.open ? (
           <TemplateComposer lead={lead} onSent={() => setSendError(null)} onError={setSendError} />
         ) : (
           <>
@@ -497,23 +521,30 @@ function Conversation({ leadId, onBack }) {
                 }}
                 rows={1}
                 aria-label={`Reply to ${lead.name || 'buyer'} on WhatsApp`}
-                placeholder={`Reply to ${lead.name || 'buyer'} on WhatsApp…`}
+                placeholder={linkMode ? `Write to ${lead.name || 'buyer'}, then open WhatsApp…` : `Reply to ${lead.name || 'buyer'} on WhatsApp…`}
                 className="flex-1 resize-none bg-[#111113] border border-line rounded-2xl px-4 py-3 text-[13.5px] text-ink outline-none focus:border-brand/50"
               />
               <button
-                aria-label="Send reply on WhatsApp"
+                aria-label={linkMode ? 'Open in WhatsApp to send' : 'Send reply on WhatsApp'}
+                title={linkMode ? 'Open in WhatsApp' : undefined}
                 onClick={send}
                 disabled={sending || !draft.trim()}
-                className="shrink-0 w-11 h-11 rounded-full bg-brand disabled:opacity-40 text-white flex items-center justify-center shadow-card active:scale-95 transition"
+                className={`shrink-0 w-11 h-11 rounded-full ${
+                  linkMode ? 'bg-[#25D366]' : 'bg-brand'
+                } disabled:opacity-40 text-white flex items-center justify-center shadow-card active:scale-95 transition`}
               >
-                <svg aria-hidden="true" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 translate-x-[1px]">
-                  <path d="M3.4 20.4 21.8 12 3.4 3.6 3.4 10l13 2-13 2z" />
-                </svg>
+                {linkMode ? (
+                  <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
+                    <path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" />
+                  </svg>
+                ) : (
+                  <svg aria-hidden="true" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 translate-x-[1px]">
+                    <path d="M3.4 20.4 21.8 12 3.4 3.6 3.4 10l13 2-13 2z" />
+                  </svg>
+                )}
               </button>
             </div>
-            <p className="text-[10.5px] text-ink-faint mt-1.5 px-1">
-              Sends a real WhatsApp message from your business number.
-            </p>
+            <p className="text-[10.5px] text-ink-faint mt-1.5 px-1">{linkMode ? WA_LINK_HINT : WA_API_HINT}</p>
           </>
         )}
       </div>

@@ -115,3 +115,13 @@ export async function pinVisitToToday(query, visitId, agentId) {
     [visitId, tz],
   )
 }
+
+// WhatsApp sends default to wa.me click-to-chat links; the Meta Cloud API is an opt-in
+// per account (agents.wa_api_enabled). Suites that exercise the Cloud API path call this
+// once, after the server is imported, so every agent they create is opted in. It only
+// touches the column default in this file's own throwaway database.
+export async function optInToWaApi() {
+  const { ready, query } = await import('../db.js')
+  await ready
+  await query('ALTER TABLE agents ALTER COLUMN wa_api_enabled SET DEFAULT TRUE')
+}

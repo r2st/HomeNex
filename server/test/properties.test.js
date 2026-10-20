@@ -1,7 +1,7 @@
 // API tests for property inventory CRUD, filtering, and send-to-chat.
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { createTestDb, dropTestDb } from './helpers.js'
+import { createTestDb, dropTestDb, optInToWaApi } from './helpers.js'
 
 process.env.NODE_ENV = 'test'
 delete process.env.OPENROUTER_API_KEY
@@ -11,6 +11,7 @@ const dbName = await createTestDb('properties')
 
 const { app, formatPropertyMessage } = await import('../index.js')
 const { closePool, upsertLead } = await import('../db.js')
+await optInToWaApi() // this suite drives the Meta Cloud API send path
 const { paiseToDisplay, lakhsToPaise } = await import('../money.js')
 
 let server

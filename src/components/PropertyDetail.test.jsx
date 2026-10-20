@@ -542,3 +542,21 @@ test('a search that matches nothing says so in the searched term', async (t) => 
 
   assert.match(ui.text(), /No leads matching "Zzzz"/)
 })
+
+// --- wa.me link mode (default: no Meta Business API) ------------------------
+
+test('link mode: the send sheet says WhatsApp opens, and opens the pre-filled link', async (t) => {
+  const link = 'https://wa.me/919800000501?text=Hi%20Anand'
+  const ctx = setup(t, {
+    'GET /api/agent/phone-config': { wa_send_mode: 'link' },
+    'POST /api/properties/11/send-to-chat': { ok: true, mode: 'link', wa_link: link },
+  })
+  const ui = await render(panel())
+  await openSendSheet(ui)
+
+  assert.match(ui.text(), /Opens WhatsApp on your phone or computer with this message ready/)
+  await click(ui.allByText('Open WhatsApp', { exact: true })[0])
+  assert.equal(ctx.net.to('/api/properties/11/send-to-chat', 'POST')[0].body.lead_id, 501)
+  assert.deepEqual(ctx.env.opened.map((o) => o.url), [link])
+  assert.match(ui.text(), /✓ Opened/)
+})

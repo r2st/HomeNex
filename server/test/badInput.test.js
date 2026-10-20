@@ -13,7 +13,7 @@
 // service-unavailable arms that fire when WhatsApp is not configured.
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { createTestDb, dropTestDb } from './helpers.js'
+import { createTestDb, dropTestDb, optInToWaApi } from './helpers.js'
 
 process.env.NODE_ENV = 'test'
 delete process.env.OPENROUTER_API_KEY
@@ -24,6 +24,7 @@ const dbName = await createTestDb('badinput')
 
 const { app } = await import('../index.js')
 const { closePool, query, upsertLead, upsertUnassignedLead, createProperty, addContact } = await import('../db.js')
+await optInToWaApi() // this suite drives the Meta Cloud API send path
 
 let server, base, token, agentId, leadId, propertyId
 

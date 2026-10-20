@@ -240,3 +240,25 @@ test('a successful send closes the sheet and reloads the ledger', async (t) => {
   assert.equal(ui.queryByLabel(/Message/), null, 'the sheet stayed open over the confirmation')
   assert.ok(net.to('/api/templates/festive', 'GET').length > loadsBefore)
 })
+
+// --- wa.me link mode (default: no Meta Business API) ------------------------
+
+test('link mode: a greeting to every contact explains it needs the Business API, and cannot be sent', async (t) => {
+  setup(t, { 'GET /api/agent/phone-config': { wa_send_mode: 'link' } })
+  const ui = await render(<FestiveTab />)
+  await openSheet(ui)
+
+  assert.match(ui.text(), /WhatsApp Business API — an optional upgrade/)
+  const button = ui.get((f) => f.type === 'button' && f.props.type === 'submit', 'submit button')
+  assert.equal(button.props.disabled, true)
+})
+
+test('api mode: no upgrade notice, and the greeting can be sent', async (t) => {
+  setup(t, { 'GET /api/agent/phone-config': { wa_send_mode: 'api' } })
+  const ui = await render(<FestiveTab />)
+  await openSheet(ui)
+
+  assert.doesNotMatch(ui.text(), /optional upgrade/)
+  const button = ui.get((f) => f.type === 'button' && f.props.type === 'submit', 'submit button')
+  assert.equal(button.props.disabled, false)
+})

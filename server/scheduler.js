@@ -32,7 +32,7 @@ import {
   getMessagesForLeads,
   logActivity,
 } from './db.js'
-import { sendText, whatsappConfigured } from './whatsapp.js'
+import { sendText, whatsappConfigured, waSendMode } from './whatsapp.js'
 import { reminderT1Text, reminderT2Text } from './siteVisit.js'
 import { detectConversationLanguage } from './language.js'
 
@@ -270,10 +270,14 @@ export async function siteVisitWaReminders(agentIds, now = Date.now(), send = se
   // a time right after activeAgentIds() had already listed them.
   const agents = new Map(
     (
-      await query('SELECT id, wa_phone_number_id, timezone FROM agents WHERE id = ANY($1::int[])', [
+      await query('SELECT id, wa_phone_number_id, timezone, wa_api_enabled FROM agents WHERE id = ANY($1::int[])', [
         agentIds,
       ])
-    ).rows.map((a) => [a.id, a]),
+    ).rows
+      // Automated reminders need the Cloud API: an account on wa.me click-to-chat has
+      // nothing that can send without the agent tapping. (An injected sender is a test.)
+      .filter((a) => send !== sendText || waSendMode(a) === 'api')
+      .map((a) => [a.id, a]),
   )
   if (!agents.size) return 0
   const { rows } = await query(

@@ -562,3 +562,84 @@ test('the empty state only appears once the server has actually answered', async
   assert.match(ui.text(), /No conversations yet/)
   assert.equal(ui.query((f) => f.props?.['aria-busy'] === 'true'), null, 'skeletons are gone')
 })
+
+// --- wa.me link mode (the default: no Meta Business API) ---------------------
+
+const linkThread = (over = {}) => thread({ wa_send_mode: 'link', ...over })
+const openButton = (ui) => ui.get((f) => f.type === 'button' && f.props['aria-label'] === 'Open in WhatsApp to send', 'open button')
+
+test('link mode: the composer says it opens WhatsApp, not that it sends from a business number', async (t) => {
+  setup(t, { lead: linkThread() })
+  const ui = await render(<InboxTab leadId={5} onSelectLead={() => {}} />)
+
+  assert.match(ui.text(), /Replies open in your WhatsApp/)
+  assert.match(ui.text(), /Opens WhatsApp on your phone or computer with this message ready/)
+  assert.doesNotMatch(ui.text(), /from your business number/)
+  assert.doesNotMatch(ui.text(), /Free replies ·/, 'the 24h countdown is a Cloud API rule')
+  assert.ok(ui.queryByPlaceholder('Write to Priya Sharma, then open WhatsApp…'))
+})
+
+test('link mode: sending opens wa.me with the message pre-filled, then logs it', async (t) => {
+  const ctx = setup(t, {
+    lead: linkThread(),
+    routes: { 'POST /api/leads/5/reply': { id: 3, mode: 'link', wa_link: 'https://wa.me/919876543210?text=x' } },
+  })
+  const ui = await render(<InboxTab leadId={5} onSelectLead={() => {}} />)
+
+  await change(ui.byPlaceholder('Write to Priya Sharma, then open WhatsApp…'), '  Visit at 5pm, Priya?  ')
+  await click(openButton(ui))
+
+  assert.deepEqual(ctx.env.opened.map((o) => o.url), ['https://wa.me/919876543210?text=Visit%20at%205pm%2C%20Priya%3F'],
+    'opened once, inside the tap, with the trimmed draft')
+  assert.deepEqual(ctx.net.to('/api/leads/5/reply', 'POST')[0].body, { text: 'Visit at 5pm, Priya?' })
+  assert.equal(ui.byPlaceholder('Write to Priya Sharma, then open WhatsApp…').props.value, '')
+})
+
+test('link mode: a closed 24h window still allows a free-text message', async (t) => {
+  setup(t, { lead: linkThread({ last_inbound_at: ago(30 * HOUR) }) })
+  const ui = await render(<InboxTab leadId={5} onSelectLead={() => {}} />)
+
+  assert.doesNotMatch(ui.text(), /Free-reply time is up/)
+  assert.doesNotMatch(ui.text(), /pick one of your approved messages/)
+  assert.ok(ui.queryByPlaceholder('Write to Priya Sharma, then open WhatsApp…'))
+})
+
+test('link mode: messages handed to the WhatsApp app are marked in the thread', async (t) => {
+  setup(t, {
+    lead: linkThread({
+      messages: [{ id: 9, role: 'agent', text: 'Sharing the brochure', sent_via: 'wa_link', created_at: ago(HOUR) }],
+    }),
+  })
+  const ui = await render(<InboxTab leadId={5} onSelectLead={() => {}} />)
+
+  assert.match(ui.text(), /via WhatsApp app/)
+})
+
+test('link mode: sharing media opens WhatsApp with the file link', async (t) => {
+  const ctx = setup(t, {
+    lead: linkThread(),
+    routes: {
+      'GET /api/media': [{ id: 11, title: 'Lakeside brochure', kind: 'brochure' }],
+      'POST /api/media/11/send': { mode: 'link', wa_link: 'https://wa.me/919876543210?text=brochure' },
+    },
+  })
+  const ui = await render(<InboxTab leadId={5} onSelectLead={() => {}} />)
+
+  await click(ui.byText('📎 Media'))
+  assert.match(ui.text(), /Share from media library/)
+  assert.match(ui.text(), /Share ↗/)
+  await click(ui.byText('Lakeside brochure'))
+
+  assert.deepEqual(ctx.env.opened.map((o) => o.url), ['https://wa.me/919876543210?text=brochure'])
+})
+
+test('api mode: a reply never opens WhatsApp', async (t) => {
+  const ctx = setup(t, { lead: thread({ wa_send_mode: 'api' }), routes: { 'POST /api/leads/5/reply': { id: 4, mode: 'api' } } })
+  const ui = await render(<InboxTab leadId={5} onSelectLead={() => {}} />)
+
+  assert.match(ui.text(), /from your business number/)
+  await change(ui.byPlaceholder('Reply to Priya Sharma on WhatsApp…'), 'Hello')
+  await keyDown(ui.byPlaceholder('Reply to Priya Sharma on WhatsApp…'), 'Enter')
+  assert.equal(ctx.net.to('/api/leads/5/reply', 'POST').length, 1)
+  assert.deepEqual(ctx.env.opened, [])
+})
