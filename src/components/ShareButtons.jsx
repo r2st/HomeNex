@@ -15,7 +15,7 @@ export default function ShareButtons({ url, title }) {
 
   return (
     <div className="flex items-center gap-3 flex-wrap">
-      <span className="text-sm text-[var(--doaide-text-muted)]">Share:</span>
+      <span className="text-sm text-[var(--da-text-muted)]">Share:</span>
       <a
         href={`https://wa.me/?text=${encodedTitle}%20${encoded}`}
         target="_blank"
@@ -28,13 +28,13 @@ export default function ShareButtons({ url, title }) {
         href={`https://twitter.com/intent/tweet?text=${encodedTitle}&url=${encoded}`}
         target="_blank"
         rel="noopener noreferrer"
-        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium bg-[var(--doaide-surface)] text-[var(--doaide-text)] border border-[var(--doaide-border)] hover:bg-[var(--doaide-surface-hover)] transition-colors"
+        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium bg-[var(--da-surface)] text-[var(--da-text)] border border-[var(--da-border)] hover:bg-[var(--da-surface-hover)] transition-colors"
       >
         X / Twitter
       </a>
       <button
         onClick={copy}
-        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium bg-[var(--doaide-surface)] text-[var(--doaide-text)] border border-[var(--doaide-border)] hover:bg-[var(--doaide-surface-hover)] transition-colors"
+        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium bg-[var(--da-surface)] text-[var(--da-text)] border border-[var(--da-border)] hover:bg-[var(--da-surface-hover)] transition-colors"
       >
         {copied ? 'Copied!' : 'Copy link'}
       </button>

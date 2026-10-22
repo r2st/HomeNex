@@ -21,6 +21,8 @@ const MEMO = Symbol.for('react.memo')
 const FORWARD_REF = Symbol.for('react.forward_ref')
 const PROVIDER = Symbol.for('react.provider')
 const CONTEXT = Symbol.for('react.context')
+const SUSPENSE = Symbol.for('react.suspense')
+const LAZY = Symbol.for('react.lazy')
 
 // Form controls that a <label> can be associated with, for byLabel().
 const CONTROLS = new Set(['input', 'select', 'textarea'])
@@ -300,7 +302,30 @@ function renderElement(root, element, old, parent) {
       const fiber = { kind: 'fragment', type: element.type, key, props, parent, children: [] }
       fiber.children = reconcile(root, props.children(type._currentValue), old?.children || [], fiber)
       return fiber
+    } else if (type.$$typeof === LAZY) {
+      // React.lazy: _init throws the chunk's promise while it loads (caught by the
+      // nearest Suspense below) and returns the component once resolved. The fiber
+      // keeps the lazy object as its type so hook state survives re-renders.
+      const Comp = type._init(type._payload)
+      const fiber = { kind: 'component', type: element.type, key, props, hooks: old?.hooks || [], parent, children: [] }
+      fiber.hookIndex = 0
+      const out = withDispatcher(root, fiber, () => Comp(props))
+      fiber.children = reconcile(root, [out], old?.children || [], fiber)
+      return fiber
     }
+  }
+
+  if (type === SUSPENSE) {
+    const fiber = { kind: 'fragment', type, key, props, parent, children: [] }
+    try {
+      fiber.children = reconcile(root, props.children, old?.children || [], fiber)
+    } catch (thrown) {
+      if (!thrown || typeof thrown.then !== 'function') throw thrown
+      // Suspended on a lazy chunk: show the fallback now, re-render on resolution.
+      thrown.then(() => scheduleRender(root), () => scheduleRender(root))
+      fiber.children = reconcile(root, [props.fallback ?? null], [], fiber)
+    }
+    return fiber
   }
 
   if (type === FRAGMENT) {

@@ -1,18 +1,35 @@
-import { useEffect, useState } from 'react'
+import { Suspense, lazy, useEffect, useState } from 'react'
 import DashboardTab from './components/DashboardTab.jsx'
 import LeadsTab from './components/LeadsTab.jsx'
 import LeadDetail from './components/LeadDetail.jsx'
 import InboxTab from './components/InboxTab.jsx'
 import PropertiesTab from './components/PropertiesTab.jsx'
 import MoreTab from './components/MoreTab.jsx'
-import AdminPanel from './components/AdminPanel.jsx'
 import BottomNav from './components/BottomNav.jsx'
-import LandingPage from './components/LandingPage.jsx'
 import { ErrorBoundary } from './components/ui.jsx'
 import InstallPrompt from './components/InstallPrompt.jsx'
 import { api, usePoll, getToken, setToken, offlineQueueSize, flushOfflineQueue } from './api.js'
 import { actionableFollowupCount, badgeText } from './lib/followups.js'
-import { resolvePublicRoute, ToolsIndex, ToolPage, BlogIndex, BlogPost, EmbedPage } from './components/PublicPages.jsx'
+import { resolvePublicRoute } from './lib/publicRoutes.js'
+
+// Route-level code splitting: the login-free public pages, the landing page and
+// the admin panel each load on demand instead of riding in the main bundle.
+const LandingPage = lazy(() => import('./components/LandingPage.jsx'))
+const AdminPanel = lazy(() => import('./components/AdminPanel.jsx'))
+const publicPages = () => import('./components/PublicPages.jsx')
+const ToolsIndex = lazy(() => publicPages().then((m) => ({ default: m.ToolsIndex })))
+const ToolPage = lazy(() => publicPages().then((m) => ({ default: m.ToolPage })))
+const BlogIndex = lazy(() => publicPages().then((m) => ({ default: m.BlogIndex })))
+const BlogPost = lazy(() => publicPages().then((m) => ({ default: m.BlogPost })))
+const EmbedPage = lazy(() => publicPages().then((m) => ({ default: m.EmbedPage })))
+
+function RouteFallback() {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-[var(--da-bg)]">
+      <p className="text-[13px] text-[var(--da-text-muted)]">Loading…</p>
+    </div>
+  )
+}
 
 // Offline status strip: shows when the network is gone and how many actions
 // are queued for sync. Queued follow-ups/stage moves replay automatically.
@@ -71,11 +88,17 @@ function WhatsAppBanner() {
 export default function App() {
   const pathname = typeof window !== 'undefined' ? window.location.pathname : '/'
   const publicRoute = resolvePublicRoute(pathname)
-  if (publicRoute === 'tools-index') return <ToolsIndex />
-  if (publicRoute === 'tool-page') return <ToolPage slug={pathname.replace('/tools/', '')} />
-  if (publicRoute === 'blog-index') return <BlogIndex />
-  if (publicRoute === 'blog-post') return <BlogPost slug={pathname.replace('/blog/', '')} />
-  if (publicRoute === 'embed') return <EmbedPage />
+  if (publicRoute) {
+    return (
+      <Suspense fallback={<RouteFallback />}>
+        {publicRoute === 'tools-index' && <ToolsIndex />}
+        {publicRoute === 'tool-page' && <ToolPage slug={pathname.replace('/tools/', '')} />}
+        {publicRoute === 'blog-index' && <BlogIndex />}
+        {publicRoute === 'blog-post' && <BlogPost slug={pathname.replace('/blog/', '')} />}
+        {publicRoute === 'embed' && <EmbedPage />}
+      </Suspense>
+    )
+  }
 
   return <AppShell />
 }
@@ -129,7 +152,11 @@ function AppShell() {
   }
 
   if (!agent) {
-    return <LandingPage onAuthed={setAgent} />
+    return (
+      <Suspense fallback={<RouteFallback />}>
+        <LandingPage onAuthed={setAgent} />
+      </Suspense>
+    )
   }
 
   const openConversation = (leadId) => {
@@ -169,7 +196,9 @@ function AppShell() {
           />
         )}
         {tab === 'admin' && agent?.is_admin === 1 && (
-          <AdminPanel agent={agent} onBack={() => setTab('more')} />
+          <Suspense fallback={<RouteFallback />}>
+            <AdminPanel agent={agent} onBack={() => setTab('more')} />
+          </Suspense>
         )}
         </ErrorBoundary>
       </main>

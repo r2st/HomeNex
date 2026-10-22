@@ -114,7 +114,7 @@ function PipelineViz() {
                     y1={cy}
                     x2={x + nodeW + gap}
                     y2={cy}
-                    stroke="rgba(240,180,41,0.15)"
+                    stroke="rgba(13,148,136,0.15)"
                     strokeWidth="1"
                   />
                   <circle r="2.5" fill="url(#pipe-gold)" filter="url(#pipe-glow)" className={`landing-pipe-dot landing-pipe-dot-${i}`}>
@@ -143,7 +143,7 @@ function PipelineViz() {
                 height={nodeH}
                 rx="12"
                 fill="rgba(16,16,18,0.8)"
-                stroke="rgba(240,180,41,0.2)"
+                stroke="rgba(13,148,136,0.2)"
                 strokeWidth="1"
                 className="landing-pipe-node"
                 style={{ animationDelay: `${i * 0.12}s` }}

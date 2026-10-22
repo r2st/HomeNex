@@ -24,21 +24,21 @@ export default function EmiCalculator() {
 
   return (
     <div>
-      <h1 className="text-3xl font-bold text-[var(--doaide-text)] mb-2" style={{ fontFamily: 'var(--doaide-font-display)' }}>Home Loan EMI Calculator</h1>
-      <p className="text-[var(--doaide-text-secondary)] mb-8">Calculate your monthly EMI for home loans in India.</p>
+      <h1 className="text-3xl font-bold text-[var(--da-text)] mb-2" style={{ fontFamily: 'var(--da-font)' }}>Home Loan EMI Calculator</h1>
+      <p className="text-[var(--da-text-secondary)] mb-8">Calculate your monthly EMI for home loans in India.</p>
       <div className="space-y-6">
-        <div className="p-6 rounded-xl border border-[var(--doaide-border)] bg-[var(--doaide-surface)] space-y-4">
+        <div className="p-6 rounded-xl border border-[var(--da-border)] bg-[var(--da-surface)] space-y-4">
           <div>
-            <label className="block text-sm text-[var(--doaide-text-secondary)] mb-1">Loan Amount (₹)</label>
+            <label className="block text-sm text-[var(--da-text-secondary)] mb-1">Loan Amount (₹)</label>
             <input type="number" min={100000} step={100000} value={principal} onChange={(e) => setPrincipal(Number(e.target.value) || 0)} className="w-full px-3 py-2 rounded-md text-sm" />
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm text-[var(--doaide-text-secondary)] mb-1">Interest Rate (% p.a.)</label>
+              <label className="block text-sm text-[var(--da-text-secondary)] mb-1">Interest Rate (% p.a.)</label>
               <input type="number" min={1} max={20} step={0.1} value={rate} onChange={(e) => setRate(Number(e.target.value) || 0)} className="w-full px-3 py-2 rounded-md text-sm" />
             </div>
             <div>
-              <label className="block text-sm text-[var(--doaide-text-secondary)] mb-1">Tenure (years)</label>
+              <label className="block text-sm text-[var(--da-text-secondary)] mb-1">Tenure (years)</label>
               <input type="number" min={1} max={30} value={years} onChange={(e) => setYears(Number(e.target.value) || 0)} className="w-full px-3 py-2 rounded-md text-sm" />
             </div>
           </div>
@@ -46,17 +46,17 @@ export default function EmiCalculator() {
 
         {emi > 0 && (
           <div className="grid grid-cols-3 gap-4">
-            <div className="p-4 rounded-xl border border-[var(--doaide-border)] bg-[var(--doaide-surface)]">
-              <p className="text-xs text-[var(--doaide-text-muted)] mb-1">Monthly EMI</p>
-              <p className="text-xl font-bold text-[var(--doaide-gold)]">{formatInr(emi)}</p>
+            <div className="p-4 rounded-xl border border-[var(--da-border)] bg-[var(--da-surface)]">
+              <p className="text-xs text-[var(--da-text-muted)] mb-1">Monthly EMI</p>
+              <p className="text-xl font-bold text-[var(--da-primary)]">{formatInr(emi)}</p>
             </div>
-            <div className="p-4 rounded-xl border border-[var(--doaide-border)] bg-[var(--doaide-surface)]">
-              <p className="text-xs text-[var(--doaide-text-muted)] mb-1">Total Payment</p>
-              <p className="text-xl font-bold text-[var(--doaide-text)]">{formatInr(totalPayment)}</p>
+            <div className="p-4 rounded-xl border border-[var(--da-border)] bg-[var(--da-surface)]">
+              <p className="text-xs text-[var(--da-text-muted)] mb-1">Total Payment</p>
+              <p className="text-xl font-bold text-[var(--da-text)]">{formatInr(totalPayment)}</p>
             </div>
-            <div className="p-4 rounded-xl border border-[var(--doaide-border)] bg-[var(--doaide-surface)]">
-              <p className="text-xs text-[var(--doaide-text-muted)] mb-1">Total Interest</p>
-              <p className="text-xl font-bold text-[var(--doaide-error)]">{formatInr(totalInterest)}</p>
+            <div className="p-4 rounded-xl border border-[var(--da-border)] bg-[var(--da-surface)]">
+              <p className="text-xs text-[var(--da-text-muted)] mb-1">Total Interest</p>
+              <p className="text-xl font-bold text-[var(--da-error)]">{formatInr(totalInterest)}</p>
             </div>
           </div>
         )}

@@ -41,16 +41,16 @@ export default function StampDutyCalculator() {
 
   return (
     <div>
-      <h1 className="text-3xl font-bold text-[var(--doaide-text)] mb-2" style={{ fontFamily: 'var(--doaide-font-display)' }}>Stamp Duty Calculator</h1>
-      <p className="text-[var(--doaide-text-secondary)] mb-8">Estimate stamp duty and registration charges by Indian state.</p>
+      <h1 className="text-3xl font-bold text-[var(--da-text)] mb-2" style={{ fontFamily: 'var(--da-font)' }}>Stamp Duty Calculator</h1>
+      <p className="text-[var(--da-text-secondary)] mb-8">Estimate stamp duty and registration charges by Indian state.</p>
       <div className="space-y-6">
-        <div className="p-6 rounded-xl border border-[var(--doaide-border)] bg-[var(--doaide-surface)] space-y-4">
+        <div className="p-6 rounded-xl border border-[var(--da-border)] bg-[var(--da-surface)] space-y-4">
           <div>
-            <label className="block text-sm text-[var(--doaide-text-secondary)] mb-1">Property Value (₹)</label>
+            <label className="block text-sm text-[var(--da-text-secondary)] mb-1">Property Value (₹)</label>
             <input type="number" min={100000} step={100000} value={value} onChange={(e) => setValue(Number(e.target.value) || 0)} className="w-full px-3 py-2 rounded-md text-sm" />
           </div>
           <div>
-            <label className="block text-sm text-[var(--doaide-text-secondary)] mb-1">State</label>
+            <label className="block text-sm text-[var(--da-text-secondary)] mb-1">State</label>
             <select value={state} onChange={(e) => setState(e.target.value)} className="w-full px-3 py-2 rounded-md text-sm">
               {states.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
@@ -59,17 +59,17 @@ export default function StampDutyCalculator() {
 
         {total > 0 && (
           <div className="grid grid-cols-3 gap-4">
-            <div className="p-4 rounded-xl border border-[var(--doaide-border)] bg-[var(--doaide-surface)]">
-              <p className="text-xs text-[var(--doaide-text-muted)] mb-1">Stamp Duty ({rates.duty}%)</p>
-              <p className="text-xl font-bold text-[var(--doaide-gold)]">{formatInr(stampDuty)}</p>
+            <div className="p-4 rounded-xl border border-[var(--da-border)] bg-[var(--da-surface)]">
+              <p className="text-xs text-[var(--da-text-muted)] mb-1">Stamp Duty ({rates.duty}%)</p>
+              <p className="text-xl font-bold text-[var(--da-primary)]">{formatInr(stampDuty)}</p>
             </div>
-            <div className="p-4 rounded-xl border border-[var(--doaide-border)] bg-[var(--doaide-surface)]">
-              <p className="text-xs text-[var(--doaide-text-muted)] mb-1">Registration ({rates.registration}%)</p>
-              <p className="text-xl font-bold text-[var(--doaide-text)]">{formatInr(registration)}</p>
+            <div className="p-4 rounded-xl border border-[var(--da-border)] bg-[var(--da-surface)]">
+              <p className="text-xs text-[var(--da-text-muted)] mb-1">Registration ({rates.registration}%)</p>
+              <p className="text-xl font-bold text-[var(--da-text)]">{formatInr(registration)}</p>
             </div>
-            <div className="p-4 rounded-xl border border-[var(--doaide-border)] bg-[var(--doaide-surface)]">
-              <p className="text-xs text-[var(--doaide-text-muted)] mb-1">Total Charges</p>
-              <p className="text-xl font-bold text-[var(--doaide-warning)]">{formatInr(total)}</p>
+            <div className="p-4 rounded-xl border border-[var(--da-border)] bg-[var(--da-surface)]">
+              <p className="text-xs text-[var(--da-text-muted)] mb-1">Total Charges</p>
+              <p className="text-xl font-bold text-[var(--da-warning)]">{formatInr(total)}</p>
             </div>
           </div>
         )}

@@ -1,24 +1,36 @@
 /* DoAide Split Landing — Realty
- * Matches 409.doaide.com layout: 55/45 split, auth card on right
+ * Light-first, teal brand, split layout with auth card on right
  */
 
 .landing-root {
-  --gold: #F0B429;
-  --gold-dark: #D4A017;
-  --gold-light: #F7CC5F;
-  --bg: #0A0A0B;
-  --text: #E5E7EB;
-  --text-muted: rgba(255, 255, 255, 0.4);
-  --surface: rgba(16, 16, 18, 0.85);
-  --border: rgba(255, 255, 255, 0.08);
+  --teal: #0D9488;
+  --teal-dark: #0F766E;
+  --teal-light: #5EEAD4;
+  --bg: #FFFFFF;
+  --text: #1E293B;
+  --text-muted: #94A3B8;
+  --surface: rgba(248, 255, 254, 0.9);
+  --border: #E2E8F0;
 
   min-height: 100vh;
   min-height: 100dvh;
   background: var(--bg);
   color: var(--text);
-  font-family: 'Schibsted Grotesk', system-ui, -apple-system, sans-serif;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
   overflow-x: hidden;
   position: relative;
+}
+
+@media (prefers-color-scheme: dark) {
+  .landing-root {
+    --bg: #0F172A;
+    --text: #F1F5F9;
+    --text-muted: #64748B;
+    --surface: rgba(30, 41, 59, 0.9);
+    --border: #334155;
+    --teal: #14B8A6;
+    --teal-dark: #0D9488;
+  }
 }
 
 /* ── Animated background orbs ── */
@@ -34,13 +46,17 @@
   position: absolute;
   border-radius: 50%;
   filter: blur(80px);
-  opacity: 0.15;
+  opacity: 0.08;
+}
+
+@media (prefers-color-scheme: dark) {
+  .landing-orb { opacity: 0.15; }
 }
 
 .landing-orb-1 {
   width: 400px;
   height: 400px;
-  background: var(--gold);
+  background: var(--teal);
   top: -100px;
   left: -100px;
   animation: landing-drift-1 20s ease-in-out infinite;
@@ -49,7 +65,7 @@
 .landing-orb-2 {
   width: 300px;
   height: 300px;
-  background: var(--gold);
+  background: var(--teal);
   bottom: -50px;
   right: -50px;
   animation: landing-drift-2 25s ease-in-out infinite;
@@ -58,7 +74,7 @@
 .landing-orb-3 {
   width: 200px;
   height: 200px;
-  background: var(--gold);
+  background: var(--teal);
   top: 40%;
   left: 50%;
   animation: landing-drift-3 18s ease-in-out infinite;
@@ -75,8 +91,8 @@
   66% { transform: translate(40px, -40px) scale(0.85); }
 }
 @keyframes landing-drift-3 {
-  0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.1; }
-  50% { transform: translate(-100px, 50px) scale(1.2); opacity: 0.2; }
+  0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.05; }
+  50% { transform: translate(-100px, 50px) scale(1.2); opacity: 0.1; }
 }
 
 /* ── Split layout ── */
@@ -140,7 +156,7 @@
   position: absolute;
   width: 2px;
   height: 2px;
-  background: var(--gold);
+  background: var(--teal);
   border-radius: 50%;
   opacity: 0;
   animation: landing-particle-float 12s ease-in-out infinite;
@@ -159,9 +175,9 @@
 
 @keyframes landing-particle-float {
   0%, 100% { opacity: 0; transform: translateY(0); }
-  20% { opacity: 0.4; }
-  50% { opacity: 0.6; transform: translateY(-40px); }
-  80% { opacity: 0.3; }
+  20% { opacity: 0.25; }
+  50% { opacity: 0.4; transform: translateY(-40px); }
+  80% { opacity: 0.2; }
 }
 
 /* ── Brand ── */
@@ -175,15 +191,21 @@
 }
 
 .landing-brand-text {
-  font-family: 'Instrument Serif', Georgia, serif;
-  font-size: 24px;
-  font-weight: 400;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 22px;
+  font-weight: 700;
   letter-spacing: -0.3px;
 }
 
-.landing-brand-text em {
-  color: var(--gold) !important;
-  font-style: italic;
+.landing-brand-sep {
+  color: var(--teal);
+  font-weight: 300;
+  margin: 0 2px;
+}
+
+.landing-brand-product {
+  color: var(--teal);
+  font-weight: 700;
 }
 
 /* ── Hero area ── */
@@ -191,35 +213,11 @@
   margin-bottom: 0;
 }
 
-.landing-hero-robot-wrap {
-  position: relative;
-  display: inline-block;
-  margin-bottom: 24px;
-  animation: landing-float 4s ease-in-out infinite;
-}
-
-.landing-hero-glow {
-  position: absolute;
-  width: 180px;
-  height: 140px;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  background: radial-gradient(rgba(240, 180, 41, 0.15), transparent 70%);
-  border-radius: 50%;
-  filter: drop-shadow(0 0 25px rgba(240, 180, 41, 0.25));
-  pointer-events: none;
-}
-
-.landing-hero-robot .landing-antenna-glow {
-  animation: landing-pulse 2s ease-in-out infinite;
-}
-
 .landing-title {
-  font-family: 'Instrument Serif', Georgia, serif;
+  font-family: 'Inter', system-ui, sans-serif;
   font-size: clamp(32px, 3.6vw, 46px);
-  font-weight: 400;
-  color: #fff;
+  font-weight: 800;
+  color: var(--text);
   line-height: 1.12;
   letter-spacing: -0.5px;
   margin: 0 0 16px;
@@ -258,8 +256,8 @@
 }
 
 .landing-pipe-node:hover {
-  stroke: rgba(240, 180, 41, 0.5);
-  filter: drop-shadow(0 0 8px rgba(240, 180, 41, 0.15));
+  stroke: rgba(13, 148, 136, 0.5);
+  filter: drop-shadow(0 0 8px rgba(13, 148, 136, 0.15));
   transition: stroke 0.2s, filter 0.2s;
 }
 
@@ -278,14 +276,14 @@
   font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
   font-size: 22px;
   font-weight: 500;
-  color: var(--gold);
+  color: var(--teal);
 }
 
 .landing-value-cursor {
   display: inline-block;
   width: 2px;
   height: 24px;
-  background: var(--gold);
+  background: var(--teal);
   margin-left: 2px;
   animation: landing-blink 0.8s step-end infinite;
 }
@@ -299,14 +297,14 @@
   margin-top: 12px;
   width: 100%;
   height: 1px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--border);
   border-radius: 1px;
   overflow: hidden;
 }
 
 .landing-value-progress {
   height: 1px;
-  background: linear-gradient(90deg, var(--gold), var(--gold-light));
+  background: linear-gradient(90deg, var(--teal), var(--teal-light));
   border-radius: 1px;
   transition: width 0.4s ease;
 }
@@ -321,12 +319,12 @@
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--border);
   transition: background 0.3s;
 }
 
 .landing-value-dot-active {
-  background: var(--gold);
+  background: var(--teal);
 }
 
 /* ── Auth card (right panel) ── */
@@ -339,7 +337,13 @@
   border: 1px solid var(--border);
   border-radius: 24px;
   padding: 36px 32px;
-  box-shadow: 0 4px 40px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 4px 40px rgba(0, 0, 0, 0.06);
+}
+
+@media (prefers-color-scheme: dark) {
+  .landing-auth-card {
+    box-shadow: 0 4px 40px rgba(0, 0, 0, 0.4);
+  }
 }
 
 .landing-mobile-brand {
@@ -354,7 +358,7 @@
 .landing-tabs {
   display: flex;
   gap: 24px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid var(--border);
   margin-bottom: 24px;
 }
 
@@ -362,8 +366,8 @@
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
-  color: rgba(255, 255, 255, 0.35);
-  font-family: 'Schibsted Grotesk', system-ui, sans-serif;
+  color: var(--text-muted);
+  font-family: 'Inter', system-ui, sans-serif;
   font-size: 14px;
   font-weight: 600;
   padding: 12px 0;
@@ -372,12 +376,16 @@
 }
 
 .landing-tab:hover {
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--text);
+}
+
+@media (prefers-color-scheme: dark) {
+  .landing-tab:hover { color: rgba(255, 255, 255, 0.6); }
 }
 
 .landing-tab-active {
-  color: var(--gold);
-  border-bottom-color: var(--gold);
+  color: var(--teal);
+  border-bottom-color: var(--teal);
 }
 
 /* ── Form ── */
@@ -393,7 +401,7 @@
   display: block;
   font-size: 0.8rem;
   font-weight: 600;
-  color: rgba(255, 255, 255, 0.55);
+  color: var(--text-muted);
   margin-bottom: 6px;
 }
 
@@ -404,25 +412,25 @@
 
 .landing-input {
   width: 100%;
-  background: rgba(10, 10, 11, 0.5) !important;
-  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  background: var(--bg) !important;
+  border: 1px solid var(--border) !important;
   border-radius: 8px;
   padding: 10px 14px;
   font-size: 14px;
   font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
-  color: #fff !important;
+  color: var(--text) !important;
   outline: none;
   box-sizing: border-box;
   transition: border-color 0.15s ease;
 }
 
 .landing-input:focus {
-  border-color: rgba(240, 180, 41, 0.5) !important;
-  box-shadow: 0 0 0 2px rgba(240, 180, 41, 0.1) !important;
+  border-color: rgba(13, 148, 136, 0.5) !important;
+  box-shadow: 0 0 0 2px rgba(13, 148, 136, 0.1) !important;
 }
 
 .landing-input::placeholder {
-  color: rgba(255, 255, 255, 0.25) !important;
+  color: var(--text-muted) !important;
 }
 
 .landing-phone-row {
@@ -463,7 +471,7 @@
   transform: translateY(-50%);
   background: none;
   border: none;
-  color: rgba(255, 255, 255, 0.35);
+  color: var(--text-muted);
   cursor: pointer;
   font-size: 16px;
   padding: 4px;
@@ -481,35 +489,35 @@
   border: none;
   font-size: 12px;
   font-weight: 600;
-  color: var(--gold) !important;
+  color: var(--teal) !important;
   cursor: pointer;
   padding: 0;
   transition: color 0.15s;
 }
 
 .landing-forgot-btn:hover {
-  color: var(--gold-dark) !important;
+  color: var(--teal-dark) !important;
 }
 
 .landing-submit-btn {
   width: 100%;
-  background: var(--gold);
-  color: var(--bg);
+  background: var(--teal);
+  color: #FFFFFF;
   border: none;
   border-radius: 12px;
   padding: 12px 16px;
   font-size: 14px;
   font-weight: 700;
-  font-family: 'Schibsted Grotesk', system-ui, sans-serif;
+  font-family: 'Inter', system-ui, sans-serif;
   cursor: pointer;
   transition: background 0.15s ease, transform 0.15s ease;
   margin-top: 4px;
 }
 
 .landing-submit-btn:hover:not(:disabled) {
-  background: var(--gold-dark);
+  background: var(--teal-dark);
   transform: translateY(-1px);
-  box-shadow: 0 4px 20px rgba(240, 180, 41, 0.25);
+  box-shadow: 0 4px 20px rgba(13, 148, 136, 0.25);
 }
 
 .landing-submit-btn:disabled {
@@ -528,12 +536,12 @@
   content: '';
   flex: 1;
   height: 1px;
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--border);
 }
 .landing-sso-divider span {
   font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.35);
+  color: var(--text-muted);
   white-space: nowrap;
 }
 
@@ -548,10 +556,10 @@
   justify-content: center;
   gap: 6px;
   padding: 10px 0;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--border);
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.04);
-  color: rgba(255, 255, 255, 0.7);
+  background: transparent;
+  color: var(--text);
   font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
   font-size: 11px;
   text-decoration: none;
@@ -559,9 +567,9 @@
   transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 .landing-sso-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(255, 255, 255, 0.25);
-  color: #fff;
+  background: var(--surface);
+  border-color: var(--teal);
+  color: var(--text);
 }
 
 .landing-toggle-btn {
@@ -570,7 +578,7 @@
   background: none;
   border: none;
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.35);
+  color: var(--text-muted);
   text-align: center;
   cursor: pointer;
   margin-top: 16px;
@@ -580,14 +588,14 @@
 }
 
 .landing-toggle-btn:hover {
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--text);
 }
 
 .landing-error {
   font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
   font-size: 12px;
-  color: #F87171;
-  background: rgba(248, 113, 113, 0.1);
+  color: #EF4444;
+  background: rgba(239, 68, 68, 0.08);
   border-radius: 8px;
   padding: 10px 14px;
   margin: 0 0 12px;
@@ -595,7 +603,7 @@
 
 .landing-form-hint {
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--text-muted);
   margin: 0 0 16px;
   line-height: 1.5;
 }
@@ -604,7 +612,7 @@
 .landing-footer {
   margin-top: auto;
   padding: 32px 0 24px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid var(--border);
 }
 
 .landing-footer-mobile {
@@ -619,14 +627,14 @@
 }
 
 .landing-footer-link {
-  color: rgba(255, 255, 255, 0.25) !important;
+  color: var(--text-muted) !important;
   font-size: 12px;
   text-decoration: none !important;
   transition: color 0.2s;
 }
 
 .landing-footer-link:hover {
-  color: var(--gold) !important;
+  color: var(--teal) !important;
 }
 
 .landing-footer-bottom {
@@ -639,19 +647,26 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  color: rgba(255, 255, 255, 0.25) !important;
+  color: var(--text-muted) !important;
   font-size: 12px;
   text-decoration: none !important;
   transition: color 0.2s;
 }
 
 .landing-footer-home:hover {
-  color: var(--gold) !important;
+  color: var(--teal) !important;
 }
 
 .landing-footer-copy {
-  color: rgba(255, 255, 255, 0.25);
+  color: var(--text-muted);
   font-size: 12px;
+}
+
+.landing-product-badge {
+  font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
+  font-size: 10px;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
 }
 
 /* ── Animations ── */
@@ -722,16 +737,12 @@
     padding: 0;
   }
 
-  /* Hero robot, pipeline, typewriter — all hidden on mobile */
-  .landing-hero-robot-wrap,
-  .landing-hero-glow,
   .landing-pipeline,
   .landing-value-cycle,
   .landing-particles {
     display: none !important;
   }
 
-  /* Left panel: just the headline, compact */
   .landing-left {
     order: 1;
     flex: none;
@@ -759,14 +770,12 @@
     line-height: 1.4;
   }
 
-  /* Desktop footer hidden, mobile footer shown */
   .landing-footer-desktop { display: none; }
   .landing-footer-mobile {
     display: block;
     order: 3;
   }
 
-  /* Right panel: auth card fills the width */
   .landing-right {
     flex: none;
     width: 100%;
@@ -809,7 +818,6 @@
 
   .landing-forgot-row { margin-top: -6px; margin-bottom: 8px; }
 
-  /* Footer: compact, minimal */
   .landing-footer {
     padding: 14px 16px 16px;
     border-top: none;
@@ -836,8 +844,6 @@
 /* ── Reduced motion ── */
 @media (prefers-reduced-motion: reduce) {
   .landing-orb,
-  .landing-hero-robot-wrap,
-  .landing-hero-robot .landing-antenna-glow,
   .landing-particle {
     animation: none !important;
   }

@@ -219,7 +219,7 @@ const styles = {
   },
 }
 
-const focusStyle = { borderColor: 'rgba(240,180,41,0.5)' }
+const focusStyle = { borderColor: 'rgba(13,148,136,0.5)' }
 
 export default function AuthScreen({ onAuthed, initialMode, onBack }) {
   const [mode, setMode] = useState(initialMode || 'signup')

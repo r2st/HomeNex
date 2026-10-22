@@ -78,17 +78,17 @@ DoAide Realty handles the complete follow-up lifecycle — from instant auto-res
 
 export function ToolsIndex() {
   return (
-    <div className="min-h-screen bg-[var(--doaide-bg)]">
+    <div className="min-h-screen bg-[var(--da-bg)]">
       <PublicNav />
       <main className="max-w-5xl mx-auto px-6 py-16">
-        <h1 className="text-3xl font-bold text-[var(--doaide-text)] mb-2" style={{ fontFamily: 'var(--doaide-font-display)' }}>Free Real Estate Tools</h1>
-        <p className="text-[var(--doaide-text-secondary)] mb-10 max-w-2xl">Practical calculators for property agents and buyers in India — no sign-up required.</p>
+        <h1 className="text-3xl font-bold text-[var(--da-text)] mb-2" style={{ fontFamily: 'var(--da-font)' }}>Free Real Estate Tools</h1>
+        <p className="text-[var(--da-text-secondary)] mb-10 max-w-2xl">Practical calculators for property agents and buyers in India — no sign-up required.</p>
         <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
           {TOOLS.map((tool) => (
-            <a key={tool.slug} href={`/tools/${tool.slug}`} className="block p-6 rounded-xl border border-[var(--doaide-border)] bg-[var(--doaide-surface)] hover:border-[var(--doaide-gold)] hover:shadow-[0_0_20px_rgba(240,180,41,0.15)] transition-all no-underline group">
+            <a key={tool.slug} href={`/tools/${tool.slug}`} className="block p-6 rounded-xl border border-[var(--da-border)] bg-[var(--da-surface)] hover:border-[var(--da-primary)] hover:shadow-[0_0_20px_rgba(13,148,136,0.15)] transition-all no-underline group">
               <div className="text-3xl mb-3">{tool.icon}</div>
-              <h2 className="text-lg font-semibold text-[var(--doaide-text)] group-hover:text-[var(--doaide-gold)] transition-colors mb-2">{tool.title}</h2>
-              <p className="text-sm text-[var(--doaide-text-secondary)]">{tool.description}</p>
+              <h2 className="text-lg font-semibold text-[var(--da-text)] group-hover:text-[var(--da-primary)] transition-colors mb-2">{tool.title}</h2>
+              <p className="text-sm text-[var(--da-text-secondary)]">{tool.description}</p>
             </a>
           ))}
         </div>
@@ -102,7 +102,7 @@ export function ToolPage({ slug }) {
   const Component = { 'emi-calculator': EmiCalculator, 'stamp-duty-calculator': StampDutyCalculator, 'rental-yield-calculator': RentalYieldCalculator }[slug]
   if (!Component) return <NotFound />
   return (
-    <div className="min-h-screen bg-[var(--doaide-bg)]">
+    <div className="min-h-screen bg-[var(--da-bg)]">
       <PublicNav />
       <main className="max-w-3xl mx-auto px-6 py-16"><Component /></main>
       <PublicFooter />
@@ -112,19 +112,19 @@ export function ToolPage({ slug }) {
 
 export function BlogIndex() {
   return (
-    <div className="min-h-screen bg-[var(--doaide-bg)]">
+    <div className="min-h-screen bg-[var(--da-bg)]">
       <PublicNav />
       <main className="max-w-3xl mx-auto px-6 py-16">
-        <h1 className="text-3xl font-bold text-[var(--doaide-text)] mb-2" style={{ fontFamily: 'var(--doaide-font-display)' }}>Blog</h1>
-        <p className="text-[var(--doaide-text-secondary)] mb-10">Insights on WhatsApp CRM, lead management, and real estate technology.</p>
+        <h1 className="text-3xl font-bold text-[var(--da-text)] mb-2" style={{ fontFamily: 'var(--da-font)' }}>Blog</h1>
+        <p className="text-[var(--da-text-secondary)] mb-10">Insights on WhatsApp CRM, lead management, and real estate technology.</p>
         <div className="space-y-8">
           {BLOG_POSTS.map((post) => (
-            <a key={post.slug} href={`/blog/${post.slug}`} className="block p-6 rounded-xl border border-[var(--doaide-border)] bg-[var(--doaide-surface)] hover:border-[var(--doaide-gold)] transition-colors no-underline group">
-              <div className="flex items-center gap-3 mb-2 text-xs text-[var(--doaide-text-muted)]">
+            <a key={post.slug} href={`/blog/${post.slug}`} className="block p-6 rounded-xl border border-[var(--da-border)] bg-[var(--da-surface)] hover:border-[var(--da-primary)] transition-colors no-underline group">
+              <div className="flex items-center gap-3 mb-2 text-xs text-[var(--da-text-muted)]">
                 <time>{post.date}</time><span>·</span><span>{post.readTime}</span>
               </div>
-              <h2 className="text-lg font-semibold text-[var(--doaide-text)] group-hover:text-[var(--doaide-gold)] transition-colors mb-2">{post.title}</h2>
-              <p className="text-sm text-[var(--doaide-text-secondary)]">{post.excerpt}</p>
+              <h2 className="text-lg font-semibold text-[var(--da-text)] group-hover:text-[var(--da-primary)] transition-colors mb-2">{post.title}</h2>
+              <p className="text-sm text-[var(--da-text-secondary)]">{post.excerpt}</p>
             </a>
           ))}
         </div>
@@ -138,19 +138,19 @@ export function BlogPost({ slug }) {
   const post = BLOG_POSTS.find((p) => p.slug === slug)
   if (!post) return <NotFound />
   return (
-    <div className="min-h-screen bg-[var(--doaide-bg)]">
+    <div className="min-h-screen bg-[var(--da-bg)]">
       <PublicNav />
       <main className="max-w-3xl mx-auto px-6 py-16">
-        <a href="/blog" className="text-sm text-[var(--doaide-text-muted)] hover:text-[var(--doaide-gold)] no-underline mb-6 inline-block">← Back to Blog</a>
+        <a href="/blog" className="text-sm text-[var(--da-text-muted)] hover:text-[var(--da-primary)] no-underline mb-6 inline-block">← Back to Blog</a>
         <article>
-          <div className="flex items-center gap-3 mb-3 text-xs text-[var(--doaide-text-muted)]">
+          <div className="flex items-center gap-3 mb-3 text-xs text-[var(--da-text-muted)]">
             <time>{post.date}</time><span>·</span><span>{post.readTime}</span>
           </div>
-          <h1 className="text-3xl font-bold text-[var(--doaide-text)] mb-8" style={{ fontFamily: 'var(--doaide-font-display)' }}>{post.title}</h1>
-          <div className="space-y-4 text-[var(--doaide-text-secondary)] leading-relaxed">
+          <h1 className="text-3xl font-bold text-[var(--da-text)] mb-8" style={{ fontFamily: 'var(--da-font)' }}>{post.title}</h1>
+          <div className="space-y-4 text-[var(--da-text-secondary)] leading-relaxed">
             {post.content.split('\n\n').map((block, i) => <p key={i}>{block}</p>)}
           </div>
-          <hr className="my-8 border-[var(--doaide-border)]" />
+          <hr className="my-8 border-[var(--da-border)]" />
           <ShareButtons url={`https://realty.doaide.com/blog/${slug}`} title={`${post.title} — DoAide Realty`} />
         </article>
       </main>
@@ -161,7 +161,7 @@ export function BlogPost({ slug }) {
 
 export function EmbedPage() {
   return (
-    <div className="min-h-screen bg-[var(--doaide-bg)]">
+    <div className="min-h-screen bg-[var(--da-bg)]">
       <PublicNav />
       <main className="max-w-3xl mx-auto px-6 py-16"><EmbedGeneratorWidget /></main>
       <PublicFooter />
@@ -183,33 +183,33 @@ function EmbedGeneratorWidget() {
 
   return (
     <div>
-      <h1 className="text-3xl font-bold text-[var(--doaide-text)] mb-2" style={{ fontFamily: 'var(--doaide-font-display)' }}>Embed Widget Generator</h1>
-      <p className="text-[var(--doaide-text-secondary)] mb-8">Add DoAide Realty lead capture to your property website.</p>
+      <h1 className="text-3xl font-bold text-[var(--da-text)] mb-2" style={{ fontFamily: 'var(--da-font)' }}>Embed Widget Generator</h1>
+      <p className="text-[var(--da-text-secondary)] mb-8">Add DoAide Realty lead capture to your property website.</p>
       <div className="space-y-6">
-        <div className="p-6 rounded-xl border border-[var(--doaide-border)] bg-[var(--doaide-surface)] space-y-4">
+        <div className="p-6 rounded-xl border border-[var(--da-border)] bg-[var(--da-surface)] space-y-4">
           <div>
-            <label className="block text-sm font-medium text-[var(--doaide-text-secondary)] mb-2">Position</label>
+            <label className="block text-sm font-medium text-[var(--da-text-secondary)] mb-2">Position</label>
             <div className="flex gap-2">
               {['bottom-right', 'bottom-left'].map((p) => (
-                <button key={p} onClick={() => setPosition(p)} className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${position === p ? 'bg-[var(--doaide-gold)] text-[var(--doaide-text-on-gold)]' : 'bg-[var(--doaide-bg)] text-[var(--doaide-text-secondary)] border border-[var(--doaide-border)]'}`}>{p.replace('-', ' ')}</button>
+                <button key={p} onClick={() => setPosition(p)} className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${position === p ? 'bg-[var(--da-primary)] text-[var(--da-text-on-primary)]' : 'bg-[var(--da-bg)] text-[var(--da-text-secondary)] border border-[var(--da-border)]'}`}>{p.replace('-', ' ')}</button>
               ))}
             </div>
           </div>
           <div>
-            <label className="block text-sm font-medium text-[var(--doaide-text-secondary)] mb-2">Theme</label>
+            <label className="block text-sm font-medium text-[var(--da-text-secondary)] mb-2">Theme</label>
             <div className="flex gap-2">
               {['dark', 'light', 'auto'].map((t) => (
-                <button key={t} onClick={() => setTheme(t)} className={`px-3 py-1.5 rounded-md text-sm font-medium capitalize transition-colors ${theme === t ? 'bg-[var(--doaide-gold)] text-[var(--doaide-text-on-gold)]' : 'bg-[var(--doaide-bg)] text-[var(--doaide-text-secondary)] border border-[var(--doaide-border)]'}`}>{t}</button>
+                <button key={t} onClick={() => setTheme(t)} className={`px-3 py-1.5 rounded-md text-sm font-medium capitalize transition-colors ${theme === t ? 'bg-[var(--da-primary)] text-[var(--da-text-on-primary)]' : 'bg-[var(--da-bg)] text-[var(--da-text-secondary)] border border-[var(--da-border)]'}`}>{t}</button>
               ))}
             </div>
           </div>
         </div>
-        <div className="p-6 rounded-xl border border-[var(--doaide-border)] bg-[var(--doaide-surface)]">
+        <div className="p-6 rounded-xl border border-[var(--da-border)] bg-[var(--da-surface)]">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-medium text-[var(--doaide-text-secondary)]">Embed Code</h2>
-            <button onClick={copy} className="px-3 py-1.5 rounded-md text-sm font-medium bg-[var(--doaide-gold)] text-[var(--doaide-text-on-gold)] hover:bg-[var(--doaide-gold-hover)]">{copied ? 'Copied!' : 'Copy Code'}</button>
+            <h2 className="text-sm font-medium text-[var(--da-text-secondary)]">Embed Code</h2>
+            <button onClick={copy} className="px-3 py-1.5 rounded-md text-sm font-medium bg-[var(--da-primary)] text-[var(--da-text-on-primary)] hover:bg-[var(--da-primary-hover)]">{copied ? 'Copied!' : 'Copy Code'}</button>
           </div>
-          <pre className="p-4 rounded-lg bg-[var(--doaide-bg)] text-sm text-[var(--doaide-text-secondary)] overflow-x-auto font-mono whitespace-pre-wrap">{snippet}</pre>
+          <pre className="p-4 rounded-lg bg-[var(--da-bg)] text-sm text-[var(--da-text-secondary)] overflow-x-auto font-mono whitespace-pre-wrap">{snippet}</pre>
         </div>
         <ShareButtons url="https://realty.doaide.com/embed" title="DoAide Realty Embed Widget Generator" />
       </div>
@@ -219,25 +219,18 @@ function EmbedGeneratorWidget() {
 
 function NotFound() {
   return (
-    <div className="min-h-screen bg-[var(--doaide-bg)]">
+    <div className="min-h-screen bg-[var(--da-bg)]">
       <PublicNav />
       <main className="max-w-3xl mx-auto px-6 py-16 text-center">
-        <h1 className="text-3xl font-bold text-[var(--doaide-text)] mb-4">Page Not Found</h1>
-        <p className="text-[var(--doaide-text-secondary)] mb-8">The page you're looking for doesn't exist.</p>
-        <a href="/" className="px-4 py-2 rounded-md text-sm font-medium bg-[var(--doaide-gold)] text-[var(--doaide-text-on-gold)] no-underline">Go Home</a>
+        <h1 className="text-3xl font-bold text-[var(--da-text)] mb-4">Page Not Found</h1>
+        <p className="text-[var(--da-text-secondary)] mb-8">The page you're looking for doesn't exist.</p>
+        <a href="/" className="px-4 py-2 rounded-md text-sm font-medium bg-[var(--da-primary)] text-[var(--da-text-on-primary)] no-underline">Go Home</a>
       </main>
       <PublicFooter />
     </div>
   )
 }
 
-export function resolvePublicRoute(pathname) {
-  if (pathname === '/tools') return 'tools-index'
-  if (pathname.startsWith('/tools/')) return 'tool-page'
-  if (pathname === '/blog') return 'blog-index'
-  if (pathname.startsWith('/blog/')) return 'blog-post'
-  if (pathname === '/embed') return 'embed'
-  return null
-}
+export { resolvePublicRoute } from '../lib/publicRoutes.js'
 
 export { TOOLS, BLOG_POSTS }

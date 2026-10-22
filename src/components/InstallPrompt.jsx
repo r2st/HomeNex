@@ -54,7 +54,7 @@ export default function InstallPrompt() {
             width: 40,
             height: 40,
             borderRadius: 8,
-            background: "rgba(240,180,41,0.15)",
+            background: "rgba(13,148,136,0.15)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
