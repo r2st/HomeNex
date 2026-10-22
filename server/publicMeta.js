@@ -24,9 +24,24 @@ const TOOLS = {
     description:
       'Calculate gross and net rental yield for Indian properties. Compare returns before you buy or let.',
   },
+  'property-comparison': {
+    title: 'Property Comparison Tool — DoAide Realty',
+    description:
+      'Compare up to four Indian properties side by side on price per sq ft and gross rental yield, free and login-free.',
+  },
+  'area-converter': {
+    title: 'Area Converter (sq ft, sq m, gaj, acre) — DoAide Realty',
+    description:
+      'Convert between square feet, square metres, gaj, acres, gunthas and other Indian land units instantly.',
+  },
 }
 
 const BLOG = {
+  'best-crm-for-real-estate-agents-india': {
+    title: 'Best CRM for Real Estate Agents in India: 2026 Buyer’s Guide — DoAide Realty',
+    description:
+      'What Indian property agents should look for in a CRM — WhatsApp-first workflows, portal lead capture, follow-up automation — and how the options compare.',
+  },
   'whatsapp-crm-transforming-indian-real-estate': {
     title: 'How WhatsApp CRM is Transforming Indian Real Estate — DoAide Realty',
     description:

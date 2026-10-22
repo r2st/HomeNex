@@ -28,12 +28,12 @@ test('resolvePublicRoute — unknown path returns null', () => {
   assert.equal(resolvePublicRoute('/unknown'), null)
 })
 
-test('TOOLS has 3 entries', () => {
-  assert.equal(TOOLS.length, 3)
+test('TOOLS has 5 entries', () => {
+  assert.equal(TOOLS.length, 5)
 })
 
-test('BLOG_POSTS has 3 articles', () => {
-  assert.equal(BLOG_POSTS.length, 3)
+test('BLOG_POSTS has 4 articles', () => {
+  assert.equal(BLOG_POSTS.length, 4)
 })
 
 test('each blog post has required fields', () => {

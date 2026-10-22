@@ -3,15 +3,41 @@ import { PublicNav, PublicFooter } from './PublicLayout.jsx'
 import EmiCalculator from './tools/EmiCalculator.jsx'
 import StampDutyCalculator from './tools/StampDutyCalculator.jsx'
 import RentalYieldCalculator from './tools/RentalYieldCalculator.jsx'
+import PropertyComparison from './tools/PropertyComparison.jsx'
+import AreaConverter from './tools/AreaConverter.jsx'
 import ShareButtons from './ShareButtons.jsx'
 
 const TOOLS = [
   { slug: 'emi-calculator', title: 'EMI Calculator', description: 'Home loan EMI calculator for Indian market (INR).', icon: '🏠' },
   { slug: 'stamp-duty-calculator', title: 'Stamp Duty Calculator', description: 'Estimate stamp duty and registration charges by Indian state.', icon: '📋' },
   { slug: 'rental-yield-calculator', title: 'Rental Yield Calculator', description: 'Calculate gross and net rental yield for properties.', icon: '💰' },
+  { slug: 'property-comparison', title: 'Property Comparison Tool', description: 'Compare up to four properties on price per sq ft and rental yield.', icon: '⚖️' },
+  { slug: 'area-converter', title: 'Area Converter', description: 'Convert sq ft, sq m, gaj, acres and other Indian land units.', icon: '📐' },
 ]
 
 const BLOG_POSTS = [
+  {
+    slug: 'best-crm-for-real-estate-agents-india',
+    title: 'Best CRM for Real Estate Agents in India: 2026 Buyer’s Guide',
+    date: '2026-10-23',
+    readTime: '8 min read',
+    excerpt: 'What Indian property agents should look for in a CRM — WhatsApp-first workflows, portal lead capture, follow-up automation — and how the popular options compare.',
+    content: `Most Indian real estate agents do not have a CRM problem — they have a WhatsApp problem. Leads arrive on WhatsApp from 99acres, MagicBricks, Housing.com, Instagram ads, and referrals, all day long. The deals that die are rarely lost to a competitor's better inventory; they are lost to a missed follow-up. So the right question is not "which CRM has the most features?" but "which CRM fits how Indian property deals actually happen?"
+
+Start with the workflow, not the feature list. An Indian agent's day runs through WhatsApp: a portal lead lands, the agent calls or messages within minutes (or loses the lead), shares 3-4 matching options as photos and brochures, schedules a site visit, negotiates, and follows up for weeks. A CRM built for this workflow must capture leads from portals and ads automatically, log WhatsApp conversations without manual copy-paste, match buyer requirements to inventory, and fire follow-up reminders that agents actually see.
+
+Why generic CRMs disappoint agents. Salesforce, Zoho CRM, and HubSpot are excellent sales platforms, but they were designed around email pipelines and quarterly B2B deals. For a property agent, that means heavy data entry after every call, workflows that assume email when the client is on WhatsApp, pricing in dollars per seat that makes no sense for a 3-agent brokerage, and weeks of configuration before the first lead is tracked. Agents abandon these tools within a month — and go back to memory and chat scrollback.
+
+What to evaluate in a real estate CRM. First, WhatsApp integration depth: can the CRM send and receive WhatsApp messages with conversation history attached to the lead, or does it merely open a wa.me link? Second, portal lead capture: automatic import from 99acres, MagicBricks, and Housing.com, because retyping portal leads is where follow-up discipline dies. Third, property matching: when a new listing arrives, does the system tell you which existing buyers match? Fourth, follow-up automation: scheduled reminders and message cadences for the 6-8 week Indian deal cycle. Fifth, pricing in INR that a small brokerage can justify from one saved deal.
+
+How the popular options compare. Zoho CRM is strong and affordable (from about Rs 800 per user per month) with good customisation, but real-estate-specific workflows need setup effort or a consultant. Salesforce is the enterprise benchmark with pricing to match — practical for large developers, overkill for brokerages. HubSpot has a generous free tier for contact management, but WhatsApp and property workflows need paid add-ons and configuration. Vertical Indian tools built for brokers — DoAide Realty among them — trade breadth for fit: WhatsApp-first lead capture, buyer-to-property matching, site-visit scheduling and follow-up automation work out of the box, with pricing designed for individual agents and small teams.
+
+The switching cost myth. Agents often stay with spreadsheets because "migrating is too much work." In practice, a focused real estate CRM needs three things to start: your active leads (importable from a sheet in minutes), your inventory list, and your WhatsApp number. If a tool needs more than a day before it is tracking real leads, it is the wrong tool for a working agent.
+
+A practical adoption plan. Week one: import active leads and inventory, and route one lead source (your busiest portal) into the CRM. Week two: turn on follow-up reminders and run every new lead through the system. Week three: review the pipeline report — response times, stale leads, site-visit conversion. Most agents find 10-20% of their pipeline was silently stalled, and reviving even two of those deals pays for a year of software.
+
+DoAide Realty was built for exactly this workflow — WhatsApp-first lead capture, AI property matching, and automated follow-ups for Indian brokers. Try the free tools on this site (EMI, stamp duty, rental yield, property comparison) to see the approach, then bring your pipeline.`,
+  },
   {
     slug: 'whatsapp-crm-transforming-indian-real-estate',
     title: 'How WhatsApp CRM is Transforming Indian Real Estate',
@@ -99,7 +125,7 @@ export function ToolsIndex() {
 }
 
 export function ToolPage({ slug }) {
-  const Component = { 'emi-calculator': EmiCalculator, 'stamp-duty-calculator': StampDutyCalculator, 'rental-yield-calculator': RentalYieldCalculator }[slug]
+  const Component = { 'emi-calculator': EmiCalculator, 'stamp-duty-calculator': StampDutyCalculator, 'rental-yield-calculator': RentalYieldCalculator, 'property-comparison': PropertyComparison, 'area-converter': AreaConverter }[slug]
   if (!Component) return <NotFound />
   return (
     <div className="min-h-screen bg-[var(--da-bg)]">
