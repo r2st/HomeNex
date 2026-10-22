@@ -30,3 +30,13 @@ test('ShareButtons renders copy button', async (t) => {
   const ui = await render(<ShareButtons url="https://example.com" title="Test" />)
   assert.ok(ui.text().includes('Copy link'))
 })
+
+test('ShareButtons controls meet the 48px touch-target minimum', async (t) => {
+  installBrowser()
+  const ui = await render(<ShareButtons url="https://example.com" title="Test" />)
+  for (const label of ['WhatsApp', 'X / Twitter', 'Copy link']) {
+    const node = ui.byText(label)
+    assert.ok(node, `${label} control renders`)
+    assert.match(node.props.className, /min-h-\[48px\]/, `${label} has a 48px min height`)
+  }
+})

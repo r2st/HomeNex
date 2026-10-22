@@ -81,7 +81,7 @@ export default function BottomNav({ tab, setTab, moreBadge }) {
               key={t.id}
               onClick={() => setTab(t.id)}
               aria-current={active ? 'page' : undefined}
-              className={`relative flex flex-col items-center gap-1 py-1 transition ${
+              className={`relative flex flex-col items-center justify-end gap-1 py-1 min-h-[48px] transition ${
                 active ? 'text-brand-deep' : 'text-ink-faint'
               }`}
             >

@@ -7,7 +7,7 @@ export function PublicNav() {
           <a href="/tools" className="text-[var(--da-text-secondary)] hover:text-[var(--da-primary)] no-underline transition-colors">Free Tools</a>
           <a href="/blog" className="text-[var(--da-text-secondary)] hover:text-[var(--da-primary)] no-underline transition-colors">Blog</a>
           <a href="/embed" className="text-[var(--da-text-secondary)] hover:text-[var(--da-primary)] no-underline transition-colors">Embed</a>
-          <a href="/" className="px-4 py-1.5 rounded-md text-sm font-medium bg-[var(--da-primary)] text-[var(--da-text-on-primary)] hover:bg-[var(--da-primary-hover)] no-underline transition-colors">Get Started</a>
+          <a href="/" className="px-4 py-1.5 min-h-[48px] inline-flex items-center rounded-md text-sm font-medium bg-[var(--da-primary)] text-[var(--da-text-on-primary)] hover:bg-[var(--da-primary-hover)] no-underline transition-colors">Get Started</a>
         </div>
       </div>
     </nav>

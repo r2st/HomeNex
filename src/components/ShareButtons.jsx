@@ -20,7 +20,7 @@ export default function ShareButtons({ url, title }) {
         href={`https://wa.me/?text=${encodedTitle}%20${encoded}`}
         target="_blank"
         rel="noopener noreferrer"
-        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium bg-[#25D366] text-white hover:opacity-90 transition-opacity"
+        className="inline-flex items-center gap-1.5 px-4 py-1.5 min-h-[48px] rounded-md text-sm font-medium bg-[#25D366] text-white hover:opacity-90 transition-opacity"
       >
         WhatsApp
       </a>
@@ -28,13 +28,13 @@ export default function ShareButtons({ url, title }) {
         href={`https://twitter.com/intent/tweet?text=${encodedTitle}&url=${encoded}`}
         target="_blank"
         rel="noopener noreferrer"
-        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium bg-[var(--da-surface)] text-[var(--da-text)] border border-[var(--da-border)] hover:bg-[var(--da-surface-hover)] transition-colors"
+        className="inline-flex items-center gap-1.5 px-4 py-1.5 min-h-[48px] rounded-md text-sm font-medium bg-[var(--da-surface)] text-[var(--da-text)] border border-[var(--da-border)] hover:bg-[var(--da-surface-hover)] transition-colors"
       >
         X / Twitter
       </a>
       <button
         onClick={copy}
-        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium bg-[var(--da-surface)] text-[var(--da-text)] border border-[var(--da-border)] hover:bg-[var(--da-surface-hover)] transition-colors"
+        className="inline-flex items-center gap-1.5 px-4 py-1.5 min-h-[48px] rounded-md text-sm font-medium bg-[var(--da-surface)] text-[var(--da-text)] border border-[var(--da-border)] hover:bg-[var(--da-surface-hover)] transition-colors"
       >
         {copied ? 'Copied!' : 'Copy link'}
       </button>
