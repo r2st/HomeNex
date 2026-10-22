@@ -167,6 +167,7 @@ import { sendText, sendMedia, markRead, whatsappConfigured, checkToken, waSendMo
 import { renderTemplate, waMediaType } from './inbox.js'
 import fs from 'node:fs'
 import { privacyPage, termsPage } from './legal.js'
+import { publicPageMeta, injectMeta } from './publicMeta.js'
 import { setupGuidePage } from './setupGuide.js'
 import { signup, login, changePhone, changePassword, requestPasswordReset, resetPassword, requireAuth } from './auth.js'
 import { handleAgentCommand } from './agentCommands.js'
@@ -2649,7 +2650,25 @@ app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found', code: 
 // Serve the built dashboard so one process hosts everything in production.
 const dist = path.join(__dirname, '..', 'dist')
 app.use(express.static(dist))
-app.get(/^\/(?!api|webhook|admin).*/, (_req, res) => res.sendFile(path.join(dist, 'index.html')))
+
+// The public tool/blog/embed pages get a per-route <head> (title, description,
+// canonical, OG) injected into the shared SPA shell, so each URL unfurls and
+// indexes as its own page. Read lazily and cached: dist/index.html does not
+// change while the process runs, and in tests it may not exist at all.
+let spaShell = null
+const spaIndex = path.join(dist, 'index.html')
+app.get(/^\/(?!api|webhook|admin).*/, (req, res) => {
+  const meta = publicPageMeta(req.path)
+  if (!meta) return res.sendFile(spaIndex)
+  if (spaShell === null) {
+    try {
+      spaShell = fs.readFileSync(spaIndex, 'utf8')
+    } catch {
+      return res.sendFile(spaIndex)
+    }
+  }
+  res.type('html').send(injectMeta(spaShell, meta))
+})
 
 // Last-resort error handler. Malformed JSON and over-limit bodies are the client's
 // fault (400/413), not a server failure — map them so callers get an actionable code
