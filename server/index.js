@@ -2649,7 +2649,8 @@ app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found', code: 
 
 // Serve the built dashboard so one process hosts everything in production.
 const dist = path.join(__dirname, '..', 'dist')
-app.use(express.static(dist))
+// index: false so "/" reaches the catch-all below and gets its h1/head.
+app.use(express.static(dist, { index: false }))
 
 // The public tool/blog/embed pages get a per-route <head> (title, description,
 // canonical, OG) injected into the shared SPA shell, so each URL unfurls and

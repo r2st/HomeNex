@@ -54,8 +54,8 @@ test('a trailing slash resolves like the clean path', () => {
   )
 })
 
-test('app, admin, API and unknown public paths keep the generic shell', () => {
-  for (const p of ['/', '/dashboard', '/tools/unknown-tool', '/blog/nope', '/admin', '/api/leads']) {
+test('app, admin, API and unknown paths keep the generic shell', () => {
+  for (const p of ['/dashboard', '/tools/unknown-tool', '/blog/nope', '/admin', '/api/leads']) {
     assert.equal(publicPageMeta(p), null, p)
   }
 })
@@ -101,8 +101,16 @@ test('injectMeta puts the page h1 in #root and page-specific JSON-LD in the head
 })
 
 test('every public page title is unique', () => {
-  const paths = ['/tools', '/blog', '/embed', '/tools/emi-calculator', '/tools/stamp-duty-calculator', '/tools/rental-yield-calculator', '/tools/property-comparison', '/tools/area-converter', '/blog/best-crm-for-real-estate-agents-india', '/blog/whatsapp-crm-transforming-indian-real-estate', '/blog/5-lead-management-strategies-property-agents', '/blog/complete-guide-real-estate-follow-up-automation']
+  const paths = ['/', '/tools', '/blog', '/embed', '/tools/emi-calculator', '/tools/stamp-duty-calculator', '/tools/rental-yield-calculator', '/tools/property-comparison', '/tools/area-converter', '/blog/best-crm-for-real-estate-agents-india', '/blog/whatsapp-crm-transforming-indian-real-estate', '/blog/5-lead-management-strategies-property-agents', '/blog/complete-guide-real-estate-follow-up-automation']
   const titles = paths.map((p) => publicPageMeta(p).title)
   assert.equal(new Set(titles).size, titles.length)
 })
 
+
+test('the homepage gets an h1 and its own head but keeps the CRM JSON-LD', () => {
+  const html = injectMeta(SHELL, publicPageMeta('/'))
+  assert.ok(html.includes('<div id="root"><h1>WhatsApp CRM for Real Estate Agents</h1></div>'))
+  assert.match(html, /<title>DoAide Realty — WhatsApp CRM for Real Estate Agents in India<\/title>/)
+  assert.ok(html.includes('SoftwareApplication'), 'the shell schema stays')
+  assert.equal((html.match(/<link rel="canonical"[^>]*>/g) || []).length, 1)
+})

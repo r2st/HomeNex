@@ -68,6 +68,14 @@ const BLOG = {
   },
 }
 
+// The homepage keeps the shell's SoftwareApplication JSON-LD (no jsonLd here).
+const HOME = {
+  h1: 'WhatsApp CRM for Real Estate Agents',
+  title: 'DoAide Realty — WhatsApp CRM for Real Estate Agents in India',
+  description:
+    'AI-powered WhatsApp CRM for Indian property agents: leads answered in seconds, automated follow-ups and property matching.',
+}
+
 const STATIC_PAGES = {
   '/tools': {
     h1: 'Free Real Estate Tools',
@@ -92,6 +100,7 @@ const STATIC_PAGES = {
 /** Meta for a public path, or null when the path has no bespoke head. */
 export function publicPageMeta(pathname) {
   const clean = pathname.replace(/\/+$/, '') || '/'
+  if (clean === '/') return { ...HOME, canonical: ORIGIN }
   if (STATIC_PAGES[clean]) return withJsonLd({ ...STATIC_PAGES[clean], canonical: ORIGIN + clean }, 'WebPage')
   if (clean.startsWith('/tools/')) {
     const tool = TOOLS[clean.slice('/tools/'.length)]
@@ -151,10 +160,10 @@ export function injectMeta(html, meta) {
     )
     .replace(/<link rel="canonical" href="[^"]*"\s*\/?>/, '')
     .replace(/<\/head>/, `  <link rel="canonical" href="${canonical}" />\n  </head>`)
-    .replace(/<script type="application\/ld\+json">[\s\S]*?<\/script>/, () =>
+    .replace(/<script type="application\/ld\+json">[\s\S]*?<\/script>/, (shellLd) =>
       meta.jsonLd
         ? `<script type="application/ld+json">${JSON.stringify(meta.jsonLd).replace(/</g, '\\u003c')}</script>`
-        : '',
+        : shellLd,
     )
     .replace('<div id="root"></div>', () => (meta.h1 ? `<div id="root"><h1>${escapeHtml(meta.h1)}</h1></div>` : '<div id="root"></div>'))
 }
