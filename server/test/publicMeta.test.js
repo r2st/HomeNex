@@ -1,6 +1,7 @@
 // Pure-function tests for the per-route public <head>: which paths get bespoke
 // meta, and that injection rewrites every duplicated field (title, description,
-// their OG/Twitter mirrors, og:url) and adds a canonical. No DB needed.
+// their OG/Twitter mirrors, og:url, canonical, JSON-LD) and adds a crawler h1.
+// No DB needed.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { publicPageMeta, injectMeta } from '../publicMeta.js'
@@ -15,6 +16,10 @@ const SHELL = `<!doctype html>
     <meta property="og:url" content="https://realty.doaide.com" />
     <meta name="twitter:title" content="DoAide Realty — WhatsApp CRM" />
     <meta name="twitter:description" content="AI-powered WhatsApp CRM for real estate agents." />
+    <link rel="canonical" href="https://realty.doaide.com" />
+    <script type="application/ld+json">
+    { "@context": "https://schema.org", "@type": "SoftwareApplication", "name": "DoAide Realty" }
+    </script>
   </head>
   <body><div id="root"></div></body>
 </html>`
@@ -74,3 +79,30 @@ test('injectMeta escapes HTML-significant characters in the copy', () => {
   assert.ok(html.includes('A &lt;b&gt;&quot;bold&quot;&lt;/b&gt; &amp; risky title'))
   assert.ok(!html.includes('<b>"bold"</b>'))
 })
+
+test('injectMeta leaves exactly one canonical, for the page itself', () => {
+  const meta = publicPageMeta('/tools/area-converter')
+  const html = injectMeta(SHELL, meta)
+  const canonicals = html.match(/<link rel="canonical"[^>]*>/g) || []
+  assert.equal(canonicals.length, 1)
+  assert.ok(canonicals[0].includes('https://realty.doaide.com/tools/area-converter'))
+})
+
+test('injectMeta puts the page h1 in #root and page-specific JSON-LD in the head', () => {
+  const tool = injectMeta(SHELL, publicPageMeta('/tools/emi-calculator'))
+  assert.ok(tool.includes('<div id="root"><h1>Home Loan EMI Calculator</h1></div>'))
+  assert.ok(!tool.includes('SoftwareApplication'), 'the CRM schema is replaced')
+  assert.match(tool, /"@type":"WebApplication"/)
+
+  const post = injectMeta(SHELL, publicPageMeta('/blog/whatsapp-crm-transforming-indian-real-estate'))
+  const ld = JSON.parse(post.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/)[1])
+  assert.equal(ld['@type'], 'BlogPosting')
+  assert.equal(ld.headline, 'How WhatsApp CRM is Transforming Indian Real Estate')
+})
+
+test('every public page title is unique', () => {
+  const paths = ['/tools', '/blog', '/embed', '/tools/emi-calculator', '/tools/stamp-duty-calculator', '/tools/rental-yield-calculator', '/tools/property-comparison', '/tools/area-converter', '/blog/best-crm-for-real-estate-agents-india', '/blog/whatsapp-crm-transforming-indian-real-estate', '/blog/5-lead-management-strategies-property-agents', '/blog/complete-guide-real-estate-follow-up-automation']
+  const titles = paths.map((p) => publicPageMeta(p).title)
+  assert.equal(new Set(titles).size, titles.length)
+})
+
